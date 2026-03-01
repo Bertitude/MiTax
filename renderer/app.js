@@ -202,8 +202,30 @@ async function parseAll() {
     item.status = 'parsing';
     renderQueue();
     const result = await window.electronAPI.parsePDF(item.path);
-    if (result.success) { item.parsed = result.data; item.status = 'ready'; }
-    else               { item.status = 'error'; toast(`Failed to parse ${item.name}: ${result.error}`, 'error'); }
+    if (result.success) {
+      // Some parsers (e.g. UNFCU) return an array when a single PDF contains
+      // multiple accounts. Expand them into separate queue items so each account
+      // can be mapped and imported independently.
+      if (Array.isArray(result.data)) {
+        const idx = state.queue.indexOf(item);
+        const expanded = result.data.map((parsed, i) => ({
+          id:        Date.now() + Math.random() + i,
+          name:      `${item.name} — ${parsed.accountName}`,
+          path:      item.path,
+          status:    'ready',
+          parsed,
+          assetId:   null,
+          assetName: null,
+        }));
+        state.queue.splice(idx, 1, ...expanded);
+      } else {
+        item.parsed = result.data;
+        item.status = 'ready';
+      }
+    } else {
+      item.status = 'error';
+      toast(`Failed to parse ${item.name}: ${result.error}`, 'error');
+    }
     renderQueue();
   }
 

@@ -15,6 +15,7 @@ const jmmbParser = require('./jmmb');
 const wiseParser = require('./wise');
 const paypalParser = require('./paypal');
 const stripeParser = require('./stripe');
+const unfcuParser = require('./unfcu');
 const genericParser = require('./generic');
 
 const INSTITUTION_PATTERNS = [
@@ -24,6 +25,7 @@ const INSTITUTION_PATTERNS = [
   { name: 'Wise',       regex: /wise\s+(formerly\s+transferwise|payments)|transferwise/i, parser: wiseParser },
   { name: 'PayPal',     regex: /paypal\s+(transaction|activity|statement)/i,    parser: paypalParser },
   { name: 'Stripe',     regex: /stripe\s+(payout|balance|payments)/i,          parser: stripeParser },
+  { name: 'UNFCU',      regex: /unfcu\.org|united\s+nations\s+federal\s+credit\s+union|unfcu\.com/i, parser: unfcuParser },
 ];
 
 /**
