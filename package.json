@@ -1,6 +1,6 @@
 {
   "name": "lunchmoney-importer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "LunchMoney statement importer with Jamaica S04 tax support",
   "main": "main.js",
   "scripts": {
