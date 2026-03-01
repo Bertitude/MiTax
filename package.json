@@ -49,8 +49,7 @@
     },
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
-      "icon": "assets/icons/icon.ico",
-      "publisherName": "FuzionWorks"
+      "icon": "assets/icons/icon.ico"
     },
     "mac": {
       "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
