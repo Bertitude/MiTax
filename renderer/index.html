@@ -122,6 +122,44 @@
 
       </div>
 
+      <!-- ═══ ACCOUNT SUMMARY VIEW ════════════════════════════════════ -->
+      <div class="view" id="account-view">
+
+        <!-- Header row -->
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" id="account-back-btn">← Back</button>
+          <div style="flex:1;min-width:0;">
+            <div id="account-view-name" style="font-size:20px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Account</div>
+            <div id="account-view-meta" style="font-size:13px;color:var(--text-muted);margin-top:2px;"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <label style="font-size:12px;color:var(--text-muted);">Year</label>
+            <select id="account-year-select" style="font-size:13px;padding:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+            </select>
+            <button class="btn btn-secondary btn-sm" id="account-refresh-btn">↻</button>
+          </div>
+        </div>
+
+        <!-- Summary stats -->
+        <div id="account-summary-stats" class="grid-3" style="margin-bottom:20px;"></div>
+
+        <!-- Monthly breakdown table -->
+        <div class="card">
+          <div class="card-title">Monthly Breakdown</div>
+          <div id="account-monthly-wrap"></div>
+        </div>
+
+        <!-- Transaction list -->
+        <div class="card" style="margin-top:16px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+            <div class="card-title" style="margin-bottom:0;flex:1;">Transactions</div>
+            <span id="account-tx-count" style="font-size:11px;color:var(--text-muted);"></span>
+          </div>
+          <div id="account-tx-list"></div>
+        </div>
+
+      </div>
+
       <!-- ═══ IMPORT VIEW ══════════════════════════════════════════════ -->
       <div class="view" id="import-view">
 

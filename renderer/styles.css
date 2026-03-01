@@ -639,3 +639,32 @@ tr.dupe-row:hover td { background: rgba(210,153,34,0.14); }
 }
 .field-map-copy:hover { border-color: var(--accent); color: var(--accent); }
 .field-map-copy.copied { border-color: var(--accent2); color: var(--accent2); }
+
+/* ─── Account Summary View ──────────────────────────────────────────────── */
+.acct-monthly-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.acct-monthly-table th {
+  text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+.acct-monthly-table th.num { text-align: right; }
+.acct-monthly-table td { padding: 8px 10px; border-bottom: 1px solid rgba(48,54,61,0.4); vertical-align: middle; }
+.acct-monthly-table tr:last-child td { border-bottom: none; }
+.acct-monthly-table tr:hover td { background: var(--surface2); }
+.acct-monthly-table td.num { text-align: right; font-family: monospace; font-size: 12px; }
+.acct-monthly-table td.pos { color: var(--accent2); }
+.acct-monthly-table td.neg { color: var(--warn); }
+.acct-monthly-table tr.month-total td { font-weight: 700; background: var(--surface2); border-top: 1px solid var(--border); }
+.acct-month-bar { height: 5px; border-radius: 3px; background: var(--accent2); margin-top: 4px; transition: width 0.3s; }
+
+.acct-tx-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 9px 0; border-bottom: 1px solid rgba(48,54,61,0.35); font-size: 13px;
+}
+.acct-tx-row:last-child { border-bottom: none; }
+.acct-tx-date { min-width: 80px; color: var(--text-muted); font-size: 11px; padding-top: 2px; }
+.acct-tx-payee { flex: 1; font-weight: 500; }
+.acct-tx-cat { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.acct-tx-amount { font-family: monospace; font-weight: 600; white-space: nowrap; }
+.acct-tx-amount.credit { color: var(--accent2); }
+.acct-tx-amount.debit  { color: var(--warn); }

@@ -229,4 +229,17 @@ function getYearCoverage(accountId, year) {
   }));
 }
 
-module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getMissingMonths, getYearCoverage, markMonthCovered };
+/**
+ * Returns the year of the oldest upload record, or null if no uploads exist.
+ * Used to set the lower bound of the coverage tracker year selector.
+ */
+function getOldestUploadYear() {
+  const db  = getDB();
+  const row = db.prepare(
+    `SELECT MIN(period_start) as oldest FROM uploads WHERE period_start IS NOT NULL`
+  ).get();
+  if (!row || !row.oldest) return null;
+  return new Date(row.oldest).getFullYear();
+}
+
+module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear };

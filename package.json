@@ -70,7 +70,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName":          "MiTax",
-      "runAfterFinish":        true
+      "runAfterFinish":        false,
+      "differentialPackage":   true
     },
     "dmg": {
       "title":           "MiTax",

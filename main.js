@@ -145,6 +145,27 @@ ipcMain.handle('tracker-get-all-accounts',  async () => {
   return getAllAccounts();
 });
 
+ipcMain.handle('get-oldest-upload-year', async () => {
+  const { getOldestUploadYear } = require('./src/tracker');
+  const year = getOldestUploadYear();
+  return { success: true, data: year };
+});
+
+// ─── IPC: Account Transactions (for account summary view) ───────────────────
+ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year }) => {
+  try {
+    const { getTransactions } = require('./src/lunchmoney');
+    const txs = await getTransactions(apiKey, {
+      startDate: `${year}-01-01`,
+      endDate:   `${year}-12-31`,
+      assetId,
+    });
+    return { success: true, data: txs };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Categories ────────────────────────────────────────────────────────
 ipcMain.handle('get-lm-categories', async (event, apiKey) => {
   try {

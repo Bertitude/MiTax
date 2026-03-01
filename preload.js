@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dashboard
   getDashboardData: (payload) => ipcRenderer.invoke('get-dashboard-data', payload),
 
+  // Account summary view
+  getAccountTransactions: (payload) => ipcRenderer.invoke('get-account-transactions', payload),
+  getOldestUploadYear:    ()        => ipcRenderer.invoke('get-oldest-upload-year'),
+
   // Duplicate detection (pre-upload check)
   checkDuplicates: (payload) => ipcRenderer.invoke('check-duplicates', payload),
 

@@ -105,7 +105,9 @@ function initUpdater(mainWindow) {
   });
 
   ipcMain.handle('updater:install', () => {
-    autoUpdater.quitAndInstall(false, true); // isSilent=false, isForceRunAfter=true
+    // isSilent=true  → NSIS runs with /S flag, no installer wizard shown
+    // isForceRunAfter=true → app relaunches automatically after update
+    autoUpdater.quitAndInstall(true, true);
   });
 
   ipcMain.handle('updater:get-version', () => {
