@@ -15,6 +15,92 @@ const state = {
   taxReport:     null,
 };
 
+// ─── Category Mappings ────────────────────────────────────────────────────────
+// Persisted in localStorage as { [categoryId]: { _raw, incomeType?, isDeductible?, ignore? } }
+
+const CAT_MAPPING_KEY = 'lm_cat_mappings';
+
+function getCategoryMappings() {
+  try { return JSON.parse(localStorage.getItem(CAT_MAPPING_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function saveCategoryMapping(categoryId, value) {
+  const mappings = getCategoryMappings();
+  if (!value) { delete mappings[categoryId]; }
+  else        { mappings[categoryId] = value; }
+  localStorage.setItem(CAT_MAPPING_KEY, JSON.stringify(mappings));
+}
+
+const CAT_MAP_OPTIONS = [
+  { value: '',                 label: '— Not mapped (use keyword rules)' },
+  { value: 'income:business',  label: 'Income → Business / Professional' },
+  { value: 'income:foreign',   label: 'Income → Foreign-Sourced' },
+  { value: 'income:investment',label: 'Income → Investment' },
+  { value: 'income:rental',    label: 'Income → Rental' },
+  { value: 'income:other',     label: 'Income → Other' },
+  { value: 'expense',          label: 'Deductible Expense' },
+  { value: 'ignore',           label: 'Ignore (exclude from tax)' },
+];
+
+function renderCategoryMappings() {
+  const tbody = document.getElementById('cat-map-tbody');
+  if (!tbody) return;
+  const cats = state.lmCategories;
+  if (!cats.length) {
+    tbody.innerHTML = '<tr><td colspan="2" style="color:var(--text-muted);text-align:center;padding:24px;">Connect your LunchMoney API to load categories.</td></tr>';
+    updateCatMapBadge();
+    return;
+  }
+  const mappings = getCategoryMappings();
+  tbody.innerHTML = '';
+  cats.forEach(cat => {
+    const id  = String(cat.id);
+    const cur = mappings[id] ? mappings[id]._raw : '';
+    const opts = CAT_MAP_OPTIONS.map(o =>
+      `<option value="${escAttr(o.value)}"${cur === o.value ? ' selected' : ''}>${escHtml(o.label)}</option>`
+    ).join('');
+    const cls = cur === 'expense' ? ' mapped-expense' : cur === 'ignore' ? ' mapped-ignore' : cur ? ' mapped' : '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="font-size:12px;">${escHtml(cat.name)}</td>
+      <td><select class="cat-map-select${cls}" data-cat-id="${id}">${opts}</select></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('.cat-map-select').forEach(sel => {
+    sel.addEventListener('change', e => {
+      const catId = e.target.dataset.catId;
+      const val   = e.target.value;
+      e.target.classList.remove('mapped', 'mapped-expense', 'mapped-ignore');
+      if      (val === 'expense') e.target.classList.add('mapped-expense');
+      else if (val === 'ignore')  e.target.classList.add('mapped-ignore');
+      else if (val)               e.target.classList.add('mapped');
+      if (!val) {
+        saveCategoryMapping(catId, null);
+      } else {
+        const mapping = { _raw: val };
+        if (val.startsWith('income:')) mapping.incomeType = val.split(':')[1];
+        if (val === 'expense')         mapping.isDeductible = true;
+        if (val === 'ignore')          mapping.ignore = true;
+        saveCategoryMapping(catId, mapping);
+      }
+      updateCatMapBadge();
+    });
+  });
+  updateCatMapBadge();
+}
+
+function updateCatMapBadge() {
+  const count = Object.keys(getCategoryMappings()).length;
+  const badge = document.getElementById('cat-map-badge');
+  if (badge) {
+    badge.textContent  = count ? `${count} mapped` : '';
+    badge.style.display = count ? '' : 'none';
+  }
+}
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -116,6 +202,8 @@ async function connectAPI(apiKey, showFeedback = true) {
 
     dot.className     = 'status-dot connected';
     label.textContent = `Connected · ${state.lmAssets.length} accounts`;
+
+    renderCategoryMappings();
 
     if (showFeedback) {
       document.getElementById('settings-success').style.display = 'block';
@@ -558,6 +646,18 @@ function setupValidateModal() {
   document.getElementById('val-deselect-all').addEventListener('click',  () => setAllChecked(false));
   document.getElementById('val-credits-only').addEventListener('click',  () => filterRows('credit'));
   document.getElementById('val-debits-only').addEventListener('click',   () => filterRows('debit'));
+  document.getElementById('val-deselect-dupes').addEventListener('click', () => {
+    // Uncheck (but keep visible) all rows flagged as duplicates
+    state.validateRows.forEach((row, i) => {
+      if (!row._isDupe) return;
+      row._include = false;
+      const cb = document.querySelector(`#validate-tbody .val-row-check[data-idx="${i}"]`);
+      if (cb) cb.checked = false;
+    });
+    document.getElementById('val-check-all').checked = false;
+    updateSelectedCount();
+    toast('Duplicate rows deselected.', 'info');
+  });
   document.getElementById('val-check-all').addEventListener('change',    e  => setAllChecked(e.target.checked));
   document.getElementById('val-search').addEventListener('input', e => {
     const q = e.target.value.toLowerCase();
@@ -587,6 +687,7 @@ async function openValidateModal() {
   state.validateRows = allTxs.map((tx, idx) => ({
     _idx:       idx,
     _include:   true,
+    _isDupe:    false,
     _assetId:   tx._assetId,
     _assetName: tx._assetName,
     _source:    tx._sourceFile,
@@ -599,6 +700,40 @@ async function openValidateModal() {
     category:   tx.category   || '',
     categoryId: tx.categoryId || null,
   }));
+
+  // ── Duplicate check against LunchMoney ───────────────────────────────────
+  if (state.apiKey && state.validateRows.length) {
+    try {
+      toast('Checking for existing transactions…', 'info', 2500);
+      const checkPayload = state.validateRows.map(r => ({
+        assetId: r._assetId,
+        date:    r.date,
+        amount:  r.amount,
+      }));
+      const dupeRes = await window.electronAPI.checkDuplicates({
+        apiKey:       state.apiKey,
+        transactions: checkPayload,
+      });
+      if (dupeRes.success && dupeRes.data) {
+        dupeRes.data.forEach((isDupe, i) => {
+          if (isDupe) {
+            state.validateRows[i]._isDupe   = true;
+            state.validateRows[i]._include  = false;  // pre-uncheck
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[openValidateModal] duplicate check error:', e);
+    }
+  }
+
+  const dupeCount = state.validateRows.filter(r => r._isDupe).length;
+  const dupeBtn   = document.getElementById('val-deselect-dupes');
+  const dupeCnt   = document.getElementById('val-dupe-count');
+  if (dupeBtn) {
+    dupeBtn.style.display = dupeCount ? '' : 'none';
+    if (dupeCnt) dupeCnt.textContent = `(${dupeCount})`;
+  }
 
   renderValidateTable(state.validateRows);
   document.getElementById('validate-modal').classList.add('open');
@@ -615,6 +750,7 @@ function renderValidateTable(rows) {
   rows.forEach((row, i) => {
     const tr    = document.createElement('tr');
     tr.dataset.idx = i;
+    if (row._isDupe) tr.classList.add('dupe-row');
     tr.innerHTML   = `
       <td style="text-align:center;">
         <input type="checkbox" class="val-row-check" data-idx="${i}" ${row._include ? 'checked' : ''} />
@@ -626,6 +762,7 @@ function renderValidateTable(rows) {
         <input class="val-cell val-payee" data-idx="${i}" data-field="payee"
                value="${escAttr(row.payee)}" style="width:100%;min-width:140px;" />
         ${row._matched ? '<span title="Matched existing LM payee" style="font-size:10px;color:var(--accent2);margin-left:3px;">✓matched</span>' : ''}
+        ${row._isDupe  ? '<span class="dupe-badge" title="Already exists in LunchMoney">DUPE</span>' : ''}
       </td>
       <td class="${row.amount >= 0 ? 'amount-pos' : 'amount-neg'}" style="text-align:right;">
         <input class="val-cell" data-idx="${i}" data-field="amount" type="number"
@@ -955,6 +1092,39 @@ function restorePrefs() {
 
 function setupTaxView() {
   document.getElementById('generate-tax-btn').addEventListener('click', generateTax);
+
+  // ── Category mapping panel ──────────────────────────────────────────────
+  const toggleArea = document.getElementById('cat-map-toggle');
+  const toggleBtn  = document.getElementById('cat-map-toggle-btn');
+  const panel      = document.getElementById('cat-map-panel');
+  if (toggleArea && panel) {
+    toggleArea.addEventListener('click', e => {
+      // Don't trigger on clicks inside the panel itself
+      if (e.target.closest('#cat-map-panel')) return;
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      if (toggleBtn) toggleBtn.textContent = open ? '▶ Show' : '▼ Hide';
+    });
+  }
+
+  const catSearch = document.getElementById('cat-map-search');
+  if (catSearch) {
+    catSearch.addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      document.querySelectorAll('#cat-map-tbody tr').forEach(tr => {
+        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+  }
+
+  const clearAllBtn = document.getElementById('cat-map-clear-all');
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', () => {
+      localStorage.removeItem(CAT_MAPPING_KEY);
+      renderCategoryMappings();
+      toast('All category mappings cleared.', 'info');
+    });
+  }
 }
 
 async function generateTax() {
@@ -971,7 +1141,14 @@ async function generateTax() {
     additionalExpenses: parseFloat(document.getElementById('tax-expenses').value)    || 0,
   };
 
-  const result = await window.electronAPI.generateS04({ year, apiKey: state.apiKey || null, manualData });
+  // Build clean mappings for main process (strip internal _raw field)
+  const userCategoryMappings = {};
+  for (const [catId, val] of Object.entries(getCategoryMappings())) {
+    const { _raw, ...rest } = val;  // eslint-disable-line no-unused-vars
+    userCategoryMappings[catId] = rest;
+  }
+
+  const result = await window.electronAPI.generateS04({ year, apiKey: state.apiKey || null, manualData, userCategoryMappings });
   btn.disabled  = false;
   btn.innerHTML = '📊 Generate S04 Report';
   if (!result.success) { toast(`Tax generation failed: ${result.error}`, 'error'); return; }

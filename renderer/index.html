@@ -201,6 +201,41 @@
             <button class="btn btn-primary" id="generate-tax-btn">📊 Generate S04 Report</button>
           </div>
         </div>
+
+        <!-- Category mapping card -->
+        <div class="card" style="margin-top:16px;">
+          <div style="display:flex;align-items:center;gap:10px;cursor:pointer;" id="cat-map-toggle">
+            <div class="card-title" style="margin:0;flex:1;">🗂 Category → Tax Mapping</div>
+            <span id="cat-map-badge" class="badge badge-blue" style="display:none;"></span>
+            <button class="btn btn-secondary btn-sm" id="cat-map-toggle-btn">▶ Show</button>
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin:8px 0 0;">
+            Map each LunchMoney category to an income type or mark it as a deductible expense.
+            These overrides take priority over the built-in keyword matching.
+          </p>
+          <div id="cat-map-panel" style="display:none;margin-top:16px;">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+              <input type="text" id="cat-map-search" placeholder="Filter categories…" style="width:220px;font-size:12px;" />
+              <button class="btn btn-secondary btn-sm" id="cat-map-clear-all">Clear All Mappings</button>
+            </div>
+            <div class="table-wrap" style="max-height:300px;overflow-y:auto;">
+              <table id="cat-map-table" style="font-size:12px;">
+                <thead style="position:sticky;top:0;background:var(--surface);z-index:1;">
+                  <tr>
+                    <th style="min-width:180px;">LunchMoney Category</th>
+                    <th style="min-width:220px;">Tax Treatment</th>
+                  </tr>
+                </thead>
+                <tbody id="cat-map-tbody">
+                  <tr><td colspan="2" style="color:var(--text-muted);text-align:center;padding:24px;">
+                    Connect your LunchMoney API to load categories.
+                  </td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <div id="tax-report-wrap" style="display:none;margin-top:20px;"></div>
       </div>
 
@@ -391,6 +426,7 @@
       <button class="btn btn-secondary btn-sm" id="val-deselect-all">✗ None</button>
       <button class="btn btn-secondary btn-sm" id="val-credits-only">Credits only</button>
       <button class="btn btn-secondary btn-sm" id="val-debits-only">Debits only</button>
+      <button class="btn btn-secondary btn-sm" id="val-deselect-dupes" style="display:none;" title="Deselect transactions that appear to already exist in LunchMoney">⚠ Deselect Duplicates <span id="val-dupe-count"></span></button>
       <div style="flex:1;"></div>
       <input type="text" id="val-search" placeholder="Search payee / notes…" style="width:200px;" />
     </div>

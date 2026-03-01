@@ -57,7 +57,7 @@ const DEDUCTIBLE_CATEGORIES = [
 
 // ─── Main generator ─────────────────────────────────────────────────────────
 
-async function generateS04({ year, apiKey, manualData = {} }) {
+async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings = {} }) {
   const params = TAX_PARAMS[year] || TAX_PARAMS[2024];
 
   let allTransactions = [];
@@ -96,21 +96,38 @@ async function generateS04({ year, apiKey, manualData = {} }) {
     const amount = parseFloat(hasConversion ? tx.to_base : tx.amount) || 0;
     if (hasConversion) convertedCount++; else unconvertedCount++;
 
-    const category = tx.category_name || tx.category || '';
-    const notes = (tx.notes || '') + ' ' + (tx.payee || '');
+    const category   = tx.category_name || tx.category || '';
+    const categoryId = tx.category_id   != null ? String(tx.category_id) : null;
+    const notes      = (tx.notes || '') + ' ' + (tx.payee || '');
+
+    // ── Check user-defined category mapping first ──────────────────────────
+    // userCategoryMappings: { [categoryId]: { incomeType?, isDeductible?, ignore? } }
+    const userMapping = categoryId ? (userCategoryMappings[categoryId] || null) : null;
+
+    if (userMapping && userMapping.ignore) continue;   // explicitly excluded
 
     // Classify income (negative amounts in LunchMoney = credits/income)
     if (amount < 0) {
       const absAmount = Math.abs(amount);
-      const incomeType = classifyIncome(category, notes);
-      if (incomeType) income[incomeType] += absAmount;
+      let incomeType = null;
+      if (userMapping && userMapping.incomeType) {
+        incomeType = userMapping.incomeType;           // user-mapped income type
+      } else {
+        incomeType = classifyIncome(category, notes);  // keyword fallback
+      }
+      if (incomeType && income[incomeType] !== undefined) income[incomeType] += absAmount;
     }
 
     // Classify deductible expenses (positive amounts = debits/expenses)
     if (amount > 0) {
-      const isDeductible = DEDUCTIBLE_CATEGORIES.some(
-        dc => category.toLowerCase().includes(dc.toLowerCase())
-      );
+      let isDeductible = false;
+      if (userMapping) {
+        isDeductible = !!userMapping.isDeductible;     // user-mapped
+      } else {
+        isDeductible = DEDUCTIBLE_CATEGORIES.some(
+          dc => category.toLowerCase().includes(dc.toLowerCase())
+        );
+      }
       if (isDeductible) {
         expenses.total += amount;
         expenses.breakdown[category] = (expenses.breakdown[category] || 0) + amount;

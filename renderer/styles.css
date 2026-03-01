@@ -544,3 +544,20 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
 #create-account-form input[type="date"] {
   color-scheme: dark;
 }
+
+/* ─── S04 Category Mapping Table ────────────────────────────────────────── */
+#cat-map-table { width: 100%; border-collapse: collapse; }
+#cat-map-table th, #cat-map-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+#cat-map-table th { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+#cat-map-table tbody tr:hover { background: rgba(88,166,255,0.04); }
+#cat-map-toggle { user-select: none; }
+.cat-map-select { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; width: 100%; cursor: pointer; }
+.cat-map-select:focus { outline: 1px solid var(--accent); }
+.cat-map-select.mapped { border-color: var(--accent); color: var(--accent); }
+.cat-map-select.mapped-expense { border-color: var(--accent2); color: var(--accent2); }
+.cat-map-select.mapped-ignore  { border-color: var(--warn);   color: var(--warn); }
+
+/* ─── Validate Modal: Duplicate row indicator ───────────────────────────── */
+tr.dupe-row td { background: rgba(210,153,34,0.08); }
+tr.dupe-row:hover td { background: rgba(210,153,34,0.14); }
+.dupe-badge { font-size: 9px; font-weight: 700; background: var(--warn2); color: #1a1100; border-radius: 4px; padding: 1px 5px; margin-left: 4px; vertical-align: middle; }

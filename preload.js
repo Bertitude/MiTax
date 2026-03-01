@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dashboard
   getDashboardData: (payload) => ipcRenderer.invoke('get-dashboard-data', payload),
 
+  // Duplicate detection (pre-upload check)
+  checkDuplicates: (payload) => ipcRenderer.invoke('check-duplicates', payload),
+
   // S04 Tax
   generateS04: (payload) => ipcRenderer.invoke('generate-s04', payload),
 

@@ -282,11 +282,71 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
   return { success: true, data: result };
 });
 
+// ─── IPC: Check Duplicates ───────────────────────────────────────────────────
+// Given an array of { assetId, date, amount } objects, returns a parallel
+// boolean array where true = a matching LunchMoney transaction already exists
+// (same asset, same date, same absolute amount).  Fails open (all false) on error.
+ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
+  try {
+    const { getTransactions } = require('./src/lunchmoney');
+
+    if (!apiKey || !transactions || !transactions.length) {
+      return { success: true, data: new Array(transactions.length).fill(false) };
+    }
+
+    // Group incoming transactions by assetId so we make one API call per asset.
+    const byAsset = {};
+    transactions.forEach((tx, idx) => {
+      const key = tx.assetId != null ? String(tx.assetId) : '__none__';
+      if (!byAsset[key]) byAsset[key] = [];
+      byAsset[key].push({ idx, date: tx.date, amount: tx.amount });
+    });
+
+    const isDuplicate = new Array(transactions.length).fill(false);
+
+    for (const [assetIdStr, items] of Object.entries(byAsset)) {
+      if (assetIdStr === '__none__') continue;
+
+      // Find date range for this asset's incoming transactions
+      const dates    = items.map(i => i.date).filter(Boolean).sort();
+      const startDate = dates[0];
+      const endDate   = dates[dates.length - 1];
+      if (!startDate) continue;
+
+      const existingTxs = await getTransactions(apiKey, {
+        startDate,
+        endDate,
+        assetId: assetIdStr,
+      });
+
+      // Build a lookup set of "date|absAmount" strings from existing LM transactions
+      const existingKeys = new Set();
+      for (const tx of existingTxs) {
+        const absAmt = Math.abs(parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0);
+        existingKeys.add(`${tx.date}|${absAmt.toFixed(2)}`);
+      }
+
+      // Mark any incoming transaction whose key is found in LM
+      for (const item of items) {
+        const absAmt = Math.abs(parseFloat(item.amount) || 0);
+        const key    = `${item.date}|${absAmt.toFixed(2)}`;
+        if (existingKeys.has(key)) isDuplicate[item.idx] = true;
+      }
+    }
+
+    return { success: true, data: isDuplicate };
+  } catch (err) {
+    console.warn('[check-duplicates] error:', err.message);
+    // Fail open — never block the user from uploading
+    return { success: true, data: new Array(transactions.length).fill(false) };
+  }
+});
+
 // ─── IPC: S04 Tax ────────────────────────────────────────────────────────────
-ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData }) => {
+ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCategoryMappings }) => {
   try {
     const { generateS04 } = require('./src/tax/s04');
-    const report = await generateS04({ year, apiKey, manualData });
+    const report = await generateS04({ year, apiKey, manualData, userCategoryMappings: userCategoryMappings || {} });
     return { success: true, data: report };
   } catch (err) {
     return { success: false, error: err.message };
