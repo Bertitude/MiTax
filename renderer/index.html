@@ -237,6 +237,34 @@
         </div>
 
         <div id="tax-report-wrap" style="display:none;margin-top:20px;"></div>
+
+        <!-- S04A Quarterly Estimates card -->
+        <div class="card" style="margin-top:16px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+            <div class="card-title" style="margin:0;flex:1;">📅 S04A — Provisional Tax Estimates</div>
+            <select id="s04a-year-select" style="width:100px;font-size:12px;"></select>
+            <button class="btn btn-secondary btn-sm" id="generate-s04a-btn">Generate</button>
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+            Quarterly provisional tax instalments based on your prior-year S04 filing and current income trends.
+          </p>
+          <div id="s04a-wrap">
+            <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;">
+              Click <strong>Generate</strong> to calculate provisional tax estimates.
+            </div>
+          </div>
+        </div>
+
+        <!-- Filing History card -->
+        <div class="card" style="margin-top:16px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <div class="card-title" style="margin:0;flex:1;">🗄 Tax Filing History</div>
+            <button class="btn btn-secondary btn-sm" id="refresh-filings-btn">↻ Refresh</button>
+          </div>
+          <div id="filing-history-wrap">
+            <div class="filing-empty">No filings saved yet. Generate an S04 report and click <strong>Save as Filed</strong>.</div>
+          </div>
+        </div>
       </div>
 
       <!-- ═══ SETTINGS VIEW ════════════════════════════════════════════ -->

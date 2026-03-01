@@ -300,4 +300,113 @@ function buildMonthlyBreakdown(transactions, year) {
   return months;
 }
 
-module.exports = { generateS04, TAX_PARAMS };
+// ─── S04A Provisional Tax Estimate ──────────────────────────────────────────
+//
+// Under the Income Tax Act (Jamaica), self-employed individuals must pay
+// provisional tax in four equal instalments (S04A) based on the PRIOR year's
+// total tax liability.  TAJ due dates: Q1=Mar 15, Q2=Jun 15, Q3=Sep 15, Q4=Dec 15.
+//
+// If current-year income is tracking ≥10% higher or lower than the prior year,
+// the recommended amounts are adjusted upward/downward proportionally.
+
+const S04A_DUE_DATES = [
+  { q: 1, label: 'Q1 (Jan–Mar)', due: 'Mar 15' },
+  { q: 2, label: 'Q2 (Apr–Jun)', due: 'Jun 15' },
+  { q: 3, label: 'Q3 (Jul–Sep)', due: 'Sep 15' },
+  { q: 4, label: 'Q4 (Oct–Dec)', due: 'Dec 15' },
+];
+
+function generateS04A({ currentYear, priorYearFiling, currentYtdIncome }) {
+  const r2 = v => Math.round((v || 0) * 100) / 100;
+
+  const priorTaxPayable  = priorYearFiling ? (priorYearFiling.tax_payable  || 0) : 0;
+  const priorGrossIncome = priorYearFiling ? (priorYearFiling.gross_income || 0) : 0;
+
+  // Base quarterly instalment: 25% of prior year's total tax
+  const baseQuarterly = r2(priorTaxPayable / 4);
+
+  // Current-year trend: extrapolate YTD income to full-year estimate
+  const now            = new Date();
+  const monthsElapsed  = Math.max(0.5, (now.getMonth() + 1) + (now.getDate() / 31));
+  const annualTrend    = r2((currentYtdIncome / monthsElapsed) * 12);
+
+  // Adjustment ratio (only meaningful after ≥3 months of data)
+  const hasHistory     = priorGrossIncome > 0;
+  const trendRatio     = hasHistory && monthsElapsed >= 3
+    ? annualTrend / priorGrossIncome
+    : 1;
+  const useAdjusted    = Math.abs(trendRatio - 1) >= 0.10 && monthsElapsed >= 3;
+
+  // If no prior filing exists, estimate from current YTD using s04 params
+  let recommendedAnnualTax = priorTaxPayable;
+  if (!hasHistory && annualTrend > 0) {
+    const params     = TAX_PARAMS[currentYear - 1] || TAX_PARAMS[2025];
+    const stdDed     = annualTrend * params.standardDeductionRate;
+    const statutory  = Math.max(0, annualTrend - stdDed);
+    const nis        = Math.min(annualTrend, params.nisMaxIncome) * params.nisRate;
+    const nht        = annualTrend * params.nhtRate;
+    const edTax      = statutory * params.edTaxRate;
+    const chargeable = Math.max(0, statutory - params.personalThreshold - nis);
+    let   itax       = 0;
+    if (chargeable > 0) {
+      itax = chargeable <= params.incomeTaxBand1Max
+        ? chargeable * params.incomeTaxRate1
+        : params.incomeTaxBand1Max * params.incomeTaxRate1
+          + (chargeable - params.incomeTaxBand1Max) * params.incomeTaxRate2;
+    }
+    recommendedAnnualTax = nis + nht + edTax + itax;
+  } else if (useAdjusted) {
+    recommendedAnnualTax = priorTaxPayable * trendRatio;
+  }
+
+  const recommendedQuarterly = r2(recommendedAnnualTax / 4);
+
+  const quarters = S04A_DUE_DATES.map(({ q, label, due }) => {
+    const dueFullDate = `${currentYear}-${due.replace('Mar','03').replace('Jun','06').replace('Sep','09').replace('Dec','12')}-15`;
+    const isPast      = new Date() > new Date(dueFullDate);
+    return {
+      quarter:           q,
+      label,
+      dueDate:           dueFullDate,
+      dueDateFormatted:  `${due} ${currentYear}`,
+      baseAmount:        baseQuarterly,
+      recommendedAmount: recommendedQuarterly,
+      isPast,
+    };
+  });
+
+  const notes = [];
+  if (hasHistory) {
+    notes.push(`Based on ${currentYear - 1} S04 filing: total tax $${priorTaxPayable.toLocaleString('en-JM', { minimumFractionDigits: 2 })} JMD.`);
+  } else {
+    notes.push(`No prior-year S04 filing found. Estimates derived from current-year LunchMoney trends.`);
+  }
+  if (monthsElapsed >= 3) {
+    const pct = Math.round((trendRatio - 1) * 100);
+    notes.push(`Current year income (${monthsElapsed.toFixed(1)} months): $${annualTrend.toLocaleString('en-JM', { minimumFractionDigits: 2 })} JMD annualised — ${pct >= 0 ? '+' : ''}${pct}% vs prior year.`);
+  }
+  if (useAdjusted) {
+    notes.push(`Recommended amounts adjusted ${trendRatio > 1 ? 'upward' : 'downward'} to reflect current-year income trend.`);
+  }
+  notes.push('S04A payments are provisional tax instalments. Surplus is credited at year-end filing.');
+  notes.push('Consult TAJ or a qualified tax practitioner for your actual liability.');
+
+  return {
+    currentYear,
+    priorYear:             currentYear - 1,
+    hasPriorFiling:        hasHistory,
+    priorYearTaxPayable:   r2(priorTaxPayable),
+    priorYearGrossIncome:  r2(priorGrossIncome),
+    currentYtdIncome:      r2(currentYtdIncome),
+    annualTrendIncome:     annualTrend,
+    monthsElapsed:         r2(monthsElapsed),
+    trendRatio:            r2(trendRatio),
+    useAdjusted,
+    baseQuarterly,
+    recommendedQuarterly,
+    quarters,
+    notes,
+  };
+}
+
+module.exports = { generateS04, generateS04A, TAX_PARAMS };

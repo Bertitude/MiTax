@@ -353,6 +353,75 @@ ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCat
   }
 });
 
+// ─── IPC: Tax Filings (history + S04A) ──────────────────────────────────────
+
+ipcMain.handle('save-filing', async (event, payload) => {
+  try {
+    const { saveFiling } = require('./src/filings');
+    const result = saveFiling(payload);
+    return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-filings', async () => {
+  try {
+    const { getAllFilings } = require('./src/filings');
+    return { success: true, data: getAllFilings() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('update-filing', async (event, { id, ...fields }) => {
+  try {
+    const { updateFiling } = require('./src/filings');
+    const updated = updateFiling(id, fields);
+    return { success: true, data: updated };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('delete-filing', async (event, id) => {
+  try {
+    const { deleteFiling } = require('./src/filings');
+    deleteFiling(id);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
+  try {
+    const { getMostRecentS04 }         = require('./src/filings');
+    const { generateS04A }             = require('./src/tax/s04');
+    const { getTransactions }          = require('./src/lunchmoney');
+
+    const priorYearFiling = getMostRecentS04(currentYear - 1);
+
+    let currentYtdIncome = 0;
+    if (apiKey) {
+      const now    = new Date();
+      const ytdTxs = await getTransactions(apiKey, {
+        startDate: `${currentYear}-01-01`,
+        endDate:   now.toISOString().slice(0, 10),
+      });
+      currentYtdIncome = ytdTxs.reduce((sum, tx) => {
+        const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+        return amt < 0 ? sum + Math.abs(amt) : sum;
+      }, 0);
+    }
+
+    const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome });
+    return { success: true, data: estimate };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: File dialogs ───────────────────────────────────────────────────────
 ipcMain.handle('open-file-dialog', async () => {
   const { filePaths } = await dialog.showOpenDialog(mainWindow, {

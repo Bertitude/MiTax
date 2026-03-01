@@ -122,6 +122,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshDashboard();
   refreshTracker();
   refreshHistory();
+  refreshFilingHistory();
 });
 
 /**
@@ -154,6 +155,19 @@ function initYearSelects() {
       opt.textContent = y;
       if (y === currentYear - 1) opt.selected = true;
       taxSel.appendChild(opt);
+    }
+  }
+
+  // S04A year — default to current year (provisional tax is for the current year)
+  const s04aSel = document.getElementById('s04a-year-select');
+  if (s04aSel) {
+    s04aSel.innerHTML = '';
+    for (let y = currentYear; y >= currentYear - 3; y--) {
+      const opt = document.createElement('option');
+      opt.value       = y;
+      opt.textContent = y;
+      if (y === currentYear) opt.selected = true;
+      s04aSel.appendChild(opt);
     }
   }
 }
@@ -1125,6 +1139,14 @@ function setupTaxView() {
       toast('All category mappings cleared.', 'info');
     });
   }
+
+  // ── S04A button ────────────────────────────────────────────────────────
+  const s04aBtn = document.getElementById('generate-s04a-btn');
+  if (s04aBtn) s04aBtn.addEventListener('click', generateS04AEstimate);
+
+  // ── Filing history refresh ─────────────────────────────────────────────
+  const refreshFilingsBtn = document.getElementById('refresh-filings-btn');
+  if (refreshFilingsBtn) refreshFilingsBtn.addEventListener('click', refreshFilingHistory);
 }
 
 async function generateTax() {
@@ -1204,8 +1226,56 @@ function renderTaxReport(report) {
       </div>
       <div class="tax-section"><div class="card-title">Monthly Breakdown</div>${bars}</div>
       <div style="margin-top:16px;">${report.notes.map(n => `<div class="tax-note">• ${n}</div>`).join('')}</div>
+
+      <!-- Save as Filed form (collapsed by default) -->
+      <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
+        <button class="btn btn-secondary btn-sm" id="show-save-filing-btn">💾 Save as Filed</button>
+        <div id="save-filing-form" class="filing-save-form" style="display:none;margin-top:12px;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:12px;color:var(--accent);">Record S04 Filing for ${report.year}</div>
+          <div class="grid-3">
+            <div class="form-group">
+              <label style="font-size:12px;">Filed Date</label>
+              <input type="date" id="filing-date" value="${new Date().toISOString().slice(0,10)}" style="font-size:12px;" />
+            </div>
+            <div class="form-group">
+              <label style="font-size:12px;">Amount Paid (JMD)</label>
+              <input type="number" id="filing-amount-paid" step="0.01" value="${report.totalTaxPayable}" style="font-size:12px;" />
+            </div>
+            <div class="form-group">
+              <label style="font-size:12px;">Status</label>
+              <select id="filing-status" style="font-size:12px;">
+                <option value="draft">Draft (not yet submitted)</option>
+                <option value="filed" selected>Filed (submitted to TAJ)</option>
+                <option value="paid">Filed &amp; Paid</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:4px;">
+            <label style="font-size:12px;">Notes (optional)</label>
+            <input type="text" id="filing-notes" placeholder="e.g. TAJ reference number, agent name…" style="font-size:12px;" />
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;">
+            <button class="btn btn-success btn-sm" id="confirm-save-filing-btn">✓ Save Filing</button>
+            <button class="btn btn-secondary btn-sm" id="cancel-save-filing-btn">Cancel</button>
+          </div>
+        </div>
+      </div>
     </div>
   `;
+
+  // Wire the save-filing form controls (inside the dynamic HTML)
+  document.getElementById('show-save-filing-btn').addEventListener('click', () => {
+    const form = document.getElementById('save-filing-form');
+    const btn  = document.getElementById('show-save-filing-btn');
+    const open = form.style.display !== 'none';
+    form.style.display = open ? 'none' : 'block';
+    btn.textContent    = open ? '💾 Save as Filed' : '▲ Collapse';
+  });
+  document.getElementById('cancel-save-filing-btn').addEventListener('click', () => {
+    document.getElementById('save-filing-form').style.display = 'none';
+    document.getElementById('show-save-filing-btn').textContent = '💾 Save as Filed';
+  });
+  document.getElementById('confirm-save-filing-btn').addEventListener('click', () => saveS04Filing(report));
 }
 
 function buildBarChart(months) {
@@ -1575,3 +1645,210 @@ function showBanner(stateClass, icon, title, sub, buttons = [], pct = null) {
 document.addEventListener('DOMContentLoaded', () => {
   setupUpdater();
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TAX FILINGS — History + Save + S04A
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const fmt = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
+
+// ─── Save S04 Filing ──────────────────────────────────────────────────────────
+
+async function saveS04Filing(report) {
+  const btn = document.getElementById('confirm-save-filing-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+  const filedDate = document.getElementById('filing-date')?.value || null;
+  const amtPaid   = parseFloat(document.getElementById('filing-amount-paid')?.value || 0);
+  const status    = document.getElementById('filing-status')?.value  || 'filed';
+  const notes     = document.getElementById('filing-notes')?.value   || null;
+
+  const payload = {
+    type:        's04',
+    year:        report.year,
+    quarter:     null,
+    filedDate,
+    dueDate:     null,
+    grossIncome: report.income.grossIncome,
+    taxPayable:  report.totalTaxPayable,
+    nis:         report.contributions.nis,
+    nht:         report.contributions.nht,
+    edTax:       report.contributions.educationTax,
+    incomeTax:   report.tax.incomeTax,
+    amountPaid:  amtPaid,
+    status,
+    reportJson:  report,
+    notes,
+  };
+
+  const res = await window.electronAPI.saveFilingRecord(payload);
+  if (btn) { btn.disabled = false; btn.textContent = '✓ Save Filing'; }
+
+  if (!res.success) {
+    toast(`Failed to save filing: ${res.error}`, 'error');
+    return;
+  }
+
+  toast(`S04 ${report.year} filing saved!`, 'success');
+  document.getElementById('save-filing-form').style.display = 'none';
+  document.getElementById('show-save-filing-btn').textContent = '💾 Save as Filed';
+  refreshFilingHistory();
+}
+
+// ─── Filing History ───────────────────────────────────────────────────────────
+
+async function refreshFilingHistory() {
+  const wrap = document.getElementById('filing-history-wrap');
+  if (!wrap) return;
+
+  const res = await window.electronAPI.getFilingRecords();
+  if (!res.success) {
+    wrap.innerHTML = `<div class="filing-empty" style="color:var(--warn);">Error loading filings: ${escHtml(res.error || '')}</div>`;
+    return;
+  }
+
+  const filings = res.data || [];
+  if (!filings.length) {
+    wrap.innerHTML = '<div class="filing-empty">No filings saved yet. Generate an S04 report and click <strong>Save as Filed</strong>.</div>';
+    return;
+  }
+
+  const statusBadge = s => `<span class="filing-status ${s}">${s}</span>`;
+  const fmtDate     = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+  const typeLabel   = (type, q) => type === 's04a' ? `S04A Q${q}` : 'S04';
+
+  wrap.innerHTML = `
+    <div class="table-wrap" style="max-height:280px;overflow-y:auto;">
+      <table class="filing-table">
+        <thead>
+          <tr>
+            <th>Type</th><th>Year</th><th>Filed</th><th>Gross Income</th>
+            <th>Tax Payable</th><th>Paid</th><th>Status</th><th style="width:60px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filings.map(f => `
+            <tr data-filing-id="${f.id}">
+              <td><strong>${typeLabel(f.type, f.quarter)}</strong></td>
+              <td>${f.year}</td>
+              <td style="font-size:11px;">${fmtDate(f.filed_date)}</td>
+              <td>${fmt(f.gross_income)}</td>
+              <td style="color:var(--warn);">${fmt(f.tax_payable)}</td>
+              <td style="color:var(--accent2);">${fmt(f.amount_paid)}</td>
+              <td>${statusBadge(f.status)}</td>
+              <td>
+                <button class="btn btn-danger btn-sm filing-delete-btn" data-id="${f.id}" title="Delete this record" style="padding:2px 8px;font-size:11px;">✕</button>
+              </td>
+            </tr>
+            ${f.notes ? `<tr><td colspan="8" style="font-size:11px;color:var(--text-muted);padding-top:0;border-top:none;">↳ ${escHtml(f.notes)}</td></tr>` : ''}
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  wrap.querySelectorAll('.filing-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      const id = parseInt(e.target.dataset.id);
+      if (!confirm('Delete this filing record? This cannot be undone.')) return;
+      const res = await window.electronAPI.deleteFilingRecord(id);
+      if (res.success) { refreshFilingHistory(); toast('Filing deleted.', 'info'); }
+      else toast(`Delete failed: ${res.error}`, 'error');
+    });
+  });
+}
+
+// ─── S04A Provisional Tax Estimate ───────────────────────────────────────────
+
+async function generateS04AEstimate() {
+  const btn  = document.getElementById('generate-s04a-btn');
+  const wrap = document.getElementById('s04a-wrap');
+  const year = parseInt(document.getElementById('s04a-year-select')?.value || new Date().getFullYear());
+
+  btn.disabled = true;
+  btn.textContent = '…';
+  wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
+
+  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null });
+  btn.disabled = false;
+  btn.textContent = 'Generate';
+
+  if (!res.success) {
+    wrap.innerHTML = `<div style="color:var(--warn);padding:12px;">Error: ${escHtml(res.error || 'Unknown error')}</div>`;
+    return;
+  }
+
+  renderS04AEstimate(res.data);
+}
+
+function renderS04AEstimate(est) {
+  const wrap = document.getElementById('s04a-wrap');
+  if (!wrap) return;
+
+  const now   = new Date();
+  const fmtDt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { year: 'numeric', month: 'short', day: 'numeric' });
+
+  const adjBadge = est.useAdjusted
+    ? `<span class="badge" style="background:rgba(210,153,34,0.18);color:var(--warn2);font-size:10px;margin-left:8px;">Trend-adjusted</span>`
+    : '';
+  const priorInfo = est.hasPriorFiling
+    ? `Prior year (${est.priorYear}) S04 on file · Tax: ${fmt(est.priorYearTaxPayable)}`
+    : `No prior-year S04 filing found — estimated from current-year trends`;
+
+  const quartersHtml = est.quarters.map(q => {
+    const isPast    = new Date(q.dueDate) < now;
+    const cls       = isPast ? ' overdue' : '';
+    const diffBadge = est.useAdjusted && q.baseAmount !== q.recommendedAmount
+      ? `<div class="s04a-quarter-base">Base: ${fmt(q.baseAmount)}</div>`
+      : '';
+
+    return `
+      <div class="s04a-quarter${cls}">
+        <div class="s04a-quarter-label">${escHtml(q.label)}</div>
+        <div class="s04a-quarter-due">Due: ${escHtml(q.dueDateFormatted)}${isPast ? ' <span style="color:var(--warn);font-size:10px;">● Past due</span>' : ''}</div>
+        <div class="s04a-quarter-amount">${fmt(q.recommendedAmount)}</div>
+        ${diffBadge}
+        <div class="s04a-quarter-save">
+          <button class="btn btn-secondary btn-sm save-s04a-btn" data-quarter="${q.quarter}" data-due="${q.dueDate}" data-amount="${q.recommendedAmount}" data-year="${est.currentYear}" style="font-size:10px;padding:3px 8px;">
+            💾 Save
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div style="font-size:13px;font-weight:600;">${est.currentYear} Quarterly Provisional Tax${adjBadge}</div>
+      <div style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(priorInfo)}</div>
+    </div>
+    <div class="s04a-quarters">${quartersHtml}</div>
+    <ul class="s04a-notes">${est.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>
+  `;
+
+  // Wire "Save" buttons for individual quarters
+  wrap.querySelectorAll('.save-s04a-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      const { quarter, due, amount, year } = e.target.dataset;
+      const res = await window.electronAPI.saveFilingRecord({
+        type:        's04a',
+        year:        parseInt(year),
+        quarter:     parseInt(quarter),
+        filedDate:   null,
+        dueDate:     due,
+        grossIncome: est.priorYearGrossIncome || 0,
+        taxPayable:  parseFloat(amount),
+        nis:         0, nht: 0, edTax: 0, incomeTax: 0,
+        amountPaid:  0,
+        status:      'draft',
+        reportJson:  null,
+        notes:       `S04A Q${quarter} ${year} provisional estimate`,
+      });
+      if (res.success) {
+        toast(`S04A Q${quarter} saved to filing history.`, 'success');
+        refreshFilingHistory();
+      } else {
+        toast(`Save failed: ${res.error}`, 'error');
+      }
+    });
+  });
+}

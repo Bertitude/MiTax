@@ -37,7 +37,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkDuplicates: (payload) => ipcRenderer.invoke('check-duplicates', payload),
 
   // S04 Tax
-  generateS04: (payload) => ipcRenderer.invoke('generate-s04', payload),
+  generateS04:  (payload) => ipcRenderer.invoke('generate-s04', payload),
+  generateS04A: (payload) => ipcRenderer.invoke('generate-s04a', payload),
+
+  // Filing history
+  saveFilingRecord:   (payload) => ipcRenderer.invoke('save-filing',   payload),
+  getFilingRecords:   ()        => ipcRenderer.invoke('get-filings'),
+  updateFilingRecord: (payload) => ipcRenderer.invoke('update-filing', payload),
+  deleteFilingRecord: (id)      => ipcRenderer.invoke('delete-filing', id),
 
   // File system
   openFileDialog: ()         => ipcRenderer.invoke('open-file-dialog'),
