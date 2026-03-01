@@ -8,6 +8,9 @@ on:
     branches:
       - main           # optional: build on every push for testing
 
+permissions:
+  contents: write   # required to create GitHub Releases and upload assets
+
 jobs:
   build:
     name: Build (${{ matrix.os }})
