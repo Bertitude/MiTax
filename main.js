@@ -240,22 +240,43 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
         incomeTax:      r2(incomeTaxAnnual / 4),
         total:          r2(totalAnnual   / 4),
       };
+
+      // ── Missing statements: derive from YTD transactions already fetched ──
+      // Build a set of "assetId-month" keys that have at least one transaction,
+      // then flag any quarter month that has no transactions for each asset.
+      // This uses the same data source as the Coverage Tracker view.
+      const coveredAssetMonths = new Set();
+      for (const tx of ytdTxs) {
+        if (tx.asset_id && tx.date) {
+          const m = parseInt(tx.date.slice(5, 7), 10);
+          coveredAssetMonths.add(`${tx.asset_id}-${m}`);
+        }
+      }
+
+      result.trackerAccounts = result.assets.map(asset => {
+        const quarterMissing = qMonths
+          .filter(month => {
+            // Skip months that haven't arrived yet
+            if (new Date(year, month - 1, 1) > now) return false;
+            return !coveredAssetMonths.has(`${asset.id}-${month}`);
+          })
+          .map(month => ({
+            month,
+            year,
+            label: new Date(year, month - 1, 1)
+              .toLocaleString('default', { month: 'long' }) + ' ' + year,
+          }));
+        return {
+          id:          asset.id,
+          institution: asset.institution_name || asset.type_name || '',
+          account_name: asset.display_name || asset.name,
+          currency:    (asset.currency || '').toUpperCase(),
+          quarterMissing,
+        };
+      });
     } catch (e) {
       console.warn('[Dashboard] LunchMoney error:', e.message);
     }
-  }
-
-  // ── Tracker: missing months for current quarter ──────────────────────────
-  try {
-    const { getAllAccounts, getMissingMonths } = require('./src/tracker');
-    const accounts = getAllAccounts();
-    result.trackerAccounts = accounts.map(acc => {
-      const allMissing     = getMissingMonths(acc.id);
-      const quarterMissing = allMissing.filter(m => m.year === year && qMonths.includes(m.month));
-      return { ...acc, quarterMissing };
-    });
-  } catch (e) {
-    console.warn('[Dashboard] Tracker error:', e.message);
   }
 
   return { success: true, data: result };
