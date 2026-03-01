@@ -1138,6 +1138,38 @@ function setupSettings() {
       require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
     });
   }
+
+  // ── Category → Tax mapping panel ────────────────────────────────────────
+  const toggleArea = document.getElementById('cat-map-toggle');
+  const toggleBtn  = document.getElementById('cat-map-toggle-btn');
+  const panel      = document.getElementById('cat-map-panel');
+  if (toggleArea && panel) {
+    toggleArea.addEventListener('click', e => {
+      if (e.target.closest('#cat-map-panel')) return;
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      if (toggleBtn) toggleBtn.textContent = open ? '▶ Show' : '▼ Hide';
+    });
+  }
+
+  const catSearch = document.getElementById('cat-map-search');
+  if (catSearch) {
+    catSearch.addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      document.querySelectorAll('#cat-map-tbody tr').forEach(tr => {
+        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+  }
+
+  const clearAllBtn = document.getElementById('cat-map-clear-all');
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', () => {
+      localStorage.removeItem(CAT_MAPPING_KEY);
+      renderCategoryMappings();
+      toast('All category mappings cleared.', 'info');
+    });
+  }
 }
 
 // ─── Taxpayer Profile ─────────────────────────────────────────────────────────
@@ -1193,39 +1225,6 @@ function restorePrefs() {
 
 function setupTaxView() {
   document.getElementById('generate-tax-btn').addEventListener('click', generateTax);
-
-  // ── Category mapping panel ──────────────────────────────────────────────
-  const toggleArea = document.getElementById('cat-map-toggle');
-  const toggleBtn  = document.getElementById('cat-map-toggle-btn');
-  const panel      = document.getElementById('cat-map-panel');
-  if (toggleArea && panel) {
-    toggleArea.addEventListener('click', e => {
-      // Don't trigger on clicks inside the panel itself
-      if (e.target.closest('#cat-map-panel')) return;
-      const open = panel.style.display !== 'none';
-      panel.style.display = open ? 'none' : 'block';
-      if (toggleBtn) toggleBtn.textContent = open ? '▶ Show' : '▼ Hide';
-    });
-  }
-
-  const catSearch = document.getElementById('cat-map-search');
-  if (catSearch) {
-    catSearch.addEventListener('input', e => {
-      const q = e.target.value.toLowerCase();
-      document.querySelectorAll('#cat-map-tbody tr').forEach(tr => {
-        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
-      });
-    });
-  }
-
-  const clearAllBtn = document.getElementById('cat-map-clear-all');
-  if (clearAllBtn) {
-    clearAllBtn.addEventListener('click', () => {
-      localStorage.removeItem(CAT_MAPPING_KEY);
-      renderCategoryMappings();
-      toast('All category mappings cleared.', 'info');
-    });
-  }
 
   // ── S04A button ────────────────────────────────────────────────────────
   const s04aBtn = document.getElementById('generate-s04a-btn');
