@@ -1,12 +1,10 @@
 name: Build & Release
 
-# Triggers on every push to main (draft release) or a version tag (public release)
+# Only triggers on version tags pushed to main — dev branch changes are ignored
 on:
   push:
     tags:
-      - 'v*'           # e.g. v1.2.0  → creates a public GitHub Release
-    branches:
-      - main           # optional: build on every push for testing
+      - 'v*'           # e.g. v1.1.2  → creates a public GitHub Release
 
 permissions:
   contents: write   # required to create GitHub Releases and upload assets
@@ -35,29 +33,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ── 4. Build & publish ────────────────────────────────────────────────
-      #    --publish always  → uploads artifacts to GitHub Releases
-      #    --publish never   → just builds locally (for branch pushes)
+      # ── 4. Build & publish to GitHub Releases ────────────────────────────
       - name: Build & Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided by GitHub Actions
           CSC_IDENTITY_AUTO_DISCOVERY: "false"    # skip code signing (add certs later if needed)
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            npm run release
-          else
-            npm run build
-          fi
+        run: npm run release
         shell: bash
-
-      # ── 5. Upload artifacts (for non-tag builds / debugging) ──────────────
-      - name: Upload build artifacts
-        if: "!startsWith(github.ref, 'refs/tags/')"
-        uses: actions/upload-artifact@v4
-        with:
-          name: LunchMoneyImporter-${{ matrix.os }}
-          path: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.AppImage
-          retention-days: 7

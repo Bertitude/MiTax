@@ -16,6 +16,12 @@ const fs   = require('fs');
 autoUpdater.autoDownload        = false; // ask user first
 autoUpdater.autoInstallOnAppQuit = true;  // install silently when app is closed
 
+// Skip Windows code-signature verification — app is not commercially signed.
+// Without this, electron-updater rejects unsigned installers if a publisherName
+// was embedded in the installed app's app-update.yml.
+// Returning null means "verification passed".
+autoUpdater.verifyUpdateCodeSignature = () => null;
+
 // Write update logs to userData so the user can inspect them
 const logPath = path.join(app.getPath('userData'), 'update.log');
 autoUpdater.logger = {
