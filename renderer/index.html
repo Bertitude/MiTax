@@ -299,6 +299,41 @@
           </div>
           <button class="btn btn-secondary btn-sm" id="save-prefs-btn">Save Preferences</button>
         </div>
+        <!-- Taxpayer Profile (for PDF exports) -->
+        <div class="card form-section">
+          <div class="card-title">Taxpayer Profile <span style="font-size:11px;font-weight:400;color:var(--text-muted);">(embedded in PDF exports)</span></div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label>Full Legal Name</label>
+              <input type="text" id="profile-name" placeholder="e.g. Jane Smith" />
+            </div>
+            <div class="form-group">
+              <label>TRN (Taxpayer Registration Number)</label>
+              <input type="text" id="profile-trn" placeholder="e.g. 123-456-789" maxlength="15" />
+            </div>
+            <div class="form-group">
+              <label>Business / Trading Name <span style="font-weight:400;color:var(--text-muted);">(optional)</span></label>
+              <input type="text" id="profile-business" placeholder="e.g. JD Consulting" />
+            </div>
+            <div class="form-group">
+              <label>Address</label>
+              <input type="text" id="profile-address" placeholder="e.g. 1 Main Street, Kingston" />
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="save-profile-btn">Save Profile</button>
+        </div>
+
+        <!-- TAJ e-Services shortcut -->
+        <div class="card form-section" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div style="flex:1;">
+            <div style="font-weight:600;font-size:13px;margin-bottom:2px;">TAJ e-Services Portal</div>
+            <div style="font-size:12px;color:var(--text-muted);">File returns and make payments directly on the Tax Administration Jamaica portal.</div>
+          </div>
+          <a class="btn btn-secondary btn-sm" id="open-taj-btn" style="white-space:nowrap;text-decoration:none;">
+            🌐 Open TAJ Portal
+          </a>
+        </div>
+
         <div class="card form-section">
           <div class="card-title">About</div>
           <p style="font-size:13px;color:var(--text-muted);line-height:1.8;">

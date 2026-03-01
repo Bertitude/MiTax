@@ -422,6 +422,52 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
   }
 });
 
+// ─── IPC: S04 PDF Export ─────────────────────────────────────────────────────
+// Receives a self-contained HTML string from the renderer, renders it in a
+// hidden BrowserWindow, exports to PDF via Chromium's engine, and offers a
+// save dialog.
+ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
+  try {
+    const { BrowserWindow: BW } = require('electron');
+
+    // Write the HTML to a temp file so the hidden window can load it as file://
+    const tmpPath = path.join(app.getPath('temp'), 'mitax-s04-print.html');
+    fs.writeFileSync(tmpPath, htmlContent, 'utf8');
+
+    const printWin = new BW({
+      show: false,
+      width: 900,
+      height: 1200,
+      webPreferences: { javascript: true, nodeIntegration: false, contextIsolation: true },
+    });
+
+    await printWin.loadURL(`file://${tmpPath.replace(/\\/g, '/')}`);
+    // Give Chromium a moment to finish layout/fonts
+    await new Promise(r => setTimeout(r, 900));
+
+    const pdfBuffer = await printWin.webContents.printToPDF({
+      marginsType:     2,       // minimal margins
+      pageSize:        'Letter',
+      printBackground: true,
+      landscape:       false,
+    });
+
+    printWin.destroy();
+    fs.unlinkSync(tmpPath);
+
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: filename || 's04-tax-return.pdf',
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+
+    if (!filePath) return { success: false, error: 'Cancelled' };
+    fs.writeFileSync(filePath, pdfBuffer);
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: File dialogs ───────────────────────────────────────────────────────
 ipcMain.handle('open-file-dialog', async () => {
   const { filePaths } = await dialog.showOpenDialog(mainWindow, {

@@ -608,3 +608,34 @@ tr.dupe-row:hover td { background: rgba(210,153,34,0.14); }
 }
 .filing-save-form .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 @media (max-width: 700px) { .filing-save-form .grid-3 { grid-template-columns: 1fr 1fr; } }
+
+/* ─── S04 Field Mapping Card ────────────────────────────────────────────── */
+.field-map-section { margin-bottom: 20px; }
+.field-map-section-title {
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  margin-bottom: 6px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.field-map-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid rgba(48,54,61,0.4);
+  font-size: 12px;
+}
+.field-map-row:last-child { border-bottom: none; }
+.field-map-line {
+  font-size: 10px; font-weight: 700; color: var(--text-muted);
+  min-width: 28px; text-align: center;
+  background: var(--surface2); border-radius: 4px; padding: 2px 4px;
+}
+.field-map-label { flex: 1; color: var(--text-muted); }
+.field-map-value { font-weight: 700; font-family: monospace; font-size: 13px; min-width: 140px; text-align: right; }
+.field-map-value.total { color: var(--warn); }
+.field-map-value.credit { color: var(--accent2); }
+.field-map-copy {
+  background: none; border: 1px solid var(--border); border-radius: 5px;
+  color: var(--text-muted); font-size: 10px; padding: 2px 7px; cursor: pointer;
+  transition: all 0.15s;
+}
+.field-map-copy:hover { border-color: var(--accent); color: var(--accent); }
+.field-map-copy.copied { border-color: var(--accent2); color: var(--accent2); }
