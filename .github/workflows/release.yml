@@ -38,10 +38,7 @@ jobs:
       - name: Build & Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided by GitHub Actions
-          CSC_LINK: ${{ secrets.CSC_LINK }}        # macOS: base64-encoded .p12 cert (optional)
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}        # Windows: code signing (optional)
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"    # skip code signing (add certs later if needed)
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             npm run release
