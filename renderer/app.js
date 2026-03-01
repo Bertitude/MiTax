@@ -18,7 +18,9 @@ const state = {
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
+  initYearSelects();
   setupNav();
+  setupDashboard();
   setupDropZone();
   setupImportButtons();
   setupSettings();
@@ -31,15 +33,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     await connectAPI(state.apiKey, false);
   }
   restorePrefs();
+  refreshDashboard();
   refreshTracker();
   refreshHistory();
 });
 
+/**
+ * Populate year-selection dropdowns with a rolling 5-year window so they always
+ * show the current year as the default, regardless of when the app is opened.
+ */
+function initYearSelects() {
+  const currentYear = new Date().getFullYear();
+
+  // Tracker year — default to current year
+  const trackerSel = document.getElementById('tracker-year');
+  if (trackerSel) {
+    trackerSel.innerHTML = '';
+    for (let y = currentYear; y >= currentYear - 4; y--) {
+      const opt = document.createElement('option');
+      opt.value       = y;
+      opt.textContent = y;
+      if (y === currentYear) opt.selected = true;
+      trackerSel.appendChild(opt);
+    }
+  }
+
+  // Tax year — default to prior year (S04 is filed for the previous tax year)
+  const taxSel = document.getElementById('tax-year-select');
+  if (taxSel) {
+    taxSel.innerHTML = '';
+    for (let y = currentYear - 1; y >= currentYear - 5; y--) {
+      const opt = document.createElement('option');
+      opt.value       = y;
+      opt.textContent = y;
+      if (y === currentYear - 1) opt.selected = true;
+      taxSel.appendChild(opt);
+    }
+  }
+}
+
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
 const PAGE_TITLES = {
-  import: 'Import Statements', tracker: 'Coverage Tracker',
-  history: 'Upload History',   tax: 'S04 Tax Return', settings: 'Settings',
+  dashboard: 'Dashboard',      import: 'Import Statements',
+  tracker:   'Coverage Tracker', history: 'Upload History',
+  tax:       'S04 Tax Return', settings: 'Settings',
 };
 
 function setupNav() {
@@ -50,9 +88,10 @@ function setupNav() {
       document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
       item.classList.add('active');
       document.getElementById(`${view}-view`).classList.add('active');
-      document.getElementById('page-title').textContent = PAGE_TITLES[view];
-      if (view === 'tracker') refreshTracker();
-      if (view === 'history') refreshHistory();
+      document.getElementById('page-title').textContent = PAGE_TITLES[view] || view;
+      if (view === 'dashboard') refreshDashboard();
+      if (view === 'tracker')   refreshTracker();
+      if (view === 'history')   refreshHistory();
     });
   });
 }
@@ -1005,6 +1044,205 @@ function buildBarChart(months) {
     return `<div class="bar-group" title="${m.label}"><div class="bar-wrap"><div class="bar-inc" style="height:${iH}px"></div><div class="bar-exp" style="height:${eH}px"></div></div><div class="bar-label">${m.label.slice(0,3)}</div></div>`;
   }).join('');
   return legend + `<div class="bar-chart">${barHtml}</div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const QUARTER_MONTHS     = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+const QUARTER_MONTH_NAMES = [['January','March'],['April','June'],['July','September'],['October','December']];
+const QUARTER_DUE_DATES   = ['March 15','June 15','September 15','December 15'];
+
+function currentQuarter() {
+  const now = new Date();
+  return Math.ceil((now.getMonth() + 1) / 3);
+}
+
+function setupDashboard() {
+  const btn = document.getElementById('dash-refresh-btn');
+  if (btn) btn.addEventListener('click', refreshDashboard);
+}
+
+async function refreshDashboard() {
+  const now     = new Date();
+  const year    = now.getFullYear();
+  const quarter = currentQuarter();
+  const qLabel  = `Q${quarter} ${year}`;
+  const qSub    = `${QUARTER_MONTH_NAMES[quarter-1][0]} – ${QUARTER_MONTH_NAMES[quarter-1][1]} ${year}`;
+
+  document.getElementById('dash-quarter-label').textContent  = qLabel;
+  document.getElementById('dash-quarter-sub').textContent    = qSub;
+  document.getElementById('dash-missing-quarter').textContent = qLabel;
+
+  const btn = document.getElementById('dash-refresh-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading…'; }
+
+  const result = await window.electronAPI.getDashboardData({
+    apiKey:  state.apiKey || null,
+    year,
+    quarter,
+  });
+
+  if (btn) { btn.disabled = false; btn.innerHTML = '↻ Refresh'; }
+  if (!result.success) { toast(`Dashboard error: ${result.error}`, 'error'); return; }
+
+  const { assets, ytdIncome, trackerAccounts, quarterlyTaxEstimate } = result.data;
+
+  // Keep state in sync if we got fresh asset data
+  if (assets && assets.length) {
+    state.lmAssets = assets;
+    document.getElementById('api-label').textContent = `Connected · ${assets.length} accounts`;
+  }
+
+  renderDashboardBalances(assets || []);
+  renderDashboardMissing(trackerAccounts || [], qLabel);
+  renderDashboardTaxEstimate(quarterlyTaxEstimate, ytdIncome || 0, year, quarter);
+}
+
+function renderDashboardBalances(assets) {
+  const el      = document.getElementById('dash-balances');
+  const countEl = document.getElementById('dash-balance-count');
+  if (!assets.length) {
+    if (countEl) countEl.textContent = '';
+    el.innerHTML = `<div class="empty-state" style="padding:24px 0;">
+      <div class="empty-icon">🔗</div>
+      <p>Connect to LunchMoney in Settings to see live account balances.</p>
+    </div>`;
+    return;
+  }
+
+  if (countEl) countEl.textContent = `${assets.length} account${assets.length !== 1 ? 's' : ''}`;
+
+  const typeIcon = {
+    cash:'💳', credit:'💳', investment:'📈', loan:'🏦',
+    'real estate':'🏠', vehicle:'🚗', cryptocurrency:'₿', other:'💰',
+  };
+
+  // Group by institution name for visual clarity
+  const totalByCurrency = {};
+  assets.forEach(a => {
+    const cur = (a.currency || 'JMD').toUpperCase();
+    totalByCurrency[cur] = (totalByCurrency[cur] || 0) + parseFloat(a.balance || 0);
+  });
+
+  el.innerHTML = assets.map(a => {
+    const icon = typeIcon[(a.type_name || '').toLowerCase()] || '💰';
+    const bal  = parseFloat(a.balance || 0);
+    const isNeg = bal < 0;
+    const cur  = (a.currency || 'JMD').toUpperCase();
+    const asOf = a.balance_as_of || '';
+    return `<div class="dash-balance-card">
+      <div class="dash-balance-icon">${icon}</div>
+      <div class="dash-balance-body">
+        <div class="dash-balance-name" title="${escHtml(a.display_name || a.name)}">${escHtml(a.display_name || a.name)}</div>
+        <div class="dash-balance-inst">${escHtml(a.institution_name || a.type_name || '')}</div>
+        <div class="dash-balance-amount ${isNeg ? 'amount-neg' : ''}">
+          ${cur} ${fmtAmount(Math.abs(bal))}${isNeg ? '<span style="font-size:10px;margin-left:3px;">(overdrawn)</span>' : ''}
+        </div>
+        ${asOf ? `<div class="dash-balance-date">as of ${escHtml(asOf)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderDashboardMissing(trackerAccounts, qLabel) {
+  const el = document.getElementById('dash-missing');
+  if (!trackerAccounts.length) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">
+      No uploaded accounts tracked yet. Upload statements to start tracking coverage.
+    </div>`;
+    return;
+  }
+
+  const withMissing    = trackerAccounts.filter(a => a.quarterMissing.length > 0);
+  const withoutMissing = trackerAccounts.filter(a => a.quarterMissing.length === 0);
+
+  if (!withMissing.length) {
+    el.innerHTML = `<div style="display:flex;align-items:center;gap:10px;color:var(--accent2);font-size:13px;padding:4px 0;">
+      <span style="font-size:20px;">✓</span>
+      <span>All ${trackerAccounts.length} tracked account${trackerAccounts.length !== 1 ? 's' : ''} have statements for ${qLabel}.</span>
+    </div>`;
+    return;
+  }
+
+  const warningRows = withMissing.map(acc => {
+    const months = acc.quarterMissing.map(m => m.label).join(', ');
+    return `<div class="dash-missing-row dash-missing-warn">
+      <span class="dash-missing-status warn">⚠</span>
+      <span class="dash-missing-name">${escHtml(acc.institution)} · ${escHtml(acc.account_name)}</span>
+      <span class="dash-missing-detail">Missing: ${escHtml(months)}</span>
+    </div>`;
+  }).join('');
+
+  const okRows = withoutMissing.map(acc =>
+    `<div class="dash-missing-row">
+      <span class="dash-missing-status ok">✓</span>
+      <span class="dash-missing-name">${escHtml(acc.institution)} · ${escHtml(acc.account_name)}</span>
+      <span class="dash-missing-detail">All months covered for ${qLabel}</span>
+    </div>`
+  ).join('');
+
+  el.innerHTML = warningRows + okRows;
+}
+
+function renderDashboardTaxEstimate(estimate, ytdIncome, year, quarter) {
+  const el  = document.getElementById('dash-tax');
+  const fmt = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
+  const dueDate = `${QUARTER_DUE_DATES[quarter-1]}, ${year}`;
+
+  if (!estimate) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">
+      ${state.apiKey
+        ? 'No income transactions found in LunchMoney for this year yet.'
+        : 'Connect to LunchMoney in Settings to see quarterly tax estimates.'}
+    </div>`;
+    return;
+  }
+
+  if (estimate.annualEstimate === 0) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">
+      No income found for ${year} yet — estimates will appear once income transactions are present in LunchMoney.
+    </div>`;
+    return;
+  }
+
+  const contribTotal = estimate.nis + estimate.nht + estimate.edTax;
+
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;line-height:1.6;">
+      Based on <strong style="color:var(--text);">${fmt(ytdIncome)} YTD income</strong>
+      (${estimate.monthsElapsed.toFixed(1)} months elapsed) · Projected annual: <strong style="color:var(--text);">${fmt(estimate.annualEstimate)}</strong>
+      · Standard 20% deduction applied · Amounts in JMD
+    </div>
+    <div class="grid-3" style="margin-bottom:16px;">
+      <div class="stat-card">
+        <div class="stat-label">Q${quarter} Total Due</div>
+        <div class="stat-value" style="color:var(--warn);">${fmt(estimate.total)}</div>
+        <div class="stat-sub">Due ${dueDate}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Income Tax</div>
+        <div class="stat-value" style="font-size:18px;">${fmt(estimate.incomeTax)}</div>
+        <div class="stat-sub">25% / 30% rate</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">NIS + NHT + Ed Tax</div>
+        <div class="stat-value" style="font-size:18px;">${fmt(contribTotal)}</div>
+        <div class="stat-sub">Contributions</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:13px;margin-bottom:12px;">
+      <div><span style="color:var(--text-muted);">NIS (3%): </span><strong>${fmt(estimate.nis)}</strong></div>
+      <div><span style="color:var(--text-muted);">NHT (2%): </span><strong>${fmt(estimate.nht)}</strong></div>
+      <div><span style="color:var(--text-muted);">Education Tax (2.25%): </span><strong>${fmt(estimate.edTax)}</strong></div>
+      <div><span style="color:var(--text-muted);">Income Tax: </span><strong>${fmt(estimate.incomeTax)}</strong></div>
+    </div>
+    <div style="font-size:11px;color:var(--text-muted);">
+      ⚠ Quarterly installments are due March 15, June 15, September 15, and December 15.
+      Go to <em>S04 Tax Return</em> for a full annual estimate. Consult TAJ for official guidance.
+    </div>
+  `;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

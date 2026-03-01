@@ -490,6 +490,50 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
   border-radius: 4px;
 }
 
+/* ─── Dashboard ─────────────────────────────────────────────────────────── */
+
+.dash-balances-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.dash-balance-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  transition: border-color 0.15s;
+}
+.dash-balance-card:hover { border-color: var(--accent); }
+
+.dash-balance-icon   { font-size: 20px; line-height: 1; margin-top: 2px; flex-shrink: 0; }
+.dash-balance-body   { flex: 1; min-width: 0; }
+.dash-balance-name   { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-balance-inst   { font-size: 11px; color: var(--text-muted); margin-bottom: 5px; }
+.dash-balance-amount { font-size: 16px; font-weight: 700; font-family: monospace; }
+.dash-balance-date   { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+
+.dash-missing-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(48,54,61,0.5);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.dash-missing-row:last-child { border-bottom: none; }
+.dash-missing-status { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
+.dash-missing-status.ok   { color: var(--accent2); }
+.dash-missing-status.warn { color: var(--warn2); }
+.dash-missing-name   { font-weight: 500; flex-shrink: 0; }
+.dash-missing-detail { color: var(--text-muted); font-size: 12px; }
+.dash-missing-warn .dash-missing-detail { color: var(--warn2); }
+
 /* ─── Account Modal: New Account Form ───────────────────────────────────── */
 #create-account-form .grid-2 {
   display: grid;
