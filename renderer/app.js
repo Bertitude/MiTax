@@ -1138,7 +1138,7 @@ function renderDashboardBalances(assets) {
         <div class="dash-balance-name" title="${escHtml(a.display_name || a.name)}">${escHtml(a.display_name || a.name)}</div>
         <div class="dash-balance-inst">${escHtml(a.institution_name || a.type_name || '')}</div>
         <div class="dash-balance-amount ${isNeg ? 'amount-neg' : ''}">
-          ${cur} ${fmtAmount(Math.abs(bal))}${isNeg ? '<span style="font-size:10px;margin-left:3px;">(overdrawn)</span>' : ''}
+          ${cur} ${fmtAmount(bal)}
         </div>
         ${asOf ? `<div class="dash-balance-date">as of ${escHtml(asOf)}</div>` : ''}
       </div>
