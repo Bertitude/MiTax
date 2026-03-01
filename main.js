@@ -282,12 +282,187 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
   return { success: true, data: result };
 });
 
+// ─── IPC: Check Duplicates ───────────────────────────────────────────────────
+// Given an array of { assetId, date, amount } objects, returns a parallel
+// boolean array where true = a matching LunchMoney transaction already exists
+// (same asset, same date, same absolute amount).  Fails open (all false) on error.
+ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
+  try {
+    const { getTransactions } = require('./src/lunchmoney');
+
+    if (!apiKey || !transactions || !transactions.length) {
+      return { success: true, data: new Array(transactions.length).fill(false) };
+    }
+
+    // Group incoming transactions by assetId so we make one API call per asset.
+    const byAsset = {};
+    transactions.forEach((tx, idx) => {
+      const key = tx.assetId != null ? String(tx.assetId) : '__none__';
+      if (!byAsset[key]) byAsset[key] = [];
+      byAsset[key].push({ idx, date: tx.date, amount: tx.amount });
+    });
+
+    const isDuplicate = new Array(transactions.length).fill(false);
+
+    for (const [assetIdStr, items] of Object.entries(byAsset)) {
+      if (assetIdStr === '__none__') continue;
+
+      // Find date range for this asset's incoming transactions
+      const dates    = items.map(i => i.date).filter(Boolean).sort();
+      const startDate = dates[0];
+      const endDate   = dates[dates.length - 1];
+      if (!startDate) continue;
+
+      const existingTxs = await getTransactions(apiKey, {
+        startDate,
+        endDate,
+        assetId: assetIdStr,
+      });
+
+      // Build a lookup set of "date|absAmount" strings from existing LM transactions
+      const existingKeys = new Set();
+      for (const tx of existingTxs) {
+        const absAmt = Math.abs(parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0);
+        existingKeys.add(`${tx.date}|${absAmt.toFixed(2)}`);
+      }
+
+      // Mark any incoming transaction whose key is found in LM
+      for (const item of items) {
+        const absAmt = Math.abs(parseFloat(item.amount) || 0);
+        const key    = `${item.date}|${absAmt.toFixed(2)}`;
+        if (existingKeys.has(key)) isDuplicate[item.idx] = true;
+      }
+    }
+
+    return { success: true, data: isDuplicate };
+  } catch (err) {
+    console.warn('[check-duplicates] error:', err.message);
+    // Fail open — never block the user from uploading
+    return { success: true, data: new Array(transactions.length).fill(false) };
+  }
+});
+
 // ─── IPC: S04 Tax ────────────────────────────────────────────────────────────
-ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData }) => {
+ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCategoryMappings }) => {
   try {
     const { generateS04 } = require('./src/tax/s04');
-    const report = await generateS04({ year, apiKey, manualData });
+    const report = await generateS04({ year, apiKey, manualData, userCategoryMappings: userCategoryMappings || {} });
     return { success: true, data: report };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: Tax Filings (history + S04A) ──────────────────────────────────────
+
+ipcMain.handle('save-filing', async (event, payload) => {
+  try {
+    const { saveFiling } = require('./src/filings');
+    const result = saveFiling(payload);
+    return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-filings', async () => {
+  try {
+    const { getAllFilings } = require('./src/filings');
+    return { success: true, data: getAllFilings() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('update-filing', async (event, { id, ...fields }) => {
+  try {
+    const { updateFiling } = require('./src/filings');
+    const updated = updateFiling(id, fields);
+    return { success: true, data: updated };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('delete-filing', async (event, id) => {
+  try {
+    const { deleteFiling } = require('./src/filings');
+    deleteFiling(id);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
+  try {
+    const { getMostRecentS04 }         = require('./src/filings');
+    const { generateS04A }             = require('./src/tax/s04');
+    const { getTransactions }          = require('./src/lunchmoney');
+
+    const priorYearFiling = getMostRecentS04(currentYear - 1);
+
+    let currentYtdIncome = 0;
+    if (apiKey) {
+      const now    = new Date();
+      const ytdTxs = await getTransactions(apiKey, {
+        startDate: `${currentYear}-01-01`,
+        endDate:   now.toISOString().slice(0, 10),
+      });
+      currentYtdIncome = ytdTxs.reduce((sum, tx) => {
+        const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+        return amt < 0 ? sum + Math.abs(amt) : sum;
+      }, 0);
+    }
+
+    const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome });
+    return { success: true, data: estimate };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: S04 PDF Export ─────────────────────────────────────────────────────
+// Receives a self-contained HTML string from the renderer, renders it in a
+// hidden BrowserWindow, exports to PDF via Chromium's engine, and offers a
+// save dialog.
+ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
+  try {
+    const { BrowserWindow: BW } = require('electron');
+
+    // Write the HTML to a temp file so the hidden window can load it as file://
+    const tmpPath = path.join(app.getPath('temp'), 'mitax-s04-print.html');
+    fs.writeFileSync(tmpPath, htmlContent, 'utf8');
+
+    const printWin = new BW({
+      show: false,
+      width: 900,
+      height: 1200,
+      webPreferences: { javascript: true, nodeIntegration: false, contextIsolation: true },
+    });
+
+    await printWin.loadURL(`file://${tmpPath.replace(/\\/g, '/')}`);
+    // Give Chromium a moment to finish layout/fonts
+    await new Promise(r => setTimeout(r, 900));
+
+    const pdfBuffer = await printWin.webContents.printToPDF({
+      marginsType:     2,       // minimal margins
+      pageSize:        'Letter',
+      printBackground: true,
+      landscape:       false,
+    });
+
+    printWin.destroy();
+    fs.unlinkSync(tmpPath);
+
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: filename || 's04-tax-return.pdf',
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+
+    if (!filePath) return { success: false, error: 'Cancelled' };
+    fs.writeFileSync(filePath, pdfBuffer);
+    return { success: true, filePath };
   } catch (err) {
     return { success: false, error: err.message };
   }

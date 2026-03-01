@@ -15,6 +15,92 @@ const state = {
   taxReport:     null,
 };
 
+// ─── Category Mappings ────────────────────────────────────────────────────────
+// Persisted in localStorage as { [categoryId]: { _raw, incomeType?, isDeductible?, ignore? } }
+
+const CAT_MAPPING_KEY = 'lm_cat_mappings';
+
+function getCategoryMappings() {
+  try { return JSON.parse(localStorage.getItem(CAT_MAPPING_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function saveCategoryMapping(categoryId, value) {
+  const mappings = getCategoryMappings();
+  if (!value) { delete mappings[categoryId]; }
+  else        { mappings[categoryId] = value; }
+  localStorage.setItem(CAT_MAPPING_KEY, JSON.stringify(mappings));
+}
+
+const CAT_MAP_OPTIONS = [
+  { value: '',                 label: '— Not mapped (use keyword rules)' },
+  { value: 'income:business',  label: 'Income → Business / Professional' },
+  { value: 'income:foreign',   label: 'Income → Foreign-Sourced' },
+  { value: 'income:investment',label: 'Income → Investment' },
+  { value: 'income:rental',    label: 'Income → Rental' },
+  { value: 'income:other',     label: 'Income → Other' },
+  { value: 'expense',          label: 'Deductible Expense' },
+  { value: 'ignore',           label: 'Ignore (exclude from tax)' },
+];
+
+function renderCategoryMappings() {
+  const tbody = document.getElementById('cat-map-tbody');
+  if (!tbody) return;
+  const cats = state.lmCategories;
+  if (!cats.length) {
+    tbody.innerHTML = '<tr><td colspan="2" style="color:var(--text-muted);text-align:center;padding:24px;">Connect your LunchMoney API to load categories.</td></tr>';
+    updateCatMapBadge();
+    return;
+  }
+  const mappings = getCategoryMappings();
+  tbody.innerHTML = '';
+  cats.forEach(cat => {
+    const id  = String(cat.id);
+    const cur = mappings[id] ? mappings[id]._raw : '';
+    const opts = CAT_MAP_OPTIONS.map(o =>
+      `<option value="${escAttr(o.value)}"${cur === o.value ? ' selected' : ''}>${escHtml(o.label)}</option>`
+    ).join('');
+    const cls = cur === 'expense' ? ' mapped-expense' : cur === 'ignore' ? ' mapped-ignore' : cur ? ' mapped' : '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="font-size:12px;">${escHtml(cat.name)}</td>
+      <td><select class="cat-map-select${cls}" data-cat-id="${id}">${opts}</select></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('.cat-map-select').forEach(sel => {
+    sel.addEventListener('change', e => {
+      const catId = e.target.dataset.catId;
+      const val   = e.target.value;
+      e.target.classList.remove('mapped', 'mapped-expense', 'mapped-ignore');
+      if      (val === 'expense') e.target.classList.add('mapped-expense');
+      else if (val === 'ignore')  e.target.classList.add('mapped-ignore');
+      else if (val)               e.target.classList.add('mapped');
+      if (!val) {
+        saveCategoryMapping(catId, null);
+      } else {
+        const mapping = { _raw: val };
+        if (val.startsWith('income:')) mapping.incomeType = val.split(':')[1];
+        if (val === 'expense')         mapping.isDeductible = true;
+        if (val === 'ignore')          mapping.ignore = true;
+        saveCategoryMapping(catId, mapping);
+      }
+      updateCatMapBadge();
+    });
+  });
+  updateCatMapBadge();
+}
+
+function updateCatMapBadge() {
+  const count = Object.keys(getCategoryMappings()).length;
+  const badge = document.getElementById('cat-map-badge');
+  if (badge) {
+    badge.textContent  = count ? `${count} mapped` : '';
+    badge.style.display = count ? '' : 'none';
+  }
+}
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -33,9 +119,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     await connectAPI(state.apiKey, false);
   }
   restorePrefs();
+  restoreProfile();
   refreshDashboard();
   refreshTracker();
   refreshHistory();
+  refreshFilingHistory();
 });
 
 /**
@@ -68,6 +156,19 @@ function initYearSelects() {
       opt.textContent = y;
       if (y === currentYear - 1) opt.selected = true;
       taxSel.appendChild(opt);
+    }
+  }
+
+  // S04A year — default to current year (provisional tax is for the current year)
+  const s04aSel = document.getElementById('s04a-year-select');
+  if (s04aSel) {
+    s04aSel.innerHTML = '';
+    for (let y = currentYear; y >= currentYear - 3; y--) {
+      const opt = document.createElement('option');
+      opt.value       = y;
+      opt.textContent = y;
+      if (y === currentYear) opt.selected = true;
+      s04aSel.appendChild(opt);
     }
   }
 }
@@ -116,6 +217,8 @@ async function connectAPI(apiKey, showFeedback = true) {
 
     dot.className     = 'status-dot connected';
     label.textContent = `Connected · ${state.lmAssets.length} accounts`;
+
+    renderCategoryMappings();
 
     if (showFeedback) {
       document.getElementById('settings-success').style.display = 'block';
@@ -558,6 +661,18 @@ function setupValidateModal() {
   document.getElementById('val-deselect-all').addEventListener('click',  () => setAllChecked(false));
   document.getElementById('val-credits-only').addEventListener('click',  () => filterRows('credit'));
   document.getElementById('val-debits-only').addEventListener('click',   () => filterRows('debit'));
+  document.getElementById('val-deselect-dupes').addEventListener('click', () => {
+    // Uncheck (but keep visible) all rows flagged as duplicates
+    state.validateRows.forEach((row, i) => {
+      if (!row._isDupe) return;
+      row._include = false;
+      const cb = document.querySelector(`#validate-tbody .val-row-check[data-idx="${i}"]`);
+      if (cb) cb.checked = false;
+    });
+    document.getElementById('val-check-all').checked = false;
+    updateSelectedCount();
+    toast('Duplicate rows deselected.', 'info');
+  });
   document.getElementById('val-check-all').addEventListener('change',    e  => setAllChecked(e.target.checked));
   document.getElementById('val-search').addEventListener('input', e => {
     const q = e.target.value.toLowerCase();
@@ -587,6 +702,7 @@ async function openValidateModal() {
   state.validateRows = allTxs.map((tx, idx) => ({
     _idx:       idx,
     _include:   true,
+    _isDupe:    false,
     _assetId:   tx._assetId,
     _assetName: tx._assetName,
     _source:    tx._sourceFile,
@@ -599,6 +715,40 @@ async function openValidateModal() {
     category:   tx.category   || '',
     categoryId: tx.categoryId || null,
   }));
+
+  // ── Duplicate check against LunchMoney ───────────────────────────────────
+  if (state.apiKey && state.validateRows.length) {
+    try {
+      toast('Checking for existing transactions…', 'info', 2500);
+      const checkPayload = state.validateRows.map(r => ({
+        assetId: r._assetId,
+        date:    r.date,
+        amount:  r.amount,
+      }));
+      const dupeRes = await window.electronAPI.checkDuplicates({
+        apiKey:       state.apiKey,
+        transactions: checkPayload,
+      });
+      if (dupeRes.success && dupeRes.data) {
+        dupeRes.data.forEach((isDupe, i) => {
+          if (isDupe) {
+            state.validateRows[i]._isDupe   = true;
+            state.validateRows[i]._include  = false;  // pre-uncheck
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[openValidateModal] duplicate check error:', e);
+    }
+  }
+
+  const dupeCount = state.validateRows.filter(r => r._isDupe).length;
+  const dupeBtn   = document.getElementById('val-deselect-dupes');
+  const dupeCnt   = document.getElementById('val-dupe-count');
+  if (dupeBtn) {
+    dupeBtn.style.display = dupeCount ? '' : 'none';
+    if (dupeCnt) dupeCnt.textContent = `(${dupeCount})`;
+  }
 
   renderValidateTable(state.validateRows);
   document.getElementById('validate-modal').classList.add('open');
@@ -615,6 +765,7 @@ function renderValidateTable(rows) {
   rows.forEach((row, i) => {
     const tr    = document.createElement('tr');
     tr.dataset.idx = i;
+    if (row._isDupe) tr.classList.add('dupe-row');
     tr.innerHTML   = `
       <td style="text-align:center;">
         <input type="checkbox" class="val-row-check" data-idx="${i}" ${row._include ? 'checked' : ''} />
@@ -626,6 +777,7 @@ function renderValidateTable(rows) {
         <input class="val-cell val-payee" data-idx="${i}" data-field="payee"
                value="${escAttr(row.payee)}" style="width:100%;min-width:140px;" />
         ${row._matched ? '<span title="Matched existing LM payee" style="font-size:10px;color:var(--accent2);margin-left:3px;">✓matched</span>' : ''}
+        ${row._isDupe  ? '<span class="dupe-badge" title="Already exists in LunchMoney">DUPE</span>' : ''}
       </td>
       <td class="${row.amount >= 0 ? 'amount-pos' : 'amount-neg'}" style="text-align:right;">
         <input class="val-cell" data-idx="${i}" data-field="amount" type="number"
@@ -929,6 +1081,47 @@ function setupSettings() {
     await connectAPI(key, true);
   });
   document.getElementById('save-prefs-btn').addEventListener('click', savePrefs);
+
+  // ── Taxpayer profile ────────────────────────────────────────────────────
+  document.getElementById('save-profile-btn').addEventListener('click', saveProfile);
+
+  // ── TAJ Portal shortcut ─────────────────────────────────────────────────
+  const tajBtn = document.getElementById('open-taj-btn');
+  if (tajBtn) {
+    tajBtn.addEventListener('click', e => {
+      e.preventDefault();
+      require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
+    });
+  }
+}
+
+// ─── Taxpayer Profile ─────────────────────────────────────────────────────────
+
+const PROFILE_KEY = 'lm_taxpayer_profile';
+
+function getProfile() {
+  try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function saveProfile() {
+  const profile = {
+    fullName:     document.getElementById('profile-name')?.value.trim()     || '',
+    trn:          document.getElementById('profile-trn')?.value.trim()      || '',
+    businessName: document.getElementById('profile-business')?.value.trim() || '',
+    address:      document.getElementById('profile-address')?.value.trim()  || '',
+  };
+  localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  toast('Taxpayer profile saved.', 'success');
+}
+
+function restoreProfile() {
+  const p = getProfile();
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+  set('profile-name',     p.fullName);
+  set('profile-trn',      p.trn);
+  set('profile-business', p.businessName);
+  set('profile-address',  p.address);
 }
 
 function getPrefs() {
@@ -955,6 +1148,47 @@ function restorePrefs() {
 
 function setupTaxView() {
   document.getElementById('generate-tax-btn').addEventListener('click', generateTax);
+
+  // ── Category mapping panel ──────────────────────────────────────────────
+  const toggleArea = document.getElementById('cat-map-toggle');
+  const toggleBtn  = document.getElementById('cat-map-toggle-btn');
+  const panel      = document.getElementById('cat-map-panel');
+  if (toggleArea && panel) {
+    toggleArea.addEventListener('click', e => {
+      // Don't trigger on clicks inside the panel itself
+      if (e.target.closest('#cat-map-panel')) return;
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      if (toggleBtn) toggleBtn.textContent = open ? '▶ Show' : '▼ Hide';
+    });
+  }
+
+  const catSearch = document.getElementById('cat-map-search');
+  if (catSearch) {
+    catSearch.addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      document.querySelectorAll('#cat-map-tbody tr').forEach(tr => {
+        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+  }
+
+  const clearAllBtn = document.getElementById('cat-map-clear-all');
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', () => {
+      localStorage.removeItem(CAT_MAPPING_KEY);
+      renderCategoryMappings();
+      toast('All category mappings cleared.', 'info');
+    });
+  }
+
+  // ── S04A button ────────────────────────────────────────────────────────
+  const s04aBtn = document.getElementById('generate-s04a-btn');
+  if (s04aBtn) s04aBtn.addEventListener('click', generateS04AEstimate);
+
+  // ── Filing history refresh ─────────────────────────────────────────────
+  const refreshFilingsBtn = document.getElementById('refresh-filings-btn');
+  if (refreshFilingsBtn) refreshFilingsBtn.addEventListener('click', refreshFilingHistory);
 }
 
 async function generateTax() {
@@ -971,7 +1205,14 @@ async function generateTax() {
     additionalExpenses: parseFloat(document.getElementById('tax-expenses').value)    || 0,
   };
 
-  const result = await window.electronAPI.generateS04({ year, apiKey: state.apiKey || null, manualData });
+  // Build clean mappings for main process (strip internal _raw field)
+  const userCategoryMappings = {};
+  for (const [catId, val] of Object.entries(getCategoryMappings())) {
+    const { _raw, ...rest } = val;  // eslint-disable-line no-unused-vars
+    userCategoryMappings[catId] = rest;
+  }
+
+  const result = await window.electronAPI.generateS04({ year, apiKey: state.apiKey || null, manualData, userCategoryMappings });
   btn.disabled  = false;
   btn.innerHTML = '📊 Generate S04 Report';
   if (!result.success) { toast(`Tax generation failed: ${result.error}`, 'error'); return; }
@@ -987,12 +1228,16 @@ function renderTaxReport(report) {
 
   wrap.innerHTML = `
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
         <div>
           <div style="font-size:18px;font-weight:700;">S04 — Self Employed Income Tax Return</div>
           <div style="font-size:13px;color:var(--text-muted);">Tax Year: ${report.year}</div>
         </div>
-        <span class="badge badge-blue">ESTIMATE ONLY</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span class="badge badge-blue">ESTIMATE ONLY</span>
+          <button class="btn btn-secondary btn-sm" id="show-field-map-btn">📋 TAJ Field Guide</button>
+          <button class="btn btn-secondary btn-sm" id="export-pdf-btn">📄 Export PDF</button>
+        </div>
       </div>
       <div class="grid-3" style="margin-bottom:24px;">
         <div class="stat-card"><div class="stat-label">Gross Income</div><div class="stat-value" style="font-size:18px;">${fmt(report.summary.grossIncome)}</div><div class="stat-sub">JMD</div></div>
@@ -1027,8 +1272,71 @@ function renderTaxReport(report) {
       </div>
       <div class="tax-section"><div class="card-title">Monthly Breakdown</div>${bars}</div>
       <div style="margin-top:16px;">${report.notes.map(n => `<div class="tax-note">• ${n}</div>`).join('')}</div>
+
+      <!-- Save as Filed form (collapsed by default) -->
+      <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
+        <button class="btn btn-secondary btn-sm" id="show-save-filing-btn">💾 Save as Filed</button>
+        <div id="save-filing-form" class="filing-save-form" style="display:none;margin-top:12px;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:12px;color:var(--accent);">Record S04 Filing for ${report.year}</div>
+          <div class="grid-3">
+            <div class="form-group">
+              <label style="font-size:12px;">Filed Date</label>
+              <input type="date" id="filing-date" value="${new Date().toISOString().slice(0,10)}" style="font-size:12px;" />
+            </div>
+            <div class="form-group">
+              <label style="font-size:12px;">Amount Paid (JMD)</label>
+              <input type="number" id="filing-amount-paid" step="0.01" value="${report.totalTaxPayable}" style="font-size:12px;" />
+            </div>
+            <div class="form-group">
+              <label style="font-size:12px;">Status</label>
+              <select id="filing-status" style="font-size:12px;">
+                <option value="draft">Draft (not yet submitted)</option>
+                <option value="filed" selected>Filed (submitted to TAJ)</option>
+                <option value="paid">Filed &amp; Paid</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:4px;">
+            <label style="font-size:12px;">Notes (optional)</label>
+            <input type="text" id="filing-notes" placeholder="e.g. TAJ reference number, agent name…" style="font-size:12px;" />
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;">
+            <button class="btn btn-success btn-sm" id="confirm-save-filing-btn">✓ Save Filing</button>
+            <button class="btn btn-secondary btn-sm" id="cancel-save-filing-btn">Cancel</button>
+          </div>
+        </div>
+      </div>
     </div>
   `;
+
+  // Wire the save-filing form controls (inside the dynamic HTML)
+  document.getElementById('show-save-filing-btn').addEventListener('click', () => {
+    const form = document.getElementById('save-filing-form');
+    const btn  = document.getElementById('show-save-filing-btn');
+    const open = form.style.display !== 'none';
+    form.style.display = open ? 'none' : 'block';
+    btn.textContent    = open ? '💾 Save as Filed' : '▲ Collapse';
+  });
+  document.getElementById('cancel-save-filing-btn').addEventListener('click', () => {
+    document.getElementById('save-filing-form').style.display = 'none';
+    document.getElementById('show-save-filing-btn').textContent = '💾 Save as Filed';
+  });
+  document.getElementById('confirm-save-filing-btn').addEventListener('click', () => saveS04Filing(report));
+
+  // ── TAJ Field Guide card (injected after report card) ───────────────────
+  const fieldMapCard = buildFieldMappingCard(report);
+  wrap.appendChild(fieldMapCard);
+
+  // Toggle field map card
+  document.getElementById('show-field-map-btn').addEventListener('click', () => {
+    const open = fieldMapCard.style.display !== 'none';
+    fieldMapCard.style.display = open ? 'none' : 'block';
+    document.getElementById('show-field-map-btn').textContent = open ? '📋 TAJ Field Guide' : '▲ Hide Guide';
+    if (!open) fieldMapCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+
+  // Export PDF button
+  document.getElementById('export-pdf-btn').addEventListener('click', () => exportS04PDF(report));
 }
 
 function buildBarChart(months) {
@@ -1398,3 +1706,605 @@ function showBanner(stateClass, icon, title, sub, buttons = [], pct = null) {
 document.addEventListener('DOMContentLoaded', () => {
   setupUpdater();
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TAX FILINGS — History + Save + S04A
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const fmt = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
+
+// ─── Save S04 Filing ──────────────────────────────────────────────────────────
+
+async function saveS04Filing(report) {
+  const btn = document.getElementById('confirm-save-filing-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+  const filedDate = document.getElementById('filing-date')?.value || null;
+  const amtPaid   = parseFloat(document.getElementById('filing-amount-paid')?.value || 0);
+  const status    = document.getElementById('filing-status')?.value  || 'filed';
+  const notes     = document.getElementById('filing-notes')?.value   || null;
+
+  const payload = {
+    type:        's04',
+    year:        report.year,
+    quarter:     null,
+    filedDate,
+    dueDate:     null,
+    grossIncome: report.income.grossIncome,
+    taxPayable:  report.totalTaxPayable,
+    nis:         report.contributions.nis,
+    nht:         report.contributions.nht,
+    edTax:       report.contributions.educationTax,
+    incomeTax:   report.tax.incomeTax,
+    amountPaid:  amtPaid,
+    status,
+    reportJson:  report,
+    notes,
+  };
+
+  const res = await window.electronAPI.saveFilingRecord(payload);
+  if (btn) { btn.disabled = false; btn.textContent = '✓ Save Filing'; }
+
+  if (!res.success) {
+    toast(`Failed to save filing: ${res.error}`, 'error');
+    return;
+  }
+
+  toast(`S04 ${report.year} filing saved!`, 'success');
+  document.getElementById('save-filing-form').style.display = 'none';
+  document.getElementById('show-save-filing-btn').textContent = '💾 Save as Filed';
+  refreshFilingHistory();
+}
+
+// ─── Filing History ───────────────────────────────────────────────────────────
+
+async function refreshFilingHistory() {
+  const wrap = document.getElementById('filing-history-wrap');
+  if (!wrap) return;
+
+  const res = await window.electronAPI.getFilingRecords();
+  if (!res.success) {
+    wrap.innerHTML = `<div class="filing-empty" style="color:var(--warn);">Error loading filings: ${escHtml(res.error || '')}</div>`;
+    return;
+  }
+
+  const filings = res.data || [];
+  if (!filings.length) {
+    wrap.innerHTML = '<div class="filing-empty">No filings saved yet. Generate an S04 report and click <strong>Save as Filed</strong>.</div>';
+    return;
+  }
+
+  const statusBadge = s => `<span class="filing-status ${s}">${s}</span>`;
+  const fmtDate     = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+  const typeLabel   = (type, q) => type === 's04a' ? `S04A Q${q}` : 'S04';
+
+  wrap.innerHTML = `
+    <div class="table-wrap" style="max-height:280px;overflow-y:auto;">
+      <table class="filing-table">
+        <thead>
+          <tr>
+            <th>Type</th><th>Year</th><th>Filed</th><th>Gross Income</th>
+            <th>Tax Payable</th><th>Paid</th><th>Status</th><th style="width:60px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filings.map(f => `
+            <tr data-filing-id="${f.id}">
+              <td><strong>${typeLabel(f.type, f.quarter)}</strong></td>
+              <td>${f.year}</td>
+              <td style="font-size:11px;">${fmtDate(f.filed_date)}</td>
+              <td>${fmt(f.gross_income)}</td>
+              <td style="color:var(--warn);">${fmt(f.tax_payable)}</td>
+              <td style="color:var(--accent2);">${fmt(f.amount_paid)}</td>
+              <td>${statusBadge(f.status)}</td>
+              <td>
+                <button class="btn btn-danger btn-sm filing-delete-btn" data-id="${f.id}" title="Delete this record" style="padding:2px 8px;font-size:11px;">✕</button>
+              </td>
+            </tr>
+            ${f.notes ? `<tr><td colspan="8" style="font-size:11px;color:var(--text-muted);padding-top:0;border-top:none;">↳ ${escHtml(f.notes)}</td></tr>` : ''}
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  wrap.querySelectorAll('.filing-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      const id = parseInt(e.target.dataset.id);
+      if (!confirm('Delete this filing record? This cannot be undone.')) return;
+      const res = await window.electronAPI.deleteFilingRecord(id);
+      if (res.success) { refreshFilingHistory(); toast('Filing deleted.', 'info'); }
+      else toast(`Delete failed: ${res.error}`, 'error');
+    });
+  });
+}
+
+// ─── S04A Provisional Tax Estimate ───────────────────────────────────────────
+
+async function generateS04AEstimate() {
+  const btn  = document.getElementById('generate-s04a-btn');
+  const wrap = document.getElementById('s04a-wrap');
+  const year = parseInt(document.getElementById('s04a-year-select')?.value || new Date().getFullYear());
+
+  btn.disabled = true;
+  btn.textContent = '…';
+  wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
+
+  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null });
+  btn.disabled = false;
+  btn.textContent = 'Generate';
+
+  if (!res.success) {
+    wrap.innerHTML = `<div style="color:var(--warn);padding:12px;">Error: ${escHtml(res.error || 'Unknown error')}</div>`;
+    return;
+  }
+
+  renderS04AEstimate(res.data);
+}
+
+function renderS04AEstimate(est) {
+  const wrap = document.getElementById('s04a-wrap');
+  if (!wrap) return;
+
+  const now   = new Date();
+  const fmtDt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { year: 'numeric', month: 'short', day: 'numeric' });
+
+  const adjBadge = est.useAdjusted
+    ? `<span class="badge" style="background:rgba(210,153,34,0.18);color:var(--warn2);font-size:10px;margin-left:8px;">Trend-adjusted</span>`
+    : '';
+  const priorInfo = est.hasPriorFiling
+    ? `Prior year (${est.priorYear}) S04 on file · Tax: ${fmt(est.priorYearTaxPayable)}`
+    : `No prior-year S04 filing found — estimated from current-year trends`;
+
+  const quartersHtml = est.quarters.map(q => {
+    const isPast    = new Date(q.dueDate) < now;
+    const cls       = isPast ? ' overdue' : '';
+    const diffBadge = est.useAdjusted && q.baseAmount !== q.recommendedAmount
+      ? `<div class="s04a-quarter-base">Base: ${fmt(q.baseAmount)}</div>`
+      : '';
+
+    return `
+      <div class="s04a-quarter${cls}">
+        <div class="s04a-quarter-label">${escHtml(q.label)}</div>
+        <div class="s04a-quarter-due">Due: ${escHtml(q.dueDateFormatted)}${isPast ? ' <span style="color:var(--warn);font-size:10px;">● Past due</span>' : ''}</div>
+        <div class="s04a-quarter-amount">${fmt(q.recommendedAmount)}</div>
+        ${diffBadge}
+        <div class="s04a-quarter-save">
+          <button class="btn btn-secondary btn-sm save-s04a-btn" data-quarter="${q.quarter}" data-due="${q.dueDate}" data-amount="${q.recommendedAmount}" data-year="${est.currentYear}" style="font-size:10px;padding:3px 8px;">
+            💾 Save
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div style="font-size:13px;font-weight:600;">${est.currentYear} Quarterly Provisional Tax${adjBadge}</div>
+      <div style="font-size:11px;color:var(--text-muted);flex:1;">${escHtml(priorInfo)}</div>
+    </div>
+    <div class="s04a-quarters">${quartersHtml}</div>
+    <ul class="s04a-notes">${est.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>
+  `;
+
+  // Wire "Save" buttons for individual quarters
+  wrap.querySelectorAll('.save-s04a-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      const { quarter, due, amount, year } = e.target.dataset;
+      const res = await window.electronAPI.saveFilingRecord({
+        type:        's04a',
+        year:        parseInt(year),
+        quarter:     parseInt(quarter),
+        filedDate:   null,
+        dueDate:     due,
+        grossIncome: est.priorYearGrossIncome || 0,
+        taxPayable:  parseFloat(amount),
+        nis:         0, nht: 0, edTax: 0, incomeTax: 0,
+        amountPaid:  0,
+        status:      'draft',
+        reportJson:  null,
+        notes:       `S04A Q${quarter} ${year} provisional estimate`,
+      });
+      if (res.success) {
+        toast(`S04A Q${quarter} saved to filing history.`, 'success');
+        refreshFilingHistory();
+      } else {
+        toast(`Save failed: ${res.error}`, 'error');
+      }
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TAJ FIELD MAPPING CARD  +  PDF EXPORT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build the TAJ S04 field mapping card as a DOM element.
+ * Each row maps a TAJ form line number + field label to the computed MiTax value,
+ * with a one-click copy button so the user can paste directly into mytaxes.ads.taj.gov.jm.
+ */
+function buildFieldMappingCard(report) {
+  const f     = v => Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 });
+  const fJMD  = v => `$${f(v)} JMD`;
+
+  // TAJ S04 form field definitions  (line, TAJ label, value, css-class)
+  const SECTIONS = [
+    {
+      title: 'Part A — Income from Self-Employment',
+      rows: [
+        ['A1', 'Business / Professional Income',      fJMD(report.income.businessProfessionalIncome), ''],
+        ['A2', 'Foreign-Sourced Income',               fJMD(report.income.foreignSourcedIncome),       ''],
+        ['A3', 'Investment Income (Dividends / Interest)', fJMD(report.income.investmentIncome),       ''],
+        ['A4', 'Rental Income',                        fJMD(report.income.rentalIncome),               ''],
+        ['A5', 'Other Income',                         fJMD(report.income.otherIncome),                ''],
+        ['A6', 'TOTAL GROSS INCOME  (A1 + A2 + A3 + A4 + A5)', fJMD(report.income.grossIncome),      'total'],
+      ],
+    },
+    {
+      title: 'Part B — Allowable Deductions',
+      rows: [
+        ['B7', `Allowable Business Expenses  (${report.deductions.methodUsed})`,
+               fJMD(report.deductions.allowableBusinessExpenses), ''],
+        ['B8', 'STATUTORY INCOME  (A6 − B7)', fJMD(report.statutoryIncome), 'total'],
+      ],
+    },
+    {
+      title: 'Part C — Statutory Contributions',
+      rows: [
+        ['C9',  'NIS Contributions  (3%)',            fJMD(report.contributions.nis),           ''],
+        ['C10', 'NHT Contributions  (2%)',            fJMD(report.contributions.nht),           ''],
+        ['C11', 'Education Tax  (2.25%)',             fJMD(report.contributions.educationTax),  ''],
+        ['C12', 'TOTAL CONTRIBUTIONS  (C9 + C10 + C11)', fJMD(report.contributions.totalContributions), 'total'],
+      ],
+    },
+    {
+      title: 'Part D — Chargeable Income & Income Tax',
+      rows: [
+        ['D13', 'Income Tax Threshold (Personal Allowance)', fJMD(report.personalThresholdApplied), ''],
+        ['D14', 'CHARGEABLE INCOME  (B8 − C12 − D13)',       fJMD(report.chargeableIncome),         'total'],
+        ['D15', 'Income Tax Payable  (25% / 30%)',            fJMD(report.tax.incomeTax),            ''],
+      ],
+    },
+    {
+      title: 'Summary — Total Tax Payable',
+      rows: [
+        ['E16', 'TOTAL TAX PAYABLE  (C12 + D15)', fJMD(report.totalTaxPayable), 'total'],
+        ['E17', 'Net Income After Tax',            fJMD(report.summary.netIncomeAfterTax), 'credit'],
+      ],
+    },
+  ];
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.cssText = 'margin-top:16px;display:none;';  // hidden until toggled
+
+  let sectionsHtml = SECTIONS.map(sec => `
+    <div class="field-map-section">
+      <div class="field-map-section-title">${escHtml(sec.title)}</div>
+      ${sec.rows.map(([line, label, value, cls]) => `
+        <div class="field-map-row">
+          <span class="field-map-line">${escHtml(line)}</span>
+          <span class="field-map-label">${escHtml(label)}</span>
+          <span class="field-map-value ${cls}">${escHtml(value)}</span>
+          <button class="field-map-copy" data-value="${escAttr(value)}" title="Copy to clipboard">Copy</button>
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
+
+  card.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="flex:1;">
+        <div style="font-size:15px;font-weight:700;">📋 TAJ e-Services Field Guide</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
+          Maps each MiTax figure to the exact field on the
+          <a href="#" id="taj-link-in-card" style="color:var(--accent);">TAJ e-Services S04 form</a>.
+          Click <strong>Copy</strong> to copy a value, then paste directly into mytaxes.ads.taj.gov.jm.
+        </div>
+      </div>
+      <span class="badge" style="background:rgba(88,166,255,0.15);color:var(--accent);font-size:10px;">Tax Year ${report.year}</span>
+    </div>
+    ${sectionsHtml}
+    <div style="margin-top:12px;padding:10px;background:var(--surface2);border-radius:6px;font-size:11px;color:var(--text-muted);line-height:1.7;">
+      ⚠ These figures are MiTax estimates only. Verify with your actual records before submitting to TAJ.
+      All amounts are in JMD. Consult a qualified tax practitioner for official advice.
+    </div>
+  `;
+
+  // Wire copy buttons
+  card.querySelectorAll('.field-map-copy').forEach(btn => {
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(btn.dataset.value).then(() => {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1800);
+      });
+    });
+  });
+
+  // Wire TAJ portal link inside the card
+  const tajLink = card.querySelector('#taj-link-in-card');
+  if (tajLink) {
+    tajLink.addEventListener('click', e => {
+      e.preventDefault();
+      require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
+    });
+  }
+
+  return card;
+}
+
+// ─── PDF Export ───────────────────────────────────────────────────────────────
+
+async function exportS04PDF(report) {
+  const btn = document.getElementById('export-pdf-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Building PDF…'; }
+
+  const profile  = getProfile();
+  const html     = buildPrintHTML(report, profile);
+  const filename = `S04-${report.year}-${(profile.fullName || 'taxpayer').replace(/\s+/g, '_')}.pdf`;
+
+  const res = await window.electronAPI.exportS04PDF({ htmlContent: html, filename });
+
+  if (btn) { btn.disabled = false; btn.textContent = '📄 Export PDF'; }
+
+  if (!res.success) {
+    if (res.error !== 'Cancelled') toast(`PDF export failed: ${res.error}`, 'error');
+    return;
+  }
+  toast(`PDF saved successfully.`, 'success');
+}
+
+/**
+ * Build a fully self-contained, print-ready HTML document that mirrors the
+ * official TAJ S04 form layout.  All CSS is inlined so Chromium's PDF
+ * engine renders it correctly with no external dependencies.
+ */
+function buildPrintHTML(report, profile = {}) {
+  const f     = v => Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 });
+  const fJMD  = v => `$${f(v)}`;
+  const today = new Date().toLocaleDateString('en-JM', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  const row  = (line, label, value, bold = false, indent = false) => `
+    <tr class="${bold ? 'total-row' : ''}">
+      <td class="line-col">${line}</td>
+      <td class="label-col${indent ? ' indent' : ''}">${label}</td>
+      <td class="value-col">${value}</td>
+    </tr>`;
+
+  const sectionHeader = title => `
+    <tr class="section-header"><td colspan="3">${title}</td></tr>`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>S04 Tax Return — ${report.year}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Arial', sans-serif;
+    font-size: 10pt;
+    color: #1a1a1a;
+    background: #fff;
+    padding: 28px 36px;
+  }
+
+  /* ── Header ─────────────────────────────────── */
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; border-bottom: 2.5px solid #1a5276; padding-bottom: 14px; }
+  .header-left h1 { font-size: 18pt; font-weight: 900; color: #1a5276; letter-spacing: -0.3px; }
+  .header-left h2 { font-size: 10pt; font-weight: 400; color: #555; margin-top: 2px; }
+  .header-right { text-align: right; font-size: 9pt; color: #555; line-height: 1.7; }
+  .header-right .tax-year { font-size: 14pt; font-weight: 800; color: #1a5276; }
+  .estimate-banner {
+    background: #fff3cd; border: 1px solid #ffc107; border-radius: 5px;
+    padding: 6px 12px; font-size: 9pt; color: #856404;
+    margin-bottom: 16px; text-align: center; font-weight: 600;
+  }
+
+  /* ── Taxpayer Info Box ───────────────────────── */
+  .info-box { border: 1px solid #c8d6e0; border-radius: 5px; padding: 10px 14px; margin-bottom: 18px; background: #f4f8fb; }
+  .info-box .info-title { font-size: 8pt; font-weight: 700; color: #1a5276; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 7px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px 16px; }
+  .info-field label { display: block; font-size: 7.5pt; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+  .info-field .info-value { font-size: 9.5pt; font-weight: 600; border-bottom: 1px solid #c8d6e0; padding-bottom: 2px; min-height: 16px; }
+  .info-field .info-value.blank { color: #aaa; font-style: italic; font-weight: 400; }
+
+  /* ── Main Table ──────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+  .line-col  { width: 48px; font-size: 8.5pt; font-weight: 700; color: #1a5276; text-align: center; vertical-align: middle; padding: 5px 6px; border: 1px solid #d0dde8; background: #f4f8fb; }
+  .label-col { padding: 5px 10px; border: 1px solid #d0dde8; vertical-align: middle; font-size: 9.5pt; }
+  .label-col.indent { padding-left: 22px; }
+  .value-col { width: 150px; text-align: right; padding: 5px 12px; border: 1px solid #d0dde8; font-family: 'Courier New', monospace; font-size: 9.5pt; vertical-align: middle; }
+  .section-header td { background: #1a5276; color: #fff; font-size: 9pt; font-weight: 700; padding: 5px 10px; letter-spacing: 0.03em; border: 1px solid #1a5276; }
+  .total-row .label-col { font-weight: 700; background: #eaf1f8; }
+  .total-row .value-col { font-weight: 800; background: #eaf1f8; font-size: 10pt; }
+
+  /* ── Summary Box ─────────────────────────────── */
+  .summary-box {
+    border: 2px solid #1a5276; border-radius: 5px;
+    padding: 12px 16px; margin-top: 16px; background: #f4f8fb;
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+  }
+  .summary-box .summary-item { text-align: center; }
+  .summary-box .summary-label { font-size: 8pt; color: #555; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .summary-box .summary-value { font-size: 13pt; font-weight: 800; margin-top: 2px; }
+  .summary-box .summary-value.tax   { color: #c0392b; }
+  .summary-box .summary-value.net   { color: #1e8449; }
+  .summary-box .summary-value.gross { color: #1a5276; }
+
+  /* ── Contributions grid ──────────────────────── */
+  .contributions-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 12px 0; }
+  .contrib-card { border: 1px solid #c8d6e0; border-radius: 4px; padding: 8px 10px; text-align: center; background: #f9fcff; }
+  .contrib-card .c-label { font-size: 8pt; color: #555; font-weight: 700; text-transform: uppercase; }
+  .contrib-card .c-value { font-size: 10pt; font-weight: 800; color: #1a5276; margin-top: 3px; font-family: 'Courier New', monospace; }
+
+  /* ── Notes ───────────────────────────────────── */
+  .notes { margin-top: 16px; border-top: 1px solid #c8d6e0; padding-top: 10px; }
+  .notes p { font-size: 7.5pt; color: #777; line-height: 1.7; margin-bottom: 2px; }
+  .notes p::before { content: '• '; color: #1a5276; }
+
+  /* ── Signature block ─────────────────────────── */
+  .sig-block { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .sig-field { border-bottom: 1px solid #555; padding-bottom: 3px; min-height: 28px; }
+  .sig-label { font-size: 7.5pt; color: #888; margin-top: 4px; text-align: center; }
+
+  /* ── Footer ──────────────────────────────────── */
+  .footer { margin-top: 14px; font-size: 7.5pt; color: #aaa; text-align: center; border-top: 1px solid #eee; padding-top: 6px; }
+
+  @media print { body { padding: 16px 24px; } }
+</style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>S04 — Self-Employed Income Tax Return</h1>
+      <h2>Tax Administration Jamaica (TAJ) &nbsp;·&nbsp; Income Tax Act</h2>
+    </div>
+    <div class="header-right">
+      <div class="tax-year">Tax Year ${report.year}</div>
+      <div>Generated: ${today}</div>
+      <div style="font-size:8pt;margin-top:4px;">January 1 – December 31, ${report.year}</div>
+    </div>
+  </div>
+
+  <div class="estimate-banner">
+    ⚠ ESTIMATE FOR REFERENCE ONLY — Verify all figures before submitting to TAJ. Not a legal filing document.
+  </div>
+
+  <!-- Taxpayer Info -->
+  <div class="info-box">
+    <div class="info-title">Taxpayer Information</div>
+    <div class="info-grid">
+      <div class="info-field">
+        <label>Full Legal Name</label>
+        <div class="info-value ${profile.fullName ? '' : 'blank'}">${profile.fullName || '________________________________'}</div>
+      </div>
+      <div class="info-field">
+        <label>TRN</label>
+        <div class="info-value ${profile.trn ? '' : 'blank'}">${profile.trn || '___-___-___'}</div>
+      </div>
+      <div class="info-field">
+        <label>Business / Trading Name</label>
+        <div class="info-value ${profile.businessName ? '' : 'blank'}">${profile.businessName || '________________________________'}</div>
+      </div>
+      <div class="info-field">
+        <label>Address</label>
+        <div class="info-value ${profile.address ? '' : 'blank'}">${profile.address || '________________________________'}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary (top level) -->
+  <div class="summary-box">
+    <div class="summary-item">
+      <div class="summary-label">Gross Income</div>
+      <div class="summary-value gross">${fJMD(report.income.grossIncome)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">Statutory Income</div>
+      <div class="summary-value gross">${fJMD(report.statutoryIncome)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">Chargeable Income</div>
+      <div class="summary-value gross">${fJMD(report.chargeableIncome)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">Total Tax Payable</div>
+      <div class="summary-value tax">${fJMD(report.totalTaxPayable)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">Net After Tax</div>
+      <div class="summary-value net">${fJMD(report.summary.netIncomeAfterTax)}</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-label">Effective Rate</div>
+      <div class="summary-value gross">${report.tax.effectiveRate}</div>
+    </div>
+  </div>
+
+  <!-- Part A -->
+  <table style="margin-top:16px;">
+    ${sectionHeader('PART A — INCOME FROM SELF-EMPLOYMENT')}
+    ${row('A1', 'Business / Professional Income',                   fJMD(report.income.businessProfessionalIncome))}
+    ${row('A2', 'Foreign-Sourced Income',                           fJMD(report.income.foreignSourcedIncome))}
+    ${row('A3', 'Investment Income (Dividends, Interest, etc.)',    fJMD(report.income.investmentIncome))}
+    ${row('A4', 'Rental Income',                                    fJMD(report.income.rentalIncome))}
+    ${row('A5', 'Other Income',                                     fJMD(report.income.otherIncome))}
+    ${row('A6', 'TOTAL GROSS INCOME  (A1 + A2 + A3 + A4 + A5)',    fJMD(report.income.grossIncome), true)}
+  </table>
+
+  <!-- Part B -->
+  <table>
+    ${sectionHeader('PART B — ALLOWABLE DEDUCTIONS')}
+    ${row('B7', `Allowable Business Expenses  (${report.deductions.methodUsed})`,
+          fJMD(report.deductions.allowableBusinessExpenses))}
+    ${row('B8', 'STATUTORY INCOME  (A6 − B7)',  fJMD(report.statutoryIncome), true)}
+  </table>
+
+  <!-- Part C contributions grid -->
+  <div class="contributions-grid">
+    <div class="contrib-card">
+      <div class="c-label">C9 — NIS (3%)</div>
+      <div class="c-value">${fJMD(report.contributions.nis)}</div>
+    </div>
+    <div class="contrib-card">
+      <div class="c-label">C10 — NHT (2%)</div>
+      <div class="c-value">${fJMD(report.contributions.nht)}</div>
+    </div>
+    <div class="contrib-card">
+      <div class="c-label">C11 — Education Tax (2.25%)</div>
+      <div class="c-value">${fJMD(report.contributions.educationTax)}</div>
+    </div>
+    <div class="contrib-card" style="background:#eaf1f8;border-color:#1a5276;">
+      <div class="c-label" style="color:#1a5276;">C12 — Total Contributions</div>
+      <div class="c-value">${fJMD(report.contributions.totalContributions)}</div>
+    </div>
+  </div>
+
+  <!-- Part D -->
+  <table>
+    ${sectionHeader('PART D — CHARGEABLE INCOME & INCOME TAX')}
+    ${row('D13', 'Less: Income Tax Threshold (Personal Allowance)',  fJMD(report.personalThresholdApplied))}
+    ${row('D14', 'CHARGEABLE INCOME  (B8 − C12 − D13)',             fJMD(report.chargeableIncome), true)}
+    ${row('D15', 'Income Tax Payable  (25% up to $6M / 30% above)', fJMD(report.tax.incomeTax))}
+  </table>
+
+  <!-- Total Tax Payable -->
+  <table>
+    ${sectionHeader('TOTAL TAX PAYABLE')}
+    ${row('E16', 'TOTAL TAX PAYABLE  (C12 + D15)',  fJMD(report.totalTaxPayable), true)}
+    ${row('E17', 'Net Income After Tax',             fJMD(report.summary.netIncomeAfterTax), true)}
+  </table>
+
+  <!-- Notes -->
+  <div class="notes">
+    ${report.notes.map(n => `<p>${n}</p>`).join('')}
+  </div>
+
+  <!-- Signature block -->
+  <div class="sig-block" style="margin-top:24px;">
+    <div>
+      <div class="sig-field"></div>
+      <div class="sig-label">Taxpayer Signature</div>
+    </div>
+    <div>
+      <div class="sig-field"></div>
+      <div class="sig-label">Date</div>
+    </div>
+    <div>
+      <div class="sig-field"></div>
+      <div class="sig-label">TAJ Reference / Receipt No.</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Generated by MiTax &nbsp;·&nbsp; ${today} &nbsp;·&nbsp; FOR REFERENCE ONLY — This is not a legal filing document.
+    File your official return at mytaxes.ads.taj.gov.jm
+  </div>
+
+</body>
+</html>`;
+}
