@@ -1,7 +1,7 @@
 /**
  * Stripe Payout / Balance Statement Parser
  */
-const { normalizeDate, derivePeriodFromTransactions } = require('./index');
+const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);

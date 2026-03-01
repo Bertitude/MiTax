@@ -2,7 +2,7 @@
  * Generic Statement Parser — fallback for unrecognized institutions.
  * Uses heuristic patterns to extract dates and amounts.
  */
-const { normalizeDate, derivePeriodFromTransactions } = require('./index');
+const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
