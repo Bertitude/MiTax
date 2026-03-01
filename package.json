@@ -1,7 +1,7 @@
 {
-  "name": "lunchmoney-importer",
-  "version": "1.2.0",
-  "description": "LunchMoney statement importer with Jamaica S04 tax support",
+  "name": "mitax",
+  "version": "1.1.1",
+  "description": "MiTax — LunchMoney statement importer with Jamaica S04 tax support",
   "main": "main.js",
   "scripts": {
     "start":         "electron .",
@@ -23,8 +23,8 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId":       "net.fuzionworks.lunchmoney-importer",
-    "productName": "LunchMoney Importer",
+    "appId":       "net.fuzionworks.mitax",
+    "productName": "MiTax",
     "copyright":   "© 2025 Kaiel Eytle / FuzionWorks",
     "asar": true,
     "asarUnpack": [
@@ -70,11 +70,11 @@
       "installerHeaderIcon":   "assets/icons/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName":          "LunchMoney Importer",
+      "shortcutName":          "MiTax",
       "runAfterFinish":        true
     },
     "dmg": {
-      "title":    "LunchMoney Importer",
+      "title":    "MiTax",
       "contents": [
         { "x": 130, "y": 220 },
         { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
