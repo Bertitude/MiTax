@@ -1,0 +1,90 @@
+{
+  "name": "lunchmoney-importer",
+  "version": "1.1.0",
+  "description": "LunchMoney statement importer with Jamaica S04 tax support",
+  "main": "main.js",
+  "scripts": {
+    "start":         "electron .",
+    "build":         "electron-builder",
+    "build:win":     "electron-builder --win",
+    "build:mac":     "electron-builder --mac",
+    "build:linux":   "electron-builder --linux",
+    "release":       "electron-builder --publish always",
+    "postinstall":   "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3":  "^9.4.3",
+    "electron-updater": "^6.3.9",
+    "node-fetch":      "^2.7.0",
+    "pdf-parse":       "^1.1.1"
+  },
+  "devDependencies": {
+    "electron":         "^29.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId":       "net.fuzionworks.lunchmoney-importer",
+    "productName": "LunchMoney Importer",
+    "copyright":   "© 2025 Kaiel Eytle / FuzionWorks",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**",
+      "node_modules/pdf-parse/**"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "src/**",
+      "node_modules/**",
+      "!node_modules/.cache/**",
+      "!**/*.map",
+      "!**/*.md"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner":    "Bertitude",
+      "repo":     "MiTax",
+      "releaseType": "release"
+    },
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "assets/icons/icon.ico",
+      "publisherName": "FuzionWorks"
+    },
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "icon": "assets/icons/icon.icns",
+      "category": "public.app-category.finance"
+    },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "icon": "assets/icons/icon.png",
+      "category": "Finance"
+    },
+    "nsis": {
+      "oneClick":              false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon":         "assets/icons/icon.ico",
+      "uninstallerIcon":       "assets/icons/icon.ico",
+      "installerHeaderIcon":   "assets/icons/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName":          "LunchMoney Importer",
+      "runAfterFinish":        true
+    },
+    "dmg": {
+      "title":    "LunchMoney Importer",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    }
+  },
+  "keywords": ["lunchmoney", "finance", "jamaica", "tax"],
+  "author": {
+    "name":  "Kaiel Eytle",
+    "email": "kaiel.eytle@fuzionworks.net"
+  },
+  "license": "MIT"
+}

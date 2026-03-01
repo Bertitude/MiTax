@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';" />
+  <title>LunchMoney Importer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ─── Sidebar ─────────────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">LM</div>
+      <div>
+        <div class="logo-text">LM Importer</div>
+        <div class="logo-sub">Jamaica Edition</div>
+      </div>
+    </div>
+    <nav>
+      <div class="nav-item active" data-view="import">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zm.5 4.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5z"/></svg>
+        <span class="nav-label">Import Statements</span>
+      </div>
+      <div class="nav-item" data-view="tracker">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.75a.75.75 0 0 0-1.5 0v12.5c0 .414.336.75.75.75h14.5a.75.75 0 0 0 0-1.5H1.5V1.75zM3 8.5a1 1 0 1 1 2 0 1 1 0 0 1-2 0zm4 0a1 1 0 1 1 2 0 1 1 0 0 1-2 0zm4 0a1 1 0 1 1 2 0 1 1 0 0 1-2 0z"/></svg>
+        <span class="nav-label">Coverage Tracker</span>
+      </div>
+      <div class="nav-item" data-view="history">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.643 3.143L.427 1.927A.25.25 0 0 0 0 2.104V5.75c0 .138.112.25.25.25h3.646a.25.25 0 0 0 .177-.427L2.715 4.215a6.5 6.5 0 1 1-1.18 4.458.75.75 0 1 0-1.493.154 8.001 8.001 0 1 0 1.6-5.684zM7.75 4a.75.75 0 0 1 .75.75v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.75.75 0 0 1 7 8.25v-3.5A.75.75 0 0 1 7.75 4z"/></svg>
+        <span class="nav-label">Upload History</span>
+      </div>
+      <div class="nav-item" data-view="tax">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2h8.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2zm0 1.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25h-8.5zM5 8.75a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5A.75.75 0 0 1 5 8.75zM5.75 5h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5zM5 11.25a.75.75 0 0 1 .75-.75h2a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1-.75-.75z"/></svg>
+        <span class="nav-label">S04 Tax Return</span>
+      </div>
+      <div class="nav-item" data-view="settings">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.105.645 6.652.095 7.394.031 7.6.01 7.8 0 8 0zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.628-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0zM8 5.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>
+        <span class="nav-label">Settings</span>
+      </div>
+    </nav>
+    <div class="sidebar-footer">v1.1.0 · LunchMoney Importer</div>
+  </aside>
+
+  <!-- ─── Main ──────────────────────────────────────────────────────── -->
+  <main id="main">
+    <div id="topbar">
+      <span class="page-title" id="page-title">Import Statements</span>
+      <div style="flex:1;"></div>
+      <span id="app-version" style="font-size:11px;color:var(--text-muted);margin-right:12px;"></span>
+      <button class="btn btn-secondary btn-sm" id="check-update-btn" title="Check for updates" style="font-size:11px;padding:4px 10px;">↑ Check for updates</button>
+      <div class="api-status" style="margin-left:12px;">
+        <div class="status-dot" id="api-dot"></div>
+        <span id="api-label">Not connected</span>
+      </div>
+    </div>
+
+    <!-- Update banner — hidden until an update is available -->
+    <div id="update-banner" style="display:none;"></div>
+
+    <div id="content">
+
+      <!-- ═══ IMPORT VIEW ══════════════════════════════════════════════ -->
+      <div class="view active" id="import-view">
+
+        <div id="drop-zone">
+          <div class="drop-icon">📂</div>
+          <div class="drop-title">Drop your bank statements here</div>
+          <div class="drop-sub">PDF, CSV supported · NCB, Scotiabank, JMMB, Wise, PayPal, Stripe &amp; more<br>
+            or <span class="drop-link" id="browse-btn">browse files</span>
+          </div>
+        </div>
+
+        <div id="file-queue"></div>
+
+        <div id="mapping-section" style="display:none;">
+          <div class="action-bar" style="margin-bottom:16px;">
+            <button class="btn btn-primary"   id="parse-all-btn">⚡ Parse All</button>
+            <button class="btn btn-secondary" id="validate-btn"  disabled>📋 Review &amp; Validate</button>
+            <button class="btn btn-secondary" id="export-csv-btn" disabled>📥 Export CSV</button>
+            <button class="btn btn-danger btn-sm" id="clear-queue-btn">Clear Queue</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ TRACKER VIEW ═════════════════════════════════════════════ -->
+      <div class="view" id="tracker-view">
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
+          <div style="flex:1;"></div>
+          <label style="font-size:13px;color:var(--text-muted);">Year</label>
+          <select id="tracker-year" style="width:100px;">
+            <option value="2026">2026</option>
+            <option value="2025">2025</option>
+            <option value="2024" selected>2024</option>
+            <option value="2023">2023</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" id="tracker-refresh-btn">↻ Refresh from LunchMoney</button>
+        </div>
+        <div class="grid-2" id="tracker-stats" style="margin-bottom:20px;"></div>
+        <div id="tracker-accounts"></div>
+      </div>
+
+      <!-- ═══ HISTORY VIEW ═════════════════════════════════════════════ -->
+      <div class="view" id="history-view">
+        <div class="card">
+          <div class="card-title">Upload History</div>
+          <div class="table-wrap">
+            <table id="history-table">
+              <thead>
+                <tr>
+                  <th>Date</th><th>Institution</th><th>Account</th>
+                  <th>Period</th><th>Transactions</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody">
+                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">No uploads yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ TAX VIEW ═════════════════════════════════════════════════ -->
+      <div class="view" id="tax-view">
+        <div class="card" style="max-width:600px;">
+          <div class="card-title">Generate S04 Tax Return</div>
+          <div class="form-group">
+            <label>Tax Year</label>
+            <select id="tax-year-select">
+              <option value="2025">2025</option>
+              <option value="2024" selected>2024</option>
+              <option value="2023">2023</option>
+            </select>
+          </div>
+          <div class="card-title" style="margin-top:16px;">Manual Income Adjustments (JMD)</div>
+          <div class="grid-2">
+            <div class="form-group"><label>Additional Business Income</label><input type="number" id="tax-business" placeholder="0.00" min="0" step="0.01" /></div>
+            <div class="form-group"><label>Additional Foreign Income</label><input type="number" id="tax-foreign" placeholder="0.00" min="0" step="0.01" /></div>
+            <div class="form-group"><label>Rental Income</label><input type="number" id="tax-rental" placeholder="0.00" min="0" step="0.01" /></div>
+            <div class="form-group"><label>Investment Income</label><input type="number" id="tax-investment" placeholder="0.00" min="0" step="0.01" /></div>
+            <div class="form-group"><label>Additional Deductible Expenses</label><input type="number" id="tax-expenses" placeholder="0.00" min="0" step="0.01" /></div>
+          </div>
+          <div class="action-bar">
+            <button class="btn btn-primary" id="generate-tax-btn">📊 Generate S04 Report</button>
+          </div>
+        </div>
+        <div id="tax-report-wrap" style="display:none;margin-top:20px;"></div>
+      </div>
+
+      <!-- ═══ SETTINGS VIEW ════════════════════════════════════════════ -->
+      <div class="view" id="settings-view">
+        <div class="card form-section">
+          <div class="card-title">LunchMoney API</div>
+          <div class="form-group">
+            <label>API Key</label>
+            <input type="password" id="api-key-input" placeholder="Paste your LunchMoney API key" />
+          </div>
+          <div class="action-bar">
+            <button class="btn btn-primary" id="save-api-key-btn">Save &amp; Connect</button>
+            <button class="btn btn-secondary" id="test-api-btn">Test Connection</button>
+          </div>
+          <div class="settings-success" id="settings-success">✓ Connected successfully</div>
+        </div>
+        <div class="card form-section">
+          <div class="card-title">Upload Preferences</div>
+          <div class="form-group">
+            <label>Default Currency</label>
+            <select id="default-currency">
+              <option value="JMD" selected>JMD — Jamaican Dollar</option>
+              <option value="USD">USD — US Dollar</option>
+              <option value="GBP">GBP — British Pound</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" id="skip-duplicates" checked style="width:auto;margin-right:6px;" />Skip duplicate transactions</label>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" id="apply-rules" checked style="width:auto;margin-right:6px;" />Apply LunchMoney rules on upload</label>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="save-prefs-btn">Save Preferences</button>
+        </div>
+        <div class="card form-section">
+          <div class="card-title">About</div>
+          <p style="font-size:13px;color:var(--text-muted);line-height:1.8;">
+            LunchMoney Importer v1.1.0<br>
+            Supports NCB, Scotiabank JA, JMMB, Wise, PayPal, Stripe.<br>
+            Coverage pulled directly from LunchMoney — handles overlapping statement periods.<br>
+            S04 calculations are estimates only — consult TAJ for official guidance.
+          </p>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     MODAL: Account Selection / Creation
+════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="account-modal">
+  <div class="modal" style="width:620px;">
+    <div class="modal-title">📌 Select LunchMoney Account</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">
+      Choose which LunchMoney account each parsed statement belongs to, or create a new one.
+    </p>
+
+    <div id="account-modal-rows"></div>
+
+    <!-- Create new account form (hidden by default) -->
+    <div id="create-account-form" style="display:none;margin-top:20px;padding:16px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);">
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px;">➕ Create New LunchMoney Account</div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Account Name *</label>
+          <input type="text" id="new-account-name" placeholder="e.g. NCB Chequing" />
+        </div>
+        <div class="form-group">
+          <label>Institution Name</label>
+          <input type="text" id="new-account-institution" placeholder="e.g. NCB Jamaica" />
+        </div>
+        <div class="form-group">
+          <label>Account Type *</label>
+          <select id="new-account-type">
+            <option value="depository">Chequing / Savings (depository)</option>
+            <option value="credit">Credit Card</option>
+            <option value="loan">Loan / Mortgage</option>
+            <option value="brokerage">Brokerage / Investment</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Currency *</label>
+          <select id="new-account-currency">
+            <option value="JMD" selected>JMD</option>
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+            <option value="EUR">EUR</option>
+            <option value="CAD">CAD</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Opening Balance</label>
+          <input type="number" id="new-account-balance" placeholder="0.00" step="0.01" value="0" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px;">
+        <button class="btn btn-success btn-sm" id="create-account-btn">Create in LunchMoney</button>
+        <button class="btn btn-secondary btn-sm" id="cancel-create-btn">Cancel</button>
+      </div>
+      <div id="create-account-error" style="color:var(--warn);font-size:12px;margin-top:8px;display:none;"></div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="account-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="account-modal-confirm">Continue to Validate →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     MODAL: Transaction Validation / Editing
+════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="validate-modal">
+  <div class="modal" style="width:96vw;max-width:1200px;max-height:88vh;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
+      <div class="modal-title" style="margin-bottom:0;flex:1;">📋 Review &amp; Edit Transactions</div>
+      <div id="validate-counts" style="font-size:12px;color:var(--text-muted);"></div>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">
+      Review the parsed transactions before uploading. Click any cell to edit. Original bank description is preserved in <em>Notes</em>.
+    </p>
+
+    <!-- Toolbar -->
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" id="val-select-all">✓ All</button>
+      <button class="btn btn-secondary btn-sm" id="val-deselect-all">✗ None</button>
+      <button class="btn btn-secondary btn-sm" id="val-credits-only">Credits only</button>
+      <button class="btn btn-secondary btn-sm" id="val-debits-only">Debits only</button>
+      <div style="flex:1;"></div>
+      <input type="text" id="val-search" placeholder="Search payee / notes…" style="width:200px;" />
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap" style="max-height:52vh;overflow-y:auto;">
+      <table id="validate-table" style="font-size:12px;">
+        <thead style="position:sticky;top:0;background:var(--surface);z-index:1;">
+          <tr>
+            <th style="width:32px;"><input type="checkbox" id="val-check-all" /></th>
+            <th style="width:100px;">Date</th>
+            <th style="min-width:160px;">Payee <span style="color:var(--text-muted);font-weight:400;font-size:10px;">(editable)</span></th>
+            <th style="width:110px;">Amount</th>
+            <th style="width:60px;">CCY</th>
+            <th style="min-width:200px;">Notes <span style="color:var(--text-muted);font-weight:400;font-size:10px;">(original description)</span></th>
+            <th style="min-width:130px;">Category</th>
+            <th style="width:80px;">Source</th>
+          </tr>
+        </thead>
+        <tbody id="validate-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="modal-footer" style="padding-top:12px;border-top:1px solid var(--border);">
+      <span id="val-selected-count" style="font-size:13px;color:var(--text-muted);flex:1;align-self:center;"></span>
+      <button class="btn btn-secondary" id="validate-modal-cancel">← Back</button>
+      <button class="btn btn-success" id="validate-upload-btn">☁️ Upload Selected to LunchMoney</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
