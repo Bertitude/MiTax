@@ -175,6 +175,92 @@ ipcMain.handle('export-csv', async (event, { transactions, filename }) => {
   }
 });
 
+// ─── IPC: Dashboard Data ─────────────────────────────────────────────────────
+ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) => {
+  const qMonthsByQ = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+  const qMonths    = qMonthsByQ[(quarter || 1) - 1];
+
+  const result = {
+    assets:               [],
+    ytdIncome:            0,
+    trackerAccounts:      [],
+    quarterlyTaxEstimate: null,
+  };
+
+  // ── LunchMoney: assets + YTD income + quarterly tax estimate ────────────
+  if (apiKey) {
+    try {
+      const { getAssets, getTransactions } = require('./src/lunchmoney');
+      const { TAX_PARAMS }                 = require('./src/tax/s04');
+
+      result.assets = await getAssets(apiKey);
+
+      const now    = new Date();
+      const ytdEnd = now.toISOString().slice(0, 10);
+      const ytdTxs = await getTransactions(apiKey, {
+        startDate: `${year}-01-01`,
+        endDate:   ytdEnd,
+      });
+
+      // YTD income = sum of credits (negative amounts in LunchMoney) in primary currency
+      result.ytdIncome = ytdTxs.reduce((sum, tx) => {
+        const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+        return amount < 0 ? sum + Math.abs(amount) : sum;
+      }, 0);
+
+      // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates
+      const params        = TAX_PARAMS[year] || TAX_PARAMS[2025];
+      const monthsElapsed = now.getMonth() + now.getDate() / 30.5; // approximate
+      const annualEst     = monthsElapsed > 0
+        ? (result.ytdIncome / monthsElapsed) * 12
+        : result.ytdIncome * 4;
+
+      const standardDed   = annualEst * params.standardDeductionRate;
+      const statutory     = Math.max(0, annualEst - standardDed);
+      const nisAnnual     = Math.min(annualEst, params.nisMaxIncome) * params.nisRate;
+      const nhtAnnual     = annualEst * params.nhtRate;
+      const edTaxAnnual   = statutory * params.edTaxRate;
+      const chargeable    = Math.max(0, statutory - params.personalThreshold - nisAnnual);
+      let   incomeTaxAnnual = 0;
+      if (chargeable > 0) {
+        incomeTaxAnnual = chargeable <= params.incomeTaxBand1Max
+          ? chargeable * params.incomeTaxRate1
+          : params.incomeTaxBand1Max * params.incomeTaxRate1 +
+            (chargeable - params.incomeTaxBand1Max) * params.incomeTaxRate2;
+      }
+      const totalAnnual = nisAnnual + nhtAnnual + edTaxAnnual + incomeTaxAnnual;
+      const r2 = v => Math.round(v * 100) / 100;
+
+      result.quarterlyTaxEstimate = {
+        annualEstimate: r2(annualEst),
+        monthsElapsed:  Math.round(monthsElapsed * 10) / 10,
+        nis:            r2(nisAnnual     / 4),
+        nht:            r2(nhtAnnual     / 4),
+        edTax:          r2(edTaxAnnual   / 4),
+        incomeTax:      r2(incomeTaxAnnual / 4),
+        total:          r2(totalAnnual   / 4),
+      };
+    } catch (e) {
+      console.warn('[Dashboard] LunchMoney error:', e.message);
+    }
+  }
+
+  // ── Tracker: missing months for current quarter ──────────────────────────
+  try {
+    const { getAllAccounts, getMissingMonths } = require('./src/tracker');
+    const accounts = getAllAccounts();
+    result.trackerAccounts = accounts.map(acc => {
+      const allMissing     = getMissingMonths(acc.id);
+      const quarterMissing = allMissing.filter(m => m.year === year && qMonths.includes(m.month));
+      return { ...acc, quarterMissing };
+    });
+  } catch (e) {
+    console.warn('[Dashboard] Tracker error:', e.message);
+  }
+
+  return { success: true, data: result };
+});
+
 // ─── IPC: S04 Tax ────────────────────────────────────────────────────────────
 ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData }) => {
   try {

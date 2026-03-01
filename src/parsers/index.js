@@ -15,6 +15,7 @@ const jmmbParser = require('./jmmb');
 const wiseParser = require('./wise');
 const paypalParser = require('./paypal');
 const stripeParser = require('./stripe');
+const unfcuParser = require('./unfcu');
 const genericParser = require('./generic');
 
 const INSTITUTION_PATTERNS = [
@@ -24,6 +25,7 @@ const INSTITUTION_PATTERNS = [
   { name: 'Wise',       regex: /wise\s+(formerly\s+transferwise|payments)|transferwise/i, parser: wiseParser },
   { name: 'PayPal',     regex: /paypal\s+(transaction|activity|statement)/i,    parser: paypalParser },
   { name: 'Stripe',     regex: /stripe\s+(payout|balance|payments)/i,          parser: stripeParser },
+  { name: 'UNFCU',      regex: /unfcu\.org|united\s+nations\s+federal\s+credit\s+union|unfcu\.com/i, parser: unfcuParser },
 ];
 
 /**
@@ -61,7 +63,8 @@ async function parseStatement(filePath) {
 
   if (matched) {
     console.log(`Detected institution: ${matched.name}`);
-    const result = matched.parser.parse(text, filePath);
+    // parse() may be async (e.g. Scotiabank uses coordinate-aware extraction)
+    const result = await Promise.resolve(matched.parser.parse(text, filePath));
     result.institution = result.institution || matched.name;
     result.rawText = text;
     return result;
@@ -69,7 +72,7 @@ async function parseStatement(filePath) {
 
   // Fallback: generic parser
   console.log('No institution detected — using generic parser');
-  const result = genericParser.parse(text, filePath);
+  const result = await Promise.resolve(genericParser.parse(text, filePath));
   result.institution = result.institution || 'Unknown';
   result.rawText = text;
   return result;

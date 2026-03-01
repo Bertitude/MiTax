@@ -20,7 +20,11 @@
       </div>
     </div>
     <nav>
-      <div class="nav-item active" data-view="import">
+      <div class="nav-item active" data-view="dashboard">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h6v6H1zm0 8h6v6H1zm8-8h6v6H9zm0 8h6v6H9z"/></svg>
+        <span class="nav-label">Dashboard</span>
+      </div>
+      <div class="nav-item" data-view="import">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zm.5 4.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5z"/></svg>
         <span class="nav-label">Import Statements</span>
       </div>
@@ -41,13 +45,13 @@
         <span class="nav-label">Settings</span>
       </div>
     </nav>
-    <div class="sidebar-footer">v1.1.1 · MiTax</div>
+    <div class="sidebar-footer">v1.2.0 · MiTax</div>
   </aside>
 
   <!-- ─── Main ──────────────────────────────────────────────────────── -->
   <main id="main">
     <div id="topbar">
-      <span class="page-title" id="page-title">Import Statements</span>
+      <span class="page-title" id="page-title">Dashboard</span>
       <div style="flex:1;"></div>
       <span id="app-version" style="font-size:11px;color:var(--text-muted);margin-right:12px;"></span>
       <button class="btn btn-secondary btn-sm" id="check-update-btn" title="Check for updates" style="font-size:11px;padding:4px 10px;">↑ Check for updates</button>
@@ -62,8 +66,64 @@
 
     <div id="content">
 
+      <!-- ═══ DASHBOARD VIEW ══════════════════════════════════════════ -->
+      <div class="view active" id="dashboard-view">
+
+        <!-- Header row: quarter label + refresh -->
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+          <div style="flex:1;">
+            <div id="dash-quarter-label" style="font-size:20px;font-weight:700;color:var(--text);">Dashboard</div>
+            <div id="dash-quarter-sub"   style="font-size:13px;color:var(--text-muted);margin-top:2px;"></div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="dash-refresh-btn">↻ Refresh</button>
+        </div>
+
+        <!-- Account Balances -->
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+            <div class="card-title" style="margin-bottom:0;flex:1;">Account Balances</div>
+            <span id="dash-balance-count" style="font-size:11px;color:var(--text-muted);"></span>
+          </div>
+          <div id="dash-balances" class="dash-balances-grid">
+            <div class="empty-state" style="padding:24px 0;">
+              <div class="empty-icon">🔗</div>
+              <p>Connect to LunchMoney in Settings to see live account balances.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Missing Statements this quarter -->
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+            <div class="card-title" style="margin-bottom:0;flex:1;">Missing Statements</div>
+            <span id="dash-missing-quarter" style="font-size:11px;color:var(--text-muted);"></span>
+          </div>
+          <div id="dash-missing">
+            <div class="empty-state" style="padding:24px 0;">
+              <div class="empty-icon">📋</div>
+              <p>Upload your first statement to start tracking coverage.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quarterly Tax Estimate -->
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+            <div class="card-title" style="margin-bottom:0;flex:1;">Quarterly Tax Estimate</div>
+            <span class="badge badge-yellow">ESTIMATE ONLY</span>
+          </div>
+          <div id="dash-tax">
+            <div class="empty-state" style="padding:24px 0;">
+              <div class="empty-icon">💰</div>
+              <p>Connect to LunchMoney in Settings to see quarterly tax estimates.</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
       <!-- ═══ IMPORT VIEW ══════════════════════════════════════════════ -->
-      <div class="view active" id="import-view">
+      <div class="view" id="import-view">
 
         <div id="drop-zone">
           <div class="drop-icon">📂</div>
@@ -91,10 +151,7 @@
           <div style="flex:1;"></div>
           <label style="font-size:13px;color:var(--text-muted);">Year</label>
           <select id="tracker-year" style="width:100px;">
-            <option value="2026">2026</option>
-            <option value="2025">2025</option>
-            <option value="2024" selected>2024</option>
-            <option value="2023">2023</option>
+            <!-- Options populated dynamically in app.js -->
           </select>
           <button class="btn btn-secondary btn-sm" id="tracker-refresh-btn">↻ Refresh from LunchMoney</button>
         </div>
@@ -129,9 +186,7 @@
           <div class="form-group">
             <label>Tax Year</label>
             <select id="tax-year-select">
-              <option value="2025">2025</option>
-              <option value="2024" selected>2024</option>
-              <option value="2023">2023</option>
+              <!-- Options populated dynamically in app.js -->
             </select>
           </div>
           <div class="card-title" style="margin-top:16px;">Manual Income Adjustments (JMD)</div>
@@ -184,8 +239,9 @@
         <div class="card form-section">
           <div class="card-title">About</div>
           <p style="font-size:13px;color:var(--text-muted);line-height:1.8;">
-            MiTax v1.1.1<br>
-            Supports NCB, Scotiabank JA, JMMB, Wise, PayPal, Stripe.<br>
+            MiTax v1.2.0<br>
+            Supports NCB, Scotiabank JA, JMMB, Wise, PayPal, Stripe, UNFCU.<br>
+            Dashboard shows live account balances, quarterly missing statements &amp; tax estimates.<br>
             Coverage pulled directly from LunchMoney — handles overlapping statement periods.<br>
             S04 calculations are estimates only — consult TAJ for official guidance.
           </p>

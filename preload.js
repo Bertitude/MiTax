@@ -30,6 +30,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMissingMonths: (accountId) => ipcRenderer.invoke('tracker-get-missing-months', accountId),
   getAllAccounts:   ()          => ipcRenderer.invoke('tracker-get-all-accounts'),
 
+  // Dashboard
+  getDashboardData: (payload) => ipcRenderer.invoke('get-dashboard-data', payload),
+
   // S04 Tax
   generateS04: (payload) => ipcRenderer.invoke('generate-s04', payload),
 
