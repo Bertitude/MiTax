@@ -29,8 +29,7 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/better-sqlite3/**",
-      "node_modules/pdf-parse/**",
-      "src/parsers/scotiabank_extract.py"
+      "node_modules/pdf-parse/**"
     ],
     "files": [
       "main.js",

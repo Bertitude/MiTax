@@ -61,7 +61,8 @@ async function parseStatement(filePath) {
 
   if (matched) {
     console.log(`Detected institution: ${matched.name}`);
-    const result = matched.parser.parse(text, filePath);
+    // parse() may be async (e.g. Scotiabank uses coordinate-aware extraction)
+    const result = await Promise.resolve(matched.parser.parse(text, filePath));
     result.institution = result.institution || matched.name;
     result.rawText = text;
     return result;
@@ -69,7 +70,7 @@ async function parseStatement(filePath) {
 
   // Fallback: generic parser
   console.log('No institution detected — using generic parser');
-  const result = genericParser.parse(text, filePath);
+  const result = await Promise.resolve(genericParser.parse(text, filePath));
   result.institution = result.institution || 'Unknown';
   result.rawText = text;
   return result;
