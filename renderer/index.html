@@ -200,52 +200,109 @@
      MODAL: Account Selection / Creation
 ════════════════════════════════════════════════════════════════════════ -->
 <div class="modal-backdrop" id="account-modal">
-  <div class="modal" style="width:620px;">
-    <div class="modal-title">📌 Select LunchMoney Account</div>
+  <div class="modal" style="width:680px;max-height:90vh;overflow-y:auto;">
+    <div class="modal-title">📌 Confirm Account Assignment</div>
     <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">
-      Choose which LunchMoney account each parsed statement belongs to, or create a new one.
+      We auto-detected the most likely LunchMoney account for each statement. Confirm, change, or create a new account below.
     </p>
 
     <div id="account-modal-rows"></div>
 
-    <!-- Create new account form (hidden by default) -->
-    <div id="create-account-form" style="display:none;margin-top:20px;padding:16px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);">
-      <div style="font-size:13px;font-weight:600;margin-bottom:12px;">➕ Create New LunchMoney Account</div>
+    <!-- ── Create / Edit new account form (hidden by default) ── -->
+    <div id="create-account-form" style="display:none;margin-top:20px;padding:18px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);">
+      <div style="font-size:13px;font-weight:700;margin-bottom:14px;color:var(--accent);">➕ Create New Account in LunchMoney</div>
+
+      <!-- Row 1: Name + Display Name -->
       <div class="grid-2">
         <div class="form-group">
-          <label>Account Name *</label>
-          <input type="text" id="new-account-name" placeholder="e.g. NCB Chequing" />
+          <label>Account Name * <span style="font-weight:400;color:var(--text-muted)">(max 45 chars)</span></label>
+          <input type="text" id="new-account-name" placeholder="e.g. NCB Chequing" maxlength="45" />
         </div>
         <div class="form-group">
-          <label>Institution Name</label>
-          <input type="text" id="new-account-institution" placeholder="e.g. NCB Jamaica" />
+          <label>Display Name <span style="font-weight:400;color:var(--text-muted)">(shown in LM UI)</span></label>
+          <input type="text" id="new-account-display-name" placeholder="e.g. Main Chequing" />
+        </div>
+      </div>
+
+      <!-- Row 2: Institution + Type -->
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Institution Name <span style="font-weight:400;color:var(--text-muted)">(max 50 chars)</span></label>
+          <input type="text" id="new-account-institution" placeholder="e.g. NCB Jamaica" maxlength="50" />
         </div>
         <div class="form-group">
           <label>Account Type *</label>
           <select id="new-account-type">
-            <option value="depository">Chequing / Savings (depository)</option>
+            <option value="cash">Cash (chequing / savings / wallet)</option>
             <option value="credit">Credit Card</option>
+            <option value="investment">Investment / Brokerage</option>
             <option value="loan">Loan / Mortgage</option>
-            <option value="brokerage">Brokerage / Investment</option>
-            <option value="other">Other</option>
+            <option value="real estate">Real Estate</option>
+            <option value="vehicle">Vehicle</option>
+            <option value="cryptocurrency">Cryptocurrency</option>
+            <option value="employee compensation">Employee Compensation</option>
+            <option value="other">Other Asset / Liability</option>
           </select>
-        </div>
-        <div class="form-group">
-          <label>Currency *</label>
-          <select id="new-account-currency">
-            <option value="JMD" selected>JMD</option>
-            <option value="USD">USD</option>
-            <option value="GBP">GBP</option>
-            <option value="EUR">EUR</option>
-            <option value="CAD">CAD</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Opening Balance</label>
-          <input type="number" id="new-account-balance" placeholder="0.00" step="0.01" value="0" />
         </div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:4px;">
+
+      <!-- Row 3: Subtype + Currency -->
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Subtype <span style="font-weight:400;color:var(--text-muted)">(optional, max 25 chars)</span></label>
+          <input type="text" id="new-account-subtype" placeholder="e.g. checking, savings, retirement" maxlength="25" list="subtype-suggestions" />
+          <datalist id="subtype-suggestions">
+            <option value="checking">
+            <option value="savings">
+            <option value="retirement">
+            <option value="prepaid credit card">
+            <option value="brokerage">
+            <option value="money market">
+            <option value="foreign currency">
+          </datalist>
+        </div>
+        <div class="form-group">
+          <label>Currency</label>
+          <select id="new-account-currency">
+            <option value="JMD" selected>JMD — Jamaican Dollar</option>
+            <option value="USD">USD — US Dollar</option>
+            <option value="GBP">GBP — British Pound</option>
+            <option value="EUR">EUR — Euro</option>
+            <option value="CAD">CAD — Canadian Dollar</option>
+            <option value="TTD">TTD — Trinidad Dollar</option>
+            <option value="BBD">BBD — Barbadian Dollar</option>
+            <option value="XCD">XCD — Eastern Caribbean Dollar</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Row 4: Balance + Balance as of -->
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Current Balance *</label>
+          <input type="number" id="new-account-balance" placeholder="0.00" step="0.01" value="0" />
+        </div>
+        <div class="form-group">
+          <label>Balance as of <span style="font-weight:400;color:var(--text-muted)">(defaults to today)</span></label>
+          <input type="date" id="new-account-balance-date" />
+        </div>
+      </div>
+
+      <!-- Row 5: Closed on + Exclude transactions -->
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Closed On <span style="font-weight:400;color:var(--text-muted)">(leave blank if open)</span></label>
+          <input type="date" id="new-account-closed-on" />
+        </div>
+        <div class="form-group" style="justify-content:flex-end;padding-top:24px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+            <input type="checkbox" id="new-account-exclude-tx" style="width:16px;height:16px;" />
+            Exclude from LunchMoney transactions
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:8px;">
         <button class="btn btn-success btn-sm" id="create-account-btn">Create in LunchMoney</button>
         <button class="btn btn-secondary btn-sm" id="cancel-create-btn">Cancel</button>
       </div>

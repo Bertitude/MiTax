@@ -12,6 +12,11 @@ function parse(text, filePath) {
   // TransferWise ID, Date, Amount, Currency, Description, Payment Reference, Running Balance, Exchange From, ...
   const currency = detectCurrency(text);
 
+  // Extract account identifier (email or profile ID)
+  const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  const idMatch    = text.match(/Profile\s*(?:ID|No\.?):?\s*([0-9]+)/i);
+  const accountNumber = emailMatch ? emailMatch[0] : (idMatch ? idMatch[1].slice(-4) : '');
+
   // Try CSV-like rows in the PDF text
   const txPattern = /(\d{2}[-\/]\d{2}[-\/]\d{4}|\d{4}[-\/]\d{2}[-\/]\d{2})\s+(.*?)\s+([+-]?[\d,]+\.\d{2})\s+([A-Z]{3})/g;
   let match;
@@ -39,7 +44,7 @@ function parse(text, filePath) {
 
   const period = derivePeriodFromTransactions(transactions);
 
-  return { institution: 'Wise', accountType: 'international', accountName: `Wise (${currency})`, currency, period, transactions };
+  return { institution: 'Wise', accountType: 'international', accountName: `Wise (${currency})`, accountNumber, currency, period, transactions };
 }
 
 function fallbackParse(lines, transactions, currency) {

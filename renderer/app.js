@@ -233,29 +233,50 @@ function openAccountModal() {
   const rows = document.getElementById('account-modal-rows');
   rows.innerHTML = '';
 
-  const assetOptions = state.lmAssets.map(a =>
+  const assetOptions = () => state.lmAssets.map(a =>
     `<option value="${a.id}">${escHtml(a.display_name || a.name)} (${(a.currency || '').toUpperCase()})</option>`
   ).join('');
 
   for (const item of readyItems) {
-    const suggestion = autoSuggestAsset(item.parsed);
+    const { asset: suggestion, confidence, reasons } = autoSuggestAsset(item.parsed);
 
-    const row        = document.createElement('div');
-    row.className    = 'account-modal-row';
-    row.innerHTML    = `
+    const confidenceBadge = suggestion
+      ? confidence === 'high'
+        ? `<span class="confidence-badge confidence-high">● High confidence</span>`
+        : confidence === 'medium'
+          ? `<span class="confidence-badge confidence-medium">◑ Medium confidence</span>`
+          : `<span class="confidence-badge confidence-low">○ Low confidence</span>`
+      : `<span class="confidence-badge confidence-none">No match found</span>`;
+
+    const matchReasons = reasons.length
+      ? `<div class="match-reasons">${reasons.map(r => `<span>✓ ${escHtml(r)}</span>`).join('')}</div>`
+      : '';
+
+    const accNumInfo = item.parsed.accountNumber
+      ? `<span style="font-family:monospace;background:var(--surface2);padding:1px 6px;border-radius:4px;font-size:11px;">···${escHtml(item.parsed.accountNumber)}</span>`
+      : '';
+
+    const row = document.createElement('div');
+    row.className = 'account-modal-row';
+    row.innerHTML = `
       <div class="account-modal-info">
         <div class="account-modal-label">
           <strong>${escHtml(item.parsed.institution)}</strong> — ${escHtml(item.parsed.accountName)}
-          <span class="badge badge-yellow" style="margin-left:6px;">${item.parsed.currency}</span>
+          ${accNumInfo}
+          <span class="badge badge-yellow" style="margin-left:4px;">${escHtml(item.parsed.currency)}</span>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);">
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
           ${item.parsed.transactions?.length || 0} transactions · ${item.parsed.period?.start || '?'} → ${item.parsed.period?.end || '?'}
         </div>
       </div>
       <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          ${confidenceBadge}
+          ${matchReasons}
+        </div>
         <select class="account-select" data-id="${item.id}" style="width:100%;">
-          <option value="">-- Select account --</option>
-          ${assetOptions}
+          <option value="">— Select account —</option>
+          ${assetOptions()}
           <option value="__create__">➕ Create new account in LunchMoney…</option>
         </select>
       </div>
@@ -266,15 +287,8 @@ function openAccountModal() {
 
     sel.addEventListener('change', e => {
       if (e.target.value === '__create__') {
-        document.getElementById('new-account-name').value        = item.parsed.accountName || '';
-        document.getElementById('new-account-institution').value = item.parsed.institution  || '';
-        document.getElementById('new-account-currency').value    = item.parsed.currency      || 'JMD';
-        const typeMap = { chequing:'depository', savings:'depository', credit_card:'credit', loan:'loan', investment:'brokerage' };
-        document.getElementById('new-account-type').value = typeMap[item.parsed.accountType] || 'depository';
-        document.getElementById('create-account-form').style.display     = 'block';
-        document.getElementById('create-account-form').dataset.forId     = item.id;
-        document.getElementById('create-account-error').style.display    = 'none';
-        e.target.value = '';
+        openCreateForm(item);
+        e.target.value = suggestion ? String(suggestion.id) : '';
       }
     });
 
@@ -284,31 +298,141 @@ function openAccountModal() {
   document.getElementById('account-modal').classList.add('open');
 }
 
+/**
+ * Score-based asset matching.
+ * Returns { asset, confidence: 'high'|'medium'|'low'|null, reasons: [] }
+ */
 function autoSuggestAsset(parsed) {
-  if (!parsed || !state.lmAssets.length) return null;
-  const inst = (parsed.institution || '').toLowerCase();
-  return state.lmAssets.find(a => {
-    const n = ((a.display_name || a.name || '') + ' ' + (a.institution_name || '')).toLowerCase();
-    return n.includes(inst) || inst.includes((a.name || '').toLowerCase().split(' ')[0]);
-  }) || null;
+  if (!parsed || !state.lmAssets.length) return { asset: null, confidence: null, reasons: [] };
+
+  const inst    = (parsed.institution || '').toLowerCase().trim();
+  const cur     = (parsed.currency    || '').toLowerCase();
+  const accNum  = (parsed.accountNumber || '').replace(/\D/g, '');
+  const pType   = parsed.accountType || '';
+
+  // LunchMoney type → parsed accountType mapping for scoring
+  const typeMap = {
+    cash:                  ['chequing','savings','checking'],
+    credit:                ['credit_card','credit'],
+    investment:            ['investment','brokerage','securities'],
+    loan:                  ['loan','mortgage'],
+    'real estate':         ['real_estate','property'],
+    vehicle:               ['vehicle','auto'],
+    cryptocurrency:        ['crypto','cryptocurrency'],
+    'employee compensation':['payroll','employment'],
+  };
+
+  let best = null;
+  let bestScore = 0;
+  let bestReasons = [];
+
+  for (const a of state.lmAssets) {
+    let score = 0;
+    const reasons = [];
+
+    const aName = ((a.display_name || a.name || '') + ' ' + (a.institution_name || '')).toLowerCase();
+    const aCur  = (a.currency || '').toLowerCase();
+    const aType = (a.type_name || '').toLowerCase();
+
+    // ── Account number match (strongest signal) ─────────────────────────────
+    if (accNum.length >= 4) {
+      const aNameDigits = aName.replace(/\D/g, '');
+      if (aNameDigits.endsWith(accNum) || aName.includes(accNum)) {
+        score += 50;
+        reasons.push(`Account ···${accNum} matched`);
+      }
+    }
+
+    // ── Institution name match ───────────────────────────────────────────────
+    if (inst && aName.includes(inst)) {
+      score += 20;
+      reasons.push('Institution name matched');
+    } else if (inst) {
+      // Partial: first word of institution in asset name
+      const firstWord = inst.split(/\s+/)[0];
+      if (firstWord.length > 2 && aName.includes(firstWord)) {
+        score += 8;
+        reasons.push('Institution partially matched');
+      }
+    }
+
+    // ── Currency match ───────────────────────────────────────────────────────
+    if (cur && aCur === cur) {
+      score += 10;
+      reasons.push(`Currency ${cur.toUpperCase()} matched`);
+    }
+
+    // ── Account type match ───────────────────────────────────────────────────
+    if (pType && typeMap[aType] && typeMap[aType].includes(pType)) {
+      score += 8;
+      reasons.push('Account type matched');
+    }
+
+    if (score > bestScore) {
+      bestScore   = score;
+      best        = a;
+      bestReasons = reasons;
+    }
+  }
+
+  if (!best || bestScore < 8) return { asset: null, confidence: null, reasons: [] };
+
+  const confidence = bestScore >= 50 ? 'high' : bestScore >= 20 ? 'medium' : 'low';
+  return { asset: best, confidence, reasons: bestReasons };
+}
+
+function openCreateForm(item) {
+  const typeMap = {
+    chequing:'cash', checking:'cash', savings:'cash', credit_card:'credit',
+    loan:'loan', mortgage:'loan', investment:'investment', brokerage:'investment',
+    international:'cash', unknown:'other',
+  };
+
+  document.getElementById('new-account-name').value         = (item.parsed.accountName || '').substring(0, 45);
+  document.getElementById('new-account-display-name').value = '';
+  document.getElementById('new-account-institution').value  = (item.parsed.institution || '').substring(0, 50);
+  document.getElementById('new-account-type').value         = typeMap[item.parsed.accountType] || 'cash';
+  document.getElementById('new-account-subtype').value      = item.parsed.accountType === 'savings' ? 'savings'
+                                                            : item.parsed.accountType === 'credit_card' ? 'prepaid credit card'
+                                                            : item.parsed.accountType === 'investment' ? 'brokerage' : '';
+  document.getElementById('new-account-currency').value     = item.parsed.currency || 'JMD';
+  document.getElementById('new-account-balance').value      = '0';
+  document.getElementById('new-account-balance-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('new-account-closed-on').value    = '';
+  document.getElementById('new-account-exclude-tx').checked = false;
+
+  const form = document.getElementById('create-account-form');
+  form.style.display  = 'block';
+  form.dataset.forId  = item.id;
+  document.getElementById('create-account-error').style.display = 'none';
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function createNewAccount() {
-  const name        = document.getElementById('new-account-name').value.trim();
-  const institution = document.getElementById('new-account-institution').value.trim();
-  const typeName    = document.getElementById('new-account-type').value;
-  const currency    = document.getElementById('new-account-currency').value;
-  const balance     = parseFloat(document.getElementById('new-account-balance').value) || 0;
-  const errEl       = document.getElementById('create-account-error');
+  const name          = document.getElementById('new-account-name').value.trim();
+  const displayName   = document.getElementById('new-account-display-name').value.trim();
+  const institution   = document.getElementById('new-account-institution').value.trim();
+  const typeName      = document.getElementById('new-account-type').value;
+  const subtypeName   = document.getElementById('new-account-subtype').value.trim();
+  const currency      = document.getElementById('new-account-currency').value;
+  const balance       = parseFloat(document.getElementById('new-account-balance').value) || 0;
+  const balanceAsOf   = document.getElementById('new-account-balance-date').value || null;
+  const closedOn      = document.getElementById('new-account-closed-on').value || null;
+  const excludeTx     = document.getElementById('new-account-exclude-tx').checked;
+  const errEl         = document.getElementById('create-account-error');
 
-  if (!name) { errEl.textContent = 'Account name is required.'; errEl.style.display = 'block'; return; }
-  if (!state.apiKey) { errEl.textContent = 'No API key. Connect in Settings first.'; errEl.style.display = 'block'; return; }
+  if (!name)          { errEl.textContent = 'Account name is required.'; errEl.style.display = 'block'; return; }
+  if (!state.apiKey)  { errEl.textContent = 'No API key. Connect in Settings first.'; errEl.style.display = 'block'; return; }
 
   const btn     = document.getElementById('create-account-btn');
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Creating…';
 
-  const result = await window.electronAPI.createLMAsset(state.apiKey, { name, typeName, currency, institutionName: institution, balance });
+  const result = await window.electronAPI.createLMAsset(state.apiKey, {
+    name, displayName, typeName, subtypeName, currency,
+    institutionName: institution, balance, balanceAsOf, closedOn,
+    excludeTransactions: excludeTx,
+  });
 
   btn.disabled  = false;
   btn.innerHTML = 'Create in LunchMoney';
@@ -321,7 +445,7 @@ async function createNewAccount() {
 
   const newAsset = result.data;
   state.lmAssets.push(newAsset);
-  toast(`✓ Created account "${name}" in LunchMoney`, 'success');
+  toast(`✓ Created "${name}" in LunchMoney`, 'success');
 
   const forId = document.getElementById('create-account-form').dataset.forId;
   const selEl = document.querySelector(`.account-select[data-id="${forId}"]`);

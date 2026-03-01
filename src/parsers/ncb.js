@@ -10,6 +10,8 @@ function parse(text, filePath) {
 
   // Extract account info
   const accountMatch = text.match(/Account\s+(?:Number|No\.?):?\s*([0-9\-]+)/i);
+  const rawAccNum   = accountMatch ? accountMatch[1].replace(/\D/g, '') : '';
+  const accountNumber = rawAccNum.length >= 4 ? rawAccNum.slice(-4) : rawAccNum;
   const accountName = accountMatch ? `NCB ${accountMatch[1]}` : 'NCB Account';
   const currency = text.match(/USD|US\$/i) ? 'USD' : 'JMD';
 
@@ -62,6 +64,7 @@ function parse(text, filePath) {
     institution: 'NCB',
     accountType,
     accountName,
+    accountNumber,
     currency,
     period,
     transactions,

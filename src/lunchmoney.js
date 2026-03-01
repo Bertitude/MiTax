@@ -38,19 +38,40 @@ async function getAssets(apiKey) {
 
 /**
  * Create a new manual asset (account) in LunchMoney.
- * type_name: "depository" | "credit" | "loan" | "brokerage" | "investment" | "other"
+ * Supports all native LunchMoney asset fields.
+ *
+ * type_name (required): "cash" | "credit" | "investment" | "other" |
+ *   "real estate" | "loan" | "vehicle" | "cryptocurrency" | "employee compensation"
+ * subtype_name (optional, max 25 chars): "checking" | "savings" | "retirement" |
+ *   "prepaid credit card" | any custom string
  */
-async function createAsset(apiKey, { name, typeName, currency, institutionName, balance = 0 }) {
+async function createAsset(apiKey, {
+  name,
+  displayName,
+  typeName,
+  subtypeName,
+  currency,
+  institutionName,
+  balance = 0,
+  balanceAsOf,
+  closedOn,
+  excludeTransactions = false,
+}) {
   const body = {
     name,
-    type_name: typeName || 'depository',
-    currency: (currency || 'JMD').toLowerCase(),
-    institution_name: institutionName || '',
-    balance: String(balance),
-    exclude_transactions: false,
+    type_name:            typeName || 'cash',
+    currency:             (currency || 'JMD').toLowerCase(),
+    balance:              String(balance),
+    exclude_transactions: excludeTransactions,
   };
+  if (displayName)    body.display_name      = displayName;
+  if (subtypeName)    body.subtype_name      = subtypeName.substring(0, 25);
+  if (institutionName) body.institution_name = institutionName.substring(0, 50);
+  if (balanceAsOf)    body.balance_as_of     = balanceAsOf;
+  if (closedOn)       body.closed_on         = closedOn;
+
   const data = await lmRequest('POST', '/assets', apiKey, body);
-  return data; // returns the created asset object
+  return data;
 }
 
 // ─── Categories ──────────────────────────────────────────────────────────────

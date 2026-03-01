@@ -8,6 +8,8 @@ function parse(text, filePath) {
   const transactions = [];
 
   const accountMatch = text.match(/Account\s+(?:Number|No\.?|#):?\s*([0-9\-\s]+)/i);
+  const rawAccNum    = accountMatch ? accountMatch[1].replace(/\D/g, '') : '';
+  const accountNumber = rawAccNum.length >= 4 ? rawAccNum.slice(-4) : rawAccNum;
   const accountName = accountMatch ? `Scotiabank ${accountMatch[1].trim()}` : 'Scotiabank Account';
   const currency = text.match(/USD|US\$|United\s+States/i) ? 'USD' : 'JMD';
 
@@ -47,7 +49,7 @@ function parse(text, filePath) {
 
   const period = derivePeriodFromTransactions(transactions);
 
-  return { institution: 'Scotiabank', accountType, accountName, currency, period, transactions };
+  return { institution: 'Scotiabank', accountType, accountName, accountNumber, currency, period, transactions };
 }
 
 function fallbackParse(lines, transactions, currency) {

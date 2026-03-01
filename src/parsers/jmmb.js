@@ -52,7 +52,7 @@ function parse(text, filePath) {
 
   const period = derivePeriodFromTransactions(transactions);
 
-  return { institution: 'JMMB', accountType, accountName, currency, period, transactions };
+  return { institution: 'JMMB', accountType, accountName, accountNumber, currency, period, transactions };
 }
 
 function fallbackParse(lines, transactions, currency) {

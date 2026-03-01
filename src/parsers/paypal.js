@@ -7,6 +7,8 @@ function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const transactions = [];
   const currency = detectCurrency(text);
+  const emailMatch   = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  const accountNumber = emailMatch ? emailMatch[0] : '';
 
   // PayPal format: Date  Time  TimeZone  Name  Type  Status  Currency  Gross  Fee  Net
   const txPattern = /(\d{1,2}\/\d{1,2}\/\d{4})\s+\d{2}:\d{2}:\d{2}\s+\w+\s+(.*?)\s+(Payment|Transfer|Withdrawal|Refund|Subscription|Invoice)[^\d]+([\d,]+\.\d{2})\s+([-\d,]+\.\d{2})\s+([-\d,]+\.\d{2})/g;
@@ -36,7 +38,8 @@ function parse(text, filePath) {
 
   const period = derivePeriodFromTransactions(transactions);
 
-  return { institution: 'PayPal', accountType: 'international', accountName: 'PayPal', currency, period, transactions };
+  const accountName = accountNumber ? `PayPal (${accountNumber})` : 'PayPal';
+  return { institution: 'PayPal', accountType: 'international', accountName, accountNumber, currency, period, transactions };
 }
 
 function fallbackParse(lines, transactions, currency) {

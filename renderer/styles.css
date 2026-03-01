@@ -459,3 +459,44 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
 }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 20px; }
 .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+/* ─── Account Modal: Confidence Badges ──────────────────────────────────── */
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.confidence-high   { background: rgba(63,185,80,0.15);  color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+.confidence-medium { background: rgba(210,153,34,0.15); color: #d29922; border: 1px solid rgba(210,153,34,0.3); }
+.confidence-low    { background: rgba(88,166,255,0.12); color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+.confidence-none   { background: rgba(247,129,102,0.12);color: #f78166; border: 1px solid rgba(247,129,102,0.3); }
+
+.match-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.match-reasons span {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ─── Account Modal: New Account Form ───────────────────────────────────── */
+#create-account-form .grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+#create-account-form input[type="date"] {
+  color-scheme: dark;
+}

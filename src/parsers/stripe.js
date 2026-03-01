@@ -7,6 +7,8 @@ function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const transactions = [];
   const currency = detectCurrency(text);
+  const acctMatch    = text.match(/acct_([A-Za-z0-9]+)/);
+  const accountNumber = acctMatch ? acctMatch[1].slice(-4) : '';
 
   // Stripe payout statements typically list: Date | Description | Amount | Fee | Net
   const txPattern = /(\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4})\s+(.*?)\s+([+-]?[\d,]+\.\d{2})\s+([+-]?[\d,]+\.\d{2})?\s+([+-]?[\d,]+\.\d{2})?/g;
@@ -36,7 +38,8 @@ function parse(text, filePath) {
 
   const period = derivePeriodFromTransactions(transactions);
 
-  return { institution: 'Stripe', accountType: 'international', accountName: 'Stripe', currency, period, transactions };
+  const accountName = accountNumber ? `Stripe (...${accountNumber})` : 'Stripe';
+  return { institution: 'Stripe', accountType: 'international', accountName, accountNumber, currency, period, transactions };
 }
 
 function fallbackParse(lines, transactions, currency) {

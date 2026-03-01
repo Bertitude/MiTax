@@ -61,11 +61,15 @@ function parse(text, filePath) {
   }
 
   const period = derivePeriodFromTransactions(transactions);
+  const accMatch    = text.match(/Account\s*(?:No\.?|Number|#):?\s*([*Xx\d][*Xx\d\-\s]{3,20})/i);
+  const rawAccNum   = accMatch ? accMatch[1].replace(/[^0-9]/g, '') : '';
+  const accountNumber = rawAccNum.length >= 4 ? rawAccNum.slice(-4) : rawAccNum;
 
   return {
     institution,
     accountType: 'unknown',
     accountName: institution,
+    accountNumber,
     currency,
     period,
     transactions,
