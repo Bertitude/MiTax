@@ -20,14 +20,19 @@ const jnParser = require('./jn');
 const genericParser = require('./generic');
 
 const INSTITUTION_PATTERNS = [
-  { name: 'NCB',        regex: /national\s+commercial\s+bank|ncb\s+jamaica/i,  parser: ncbParser },
+  // UNFCU must come before NCB: UNFCU statements contain ATM descriptions
+  // like "NATIONAL COMMERCIAL BANKINGSTON 10 JM" which pdf-parse can reflow
+  // into a single line that falsely triggers a loose NCB regex.
+  { name: 'UNFCU',      regex: /unfcu\.org|united\s+nations\s+federal\s+credit\s+union|unfcu\.com/i, parser: unfcuParser },
+  { name: 'JN Bank',    regex: /RSV-\d{9,16}/i,                                parser: jnParser },
+  // Require "Jamaica" or "Limited" after "Bank" so ATM merchant strings
+  // like "NATIONAL COMMERCIAL BANKINGSTON" don't match.
+  { name: 'NCB',        regex: /national\s+commercial\s+bank\s+(jamaica|limited)|ncb\s+jamaica/i, parser: ncbParser },
   { name: 'Scotiabank', regex: /scotiabank|the\s+bank\s+of\s+nova\s+scotia/i,  parser: scotiabankParser },
   { name: 'JMMB',       regex: /jmmb\s+(bank|group|securities)|j\.m\.m\.b/i,   parser: jmmbParser },
   { name: 'Wise',       regex: /wise\s+(formerly\s+transferwise|payments)|transferwise/i, parser: wiseParser },
   { name: 'PayPal',     regex: /paypal\s+(transaction|activity|statement)/i,    parser: paypalParser },
   { name: 'Stripe',     regex: /stripe\s+(payout|balance|payments)/i,          parser: stripeParser },
-  { name: 'UNFCU',      regex: /unfcu\.org|united\s+nations\s+federal\s+credit\s+union|unfcu\.com/i, parser: unfcuParser },
-  { name: 'JN Bank',    regex: /RSV-\d{9,16}/i,                                parser: jnParser },
 ];
 
 /**
