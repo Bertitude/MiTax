@@ -276,6 +276,35 @@ async function getTransactionsByYear(apiKey, year) {
   });
 }
 
+// ─── Payee Update ─────────────────────────────────────────────────────────────
+
+/**
+ * Update a single transaction's editable fields (payee, notes, category_id, etc.)
+ * PUT /v1/transactions/:id
+ */
+async function updateTransaction(apiKey, txId, fields) {
+  return lmRequest('PUT', `/transactions/${txId}`, apiKey, { transaction: fields });
+}
+
+/**
+ * Batch-update payees for an array of { id, payee } objects.
+ * Processes sequentially to stay within API rate limits.
+ * Returns { updated: number, errors: [] }
+ */
+async function batchUpdatePayees(apiKey, updates) {
+  const errors = [];
+  let updated = 0;
+  for (const { id, payee } of updates) {
+    try {
+      await updateTransaction(apiKey, id, { payee });
+      updated++;
+    } catch (err) {
+      errors.push({ id, error: err.message });
+    }
+  }
+  return { updated, errors };
+}
+
 module.exports = {
   getMe,
   getAssets,
@@ -288,4 +317,6 @@ module.exports = {
   getAllAssetsCoverage,
   uploadTransactions,
   formatAsCSV,
+  updateTransaction,
+  batchUpdatePayees,
 };

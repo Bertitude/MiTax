@@ -113,6 +113,17 @@ ipcMain.handle('upload-transactions', async (event, { transactions, apiKey, asse
   }
 });
 
+// ─── IPC: Payee Batch Update ─────────────────────────────────────────────────
+ipcMain.handle('payee-update-batch', async (event, { apiKey, updates }) => {
+  try {
+    const { batchUpdatePayees } = require('./src/lunchmoney');
+    const result = await batchUpdatePayees(apiKey, updates);
+    return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Coverage (from LunchMoney) ────────────────────────────────────────
 ipcMain.handle('get-asset-coverage', async (event, { apiKey, assetId, year }) => {
   try {
