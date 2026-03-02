@@ -38,7 +38,8 @@ function parse(text, filePath) {
     // Skip if both are zero or neither is present
     if (debit === 0 && credit === 0) continue;
 
-    const amount = credit > 0 ? credit : -debit;
+    // LunchMoney convention: positive = expense/debit, negative = income/credit
+    const amount = debit > 0 ? debit : -credit;
     const payee = (description || ref || 'NCB Transaction').trim();
 
     transactions.push({
@@ -48,7 +49,7 @@ function parse(text, filePath) {
       currency,
       notes: ref ? `Ref: ${ref}` : '',
       category: categorize(payee, amount),
-      type: amount < 0 ? 'debit' : 'credit',
+      type: amount < 0 ? 'credit' : 'debit',
       balance: balanceStr ? parseFloat(balanceStr.replace(/,/g, '')) : null,
     });
   }
@@ -85,7 +86,8 @@ function fallbackParse(lines, transactions, currency) {
 
     const descriptionParts = line.replace(dateRe, '').trim().split(/\s{2,}/);
     const payee = descriptionParts[0] || 'Transaction';
-    const amount = amounts.length >= 2 ? (amounts[0] > 0 ? -amounts[0] : amounts[1]) : amounts[0];
+    // Fallback heuristic: first amount is usually a debit (positive = expense)
+    const amount = amounts.length >= 2 ? (amounts[0] > 0 ? amounts[0] : -amounts[1]) : amounts[0];
 
     transactions.push({
       date: normalizeDate(dateStr),
@@ -94,7 +96,7 @@ function fallbackParse(lines, transactions, currency) {
       currency,
       notes: '',
       category: categorize(payee, amount),
-      type: amount < 0 ? 'debit' : 'credit',
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 }
@@ -114,7 +116,7 @@ function categorize(payee, amount) {
   if (/jps|nwc|flow|digicel|lime|cable|internet/i.test(p)) return 'Bills & Utilities';
   if (/insurance|sagicor|guardian|advantage/i.test(p)) return 'Insurance';
   if (/transfer|remittance|western\s+union|caricad/i.test(p)) return 'Transfer';
-  if (amount > 0) return 'Income';
+  if (amount < 0) return 'Income';
   return 'Uncategorized';
 }
 

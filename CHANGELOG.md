@@ -4,6 +4,25 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [1.2.17] — 2026-03-02
+
+### Fixed
+- **Debit/credit sign inverted on upload for NCB, UNFCU, Scotiabank, JMMB**
+  These parsers were using the opposite sign convention from LunchMoney
+  (positive = income, negative = expense), causing every transaction to land
+  in LunchMoney as the wrong type — deposits appearing as expenses and
+  withdrawals appearing as income.
+  Fixed all four parsers to follow the LunchMoney convention:
+  **positive = expense/debit, negative = income/credit**.
+  - NCB: `credit > 0 ? credit : -debit` → `debit > 0 ? debit : -credit`
+  - UNFCU: balance-delta sign flipped; keyword fallback sign flipped
+  - Scotiabank (regular): `deposit > 0 ? deposit : -withdrawal` → `withdrawal > 0 ? withdrawal : -deposit`; Pattern B `+` sign inverted
+  - JMMB: two-column heuristic sign corrected; fallback type labels corrected
+  All four parsers' `categorize()` functions updated accordingly
+  (`amount < 0` = income instead of `amount > 0`).
+
+---
+
 ## [1.2.16] — 2026-03-02
 
 ### Fixed

@@ -137,13 +137,15 @@ function parseActivityLines(lines, transactions) {
       const txAmountRaw = amounts[0];
       const balance     = amounts[amounts.length - 1];
 
-      // Sign: compare running balance
+      // Sign: LunchMoney convention — positive = expense/debit, negative = income/credit.
+      // Balance going UP means money was deposited (credit → negative amount).
+      // Balance going DOWN means money was withdrawn (debit → positive amount).
       let sign = 1;
       if (prevBalance !== null) {
-        sign = balance > prevBalance - 0.001 ? 1 : -1;
+        sign = balance > prevBalance - 0.001 ? -1 : 1;
       } else {
-        // First real transaction — derive from keywords or assume credit
-        sign = /withdrawal|debit|fee|fx international/i.test(pendingDesc + rest) ? -1 : 1;
+        // First real transaction — derive from keywords or assume debit
+        sign = /withdrawal|debit|fee|fx international/i.test(pendingDesc + rest) ? 1 : -1;
       }
       prevBalance = balance;
 
@@ -162,7 +164,7 @@ function parseActivityLines(lines, transactions) {
         currency: 'USD',
         notes:    '',
         category: categorize(fullDesc, amount),
-        type:     amount < 0 ? 'debit' : 'credit',
+        type:     amount < 0 ? 'credit' : 'debit',
       });
 
       pendingDesc = ''; // reset after consuming
@@ -211,8 +213,8 @@ function categorize(desc, amount) {
   if (/insurance/.test(d))                                       return 'Insurance';
   if (/digital transfer|wire transfer|itb|third party/.test(d))  return 'Transfer';
   if (/fx international fee/.test(d))                            return 'Bank Fees';
-  if (/interest|dividend/.test(d))                               return amount > 0 ? 'Income' : 'Bank Fees';
-  if (amount > 0)                                                return 'Income';
+  if (/interest|dividend/.test(d))                               return amount < 0 ? 'Income' : 'Bank Fees';
+  if (amount < 0)                                                return 'Income';
   return 'Uncategorized';
 }
 
