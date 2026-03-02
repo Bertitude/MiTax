@@ -1225,6 +1225,24 @@ async function exportCSV() {
 //  COVERAGE TRACKER — live from LunchMoney, handles overlapping months
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── Exclusion persistence ────────────────────────────────────────────────────
+const COVERAGE_EXCLUDED_KEY = 'coverageExcluded';
+
+function getCoverageExcluded() {
+  try { return new Set(JSON.parse(localStorage.getItem(COVERAGE_EXCLUDED_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+
+function setCoverageExcluded(set) {
+  localStorage.setItem(COVERAGE_EXCLUDED_KEY, JSON.stringify([...set]));
+}
+
+function toggleCoverageExcluded(assetId) {
+  const ex = getCoverageExcluded();
+  if (ex.has(assetId)) { ex.delete(assetId); } else { ex.add(assetId); }
+  setCoverageExcluded(ex);
+}
+
 async function refreshTracker() {
   const yearSel     = document.getElementById('tracker-year');
   const year        = parseInt(yearSel ? yearSel.value : new Date().getFullYear());
@@ -1248,11 +1266,15 @@ async function refreshTracker() {
   container.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:16px;">
     <span class="spinner"></span> Fetching ${year} coverage from LunchMoney…</div>`;
 
-  const now    = new Date();
-  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const cards  = [];
+  const now       = new Date();
+  const MONTHS    = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const excluded  = getCoverageExcluded();
+  const cards     = [];      // visible cards
+  const hiddenCards = [];    // excluded cards (built but hidden by default)
 
   for (const asset of state.lmAssets) {
+    const isExcluded = excluded.has(asset.id);
+
     let monthData = Array.from({ length: 12 }, (_, i) => ({ month: i+1, year, hasTxns: false, count: 0, earliestDate: null, latestDate: null }));
 
     if (state.apiKey) {
@@ -1296,7 +1318,8 @@ async function refreshTracker() {
     const maxMonth     = now.getFullYear() === year ? now.getMonth() + 1 : 12;
 
     const card   = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card' + (isExcluded ? ' tracker-card-excluded' : '');
+    card.dataset.assetId = asset.id;
     card.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;">
         <div style="min-width:0;">
@@ -1307,10 +1330,21 @@ async function refreshTracker() {
             · Balance: ${fmtAmount(asset.balance)} ${(asset.currency||'').toUpperCase()}
           </div>
         </div>
-        ${missingIdxs.length > 0
-          ? `<span class="badge badge-red" style="flex-shrink:0;">⚠ ${missingIdxs.length} month${missingIdxs.length!==1?'s':''} missing</span>`
-          : `<span class="badge badge-green" style="flex-shrink:0;">✓ ${coveredCount}/${maxMonth} months</span>`}
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          ${isExcluded
+            ? `<span class="badge badge-gray" style="flex-shrink:0;">Hidden</span>`
+            : missingIdxs.length > 0
+              ? `<span class="badge badge-red">⚠ ${missingIdxs.length} month${missingIdxs.length!==1?'s':''} missing</span>`
+              : `<span class="badge badge-green">✓ ${coveredCount}/${maxMonth} months</span>`}
+          <button class="btn btn-ghost btn-xs tracker-exclude-btn"
+                  data-asset-id="${asset.id}"
+                  title="${isExcluded ? 'Add back to coverage tracker' : 'Exclude from coverage tracker'}"
+                  style="padding:2px 7px;font-size:11px;opacity:0.7;">
+            ${isExcluded ? '＋ Track' : '− Exclude'}
+          </button>
+        </div>
       </div>
+      ${isExcluded ? '' : `
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
         ${year} coverage · Live from LunchMoney · Overlapping periods handled per transaction date
       </div>
@@ -1320,12 +1354,39 @@ async function refreshTracker() {
              Missing: ${missingIdxs.slice(0,6).map(i => `${MONTHS[i]} ${year}`).join(', ')}${missingIdxs.length>6?' + '+(missingIdxs.length-6)+' more':''}
            </div>`
         : ''}
+      `}
     `;
-    cards.push(card);
+
+    // Wire the exclude/include button
+    card.querySelector('.tracker-exclude-btn').addEventListener('click', () => {
+      toggleCoverageExcluded(asset.id);
+      refreshTracker();
+    });
+
+    if (isExcluded) { hiddenCards.push(card); } else { cards.push(card); }
   }
 
   container.innerHTML = '';
   cards.forEach(c => container.appendChild(c));
+
+  // Hidden-accounts bar
+  if (hiddenCards.length > 0) {
+    const bar = document.createElement('div');
+    bar.id = 'tracker-hidden-bar';
+    bar.style.cssText = 'margin-top:12px;padding:10px 14px;border-radius:8px;background:var(--surface2);display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-muted);';
+    bar.innerHTML = `
+      <span style="flex:1;">${hiddenCards.length} account${hiddenCards.length!==1?'s':''} hidden from coverage tracker</span>
+      <button class="btn btn-secondary btn-sm" id="tracker-show-hidden-btn">Show</button>
+    `;
+    container.appendChild(bar);
+
+    bar.querySelector('#tracker-show-hidden-btn').addEventListener('click', () => {
+      hiddenCards.forEach(c => container.insertBefore(c, bar));
+      bar.querySelector('#tracker-show-hidden-btn').style.display = 'none';
+      bar.querySelector('span').textContent = `${hiddenCards.length} hidden account${hiddenCards.length!==1?'s':''} shown above`;
+    });
+  }
+
   if (refreshBtn) refreshBtn.disabled = false;
 }
 
@@ -2333,20 +2394,29 @@ function renderDashboardBalances(assets) {
 
 function renderDashboardMissing(trackerAccounts, qLabel) {
   const el = document.getElementById('dash-missing');
-  if (!trackerAccounts.length) {
+
+  // Filter out accounts the user has excluded from the coverage tracker
+  const excluded = getCoverageExcluded();
+  const activeAccounts = trackerAccounts.filter(a => !excluded.has(a.id));
+
+  if (!activeAccounts.length) {
     el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">
       No uploaded accounts tracked yet. Upload statements to start tracking coverage.
     </div>`;
     return;
   }
 
-  const withMissing    = trackerAccounts.filter(a => a.quarterMissing.length > 0);
-  const withoutMissing = trackerAccounts.filter(a => a.quarterMissing.length === 0);
+  const withMissing    = activeAccounts.filter(a => a.quarterMissing.length > 0);
+  const withoutMissing = activeAccounts.filter(a => a.quarterMissing.length === 0);
+  const hiddenCount    = trackerAccounts.length - activeAccounts.length;
 
   if (!withMissing.length) {
+    const hiddenNote = hiddenCount > 0
+      ? `<span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${hiddenCount} excluded)</span>`
+      : '';
     el.innerHTML = `<div style="display:flex;align-items:center;gap:10px;color:var(--accent2);font-size:13px;padding:4px 0;">
       <span style="font-size:20px;">✓</span>
-      <span>All ${trackerAccounts.length} tracked account${trackerAccounts.length !== 1 ? 's' : ''} have statements for ${qLabel}.</span>
+      <span>All ${activeAccounts.length} tracked account${activeAccounts.length !== 1 ? 's' : ''} have statements for ${qLabel}.${hiddenNote}</span>
     </div>`;
     return;
   }
@@ -2368,7 +2438,11 @@ function renderDashboardMissing(trackerAccounts, qLabel) {
     </div>`
   ).join('');
 
-  el.innerHTML = warningRows + okRows;
+  const hiddenRow = hiddenCount > 0
+    ? `<div style="font-size:11px;color:var(--text-muted);padding:6px 0 2px;">${hiddenCount} account${hiddenCount!==1?'s':''} excluded from tracker — manage in Coverage Tracker view.</div>`
+    : '';
+
+  el.innerHTML = warningRows + okRows + hiddenRow;
 }
 
 function renderDashboardTaxEstimate(estimate, ytdIncome, year, quarter) {
@@ -2459,7 +2533,7 @@ function fmtUploadTime(utcStr) {
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: resolved,
       year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
     }).formatToParts(d);
     const get = t => parts.find(p => p.type === t)?.value ?? '';
     return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;

@@ -29,10 +29,11 @@ function parse(text, filePath) {
     const val1 = col1 ? parseFloat(col1.replace(/,/g, '')) : 0;
     const val2 = col2 ? parseFloat(col2.replace(/,/g, '')) : 0;
 
-    // Heuristic: if two amounts, first might be debit, second credit
+    // Heuristic: if two amounts, first col = debit, second col = credit.
+    // LunchMoney convention: positive = expense/debit, negative = income/credit.
     let amount = 0;
-    if (val1 > 0 && val2 === 0) amount = val1;
-    else if (val1 > 0 && val2 > 0) amount = val2 > val1 ? val2 : -val1;
+    if (val1 > 0 && val2 === 0) amount = val1;                     // single amount → assume debit
+    else if (val1 > 0 && val2 > 0) amount = val2 > val1 ? -val2 : val1; // larger in col2 → credit (negative)
     else amount = val1;
 
     const payee = (description || 'JMMB Transaction').trim();
@@ -44,7 +45,7 @@ function parse(text, filePath) {
       currency,
       notes: '',
       category: categorize(payee, amount),
-      type: amount < 0 ? 'debit' : 'credit',
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 
@@ -76,7 +77,7 @@ function fallbackParse(lines, transactions, currency) {
       currency,
       notes: '',
       category: categorize(payee, amount),
-      type: amount < 0 ? 'debit' : 'credit',
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 }
@@ -91,7 +92,7 @@ function categorize(payee, amount) {
   if (/salary|payroll/i.test(p)) return 'Income';
   if (/transfer/i.test(p)) return 'Transfer';
   if (/tax|nis|nht/i.test(p)) return 'Taxes';
-  if (amount > 0) return 'Income';
+  if (amount < 0) return 'Income';
   return 'Uncategorized';
 }
 

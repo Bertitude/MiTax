@@ -473,10 +473,11 @@ function regexParse(text) {
     const withdrawal = wStr ? parseFloat(wStr.replace(/,/g, '')) : 0;
     const deposit    = dStr ? parseFloat(dStr.replace(/,/g, '')) : 0;
     if (!withdrawal && !deposit) continue;
-    const amount = deposit > 0 ? deposit : -withdrawal;
+    // LunchMoney convention: positive = expense/debit, negative = income/credit
+    const amount = withdrawal > 0 ? withdrawal : -deposit;
     const payee  = cleanPayee(desc || 'Scotia Transaction');
     transactions.push({ date, payee, amount, currency, notes: '',
-      category: categorize(payee, amount), type: amount < 0 ? 'debit' : 'credit' });
+      category: categorize(payee, amount), type: amount < 0 ? 'credit' : 'debit' });
   }
 
   // Pattern B: DDMMM  J$ NNN.NN +/-  (Scotiabank specific, uses derived year)
@@ -489,11 +490,12 @@ function regexParse(text) {
       if (!dm || !am) continue;
       const date   = parseDdmmm(dm[1], periodStart, periodEnd);
       const val    = parseFloat(am[1].replace(/,/g, ''));
-      const amount = am[2] === '+' ? val : -val;
+      // '+' = credit/deposit (income → negative), '-' = debit/withdrawal (expense → positive)
+      const amount = am[2] === '+' ? -val : val;
       const payee  = cleanPayee(line.replace(datePat, '').replace(amtPat, '').trim())
                      || 'Scotiabank Transaction';
       transactions.push({ date, payee, amount, currency, notes: '',
-        category: categorize(payee, amount), type: amount < 0 ? 'debit' : 'credit' });
+        category: categorize(payee, amount), type: amount < 0 ? 'credit' : 'debit' });
     }
   }
 
@@ -532,7 +534,7 @@ function categorize(payee, amount) {
   if (/transfer|itb|third party|card payment/.test(p))            return 'Transfer';
   if (/service charge|bank fee|record keeping|overlimit|over limit|late payment|debit interest/.test(p)) return 'Bank Fees';
   if (/cinema|theatre|theater|stadium|amusement/.test(p))        return 'Entertainment';
-  if (amount > 0)                                                  return 'Income';
+  if (amount < 0)                                                  return 'Income';
   return 'Uncategorized';
 }
 

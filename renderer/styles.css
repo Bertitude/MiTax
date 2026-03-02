@@ -291,6 +291,13 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
 .badge-green  { background: rgba(63,185,80,0.15);  color: var(--accent2); }
 .badge-yellow { background: rgba(210,153,34,0.2);  color: var(--warn2); }
 .badge-red    { background: rgba(248,81,73,0.15);  color: var(--warn); }
+.badge-gray   { background: rgba(110,118,129,0.15); color: var(--text-muted); }
+
+/* ─── Coverage Tracker exclusion ────────────────────────────────────────── */
+.tracker-card-excluded { opacity: 0.55; }
+.btn-ghost  { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+.btn-ghost:hover { background: var(--surface2); color: var(--text); }
+.btn-xs { padding: 2px 7px; font-size: 11px; }
 
 /* ─── Tax Report ────────────────────────────────────────────────────────── */
 .tax-section { margin-bottom: 24px; }
