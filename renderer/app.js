@@ -15,6 +15,52 @@ const state = {
   taxReport:     null,
 };
 
+// ─── Timezone Utilities ───────────────────────────────────────────────────────
+
+const TZ_KEY       = 'lm_timezone';
+const SETUP_DONE_KEY = 'lm_setup_complete';
+
+/** Returns the IANA timezone string the user has configured, or 'system'. */
+function getAppTimezone() {
+  return localStorage.getItem(TZ_KEY) || 'system';
+}
+
+/** Returns the system's IANA timezone string detected by the browser. */
+function getSystemTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/**
+ * Returns the current date as YYYY-MM-DD in the configured (or system) timezone.
+ * Used wherever "today" matters for date-range calculations.
+ */
+function getAppNow() {
+  const tz = getAppTimezone();
+  const resolved = tz === 'system' ? getSystemTimezone() : tz;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: resolved,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year').value;
+    const m = parts.find(p => p.type === 'month').value;
+    const d = parts.find(p => p.type === 'day').value;
+    return `${y}-${m}-${d}`;
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+/** Friendly label for a timezone string. */
+function tzLabel(tz) {
+  if (tz === 'system') return `Auto — ${getSystemTimezone()}`;
+  try {
+    const offset = new Intl.DateTimeFormat('en', { timeZoneName: 'short', timeZone: tz })
+      .formatToParts(new Date()).find(p => p.type === 'timeZoneName')?.value || '';
+    return `${tz.replace(/_/g, ' ')} (${offset})`;
+  } catch { return tz; }
+}
+
 // ─── Category Mappings ────────────────────────────────────────────────────────
 // Persisted in localStorage as { [categoryId]: { _raw, incomeType?, isDeductible?, ignore? } }
 
@@ -150,7 +196,69 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshHistory();
   refreshFilingHistory();
   initTrackerYearSelect();
+
+  // Show first-run welcome modal if the user hasn't completed setup yet
+  maybeShowWelcomeModal();
 });
+
+// ─── First-Run Welcome Modal ──────────────────────────────────────────────────
+
+/**
+ * Shows the first-run welcome modal the very first time the app is launched.
+ * When the user clicks "Get Started", their timezone & currency selections are
+ * persisted, setup is marked complete, and the modal closes.
+ */
+function maybeShowWelcomeModal() {
+  if (localStorage.getItem(SETUP_DONE_KEY)) return;   // already done
+
+  const modal    = document.getElementById('welcome-modal');
+  const tzSel    = document.getElementById('welcome-timezone-select');
+  const tzLblEl  = document.getElementById('welcome-tz-label');
+  const currSel  = document.getElementById('welcome-currency-select');
+  const startBtn = document.getElementById('welcome-get-started-btn');
+
+  if (!modal || !tzSel || !startBtn) return;
+
+  // Pre-select the system timezone
+  tzSel.value = 'system';
+  if (tzLblEl) tzLblEl.textContent = `Detected: ${getSystemTimezone()}`;
+
+  // Update label whenever timezone selection changes
+  tzSel.addEventListener('change', () => {
+    if (tzLblEl) tzLblEl.textContent = tzSel.value === 'system'
+      ? `Detected: ${getSystemTimezone()}`
+      : tzLabel(tzSel.value);
+  });
+
+  // Show the modal (backdrop already has display:none; remove it)
+  modal.style.display = 'flex';
+
+  startBtn.addEventListener('click', () => {
+    // Persist timezone
+    const chosenTz = tzSel.value || 'system';
+    localStorage.setItem(TZ_KEY, chosenTz);
+
+    // Persist currency by updating the prefs selector then calling savePrefs
+    const settingsCurrSel = document.getElementById('default-currency');
+    if (settingsCurrSel && currSel) settingsCurrSel.value = currSel.value;
+    savePrefs();
+
+    // Sync the Settings timezone selector to match
+    const settingsTzSel = document.getElementById('timezone-select');
+    if (settingsTzSel) {
+      settingsTzSel.value = chosenTz;
+      updateTimezoneLabel();
+    }
+
+    // Mark setup as complete
+    localStorage.setItem(SETUP_DONE_KEY, '1');
+
+    // Close modal
+    modal.style.display = 'none';
+  });
+}
+
+// ─── Year Selects ─────────────────────────────────────────────────────────────
 
 /**
  * Populate year-selection dropdowns.
@@ -1643,6 +1751,11 @@ function savePrefs() {
   const prefs = getPrefs();
   localStorage.setItem('lm_prefs', JSON.stringify(prefs));
   state.prefs = prefs;
+
+  // Timezone is stored separately so it's always accessible without loading full prefs
+  const tzSel = document.getElementById('timezone-select');
+  if (tzSel) localStorage.setItem(TZ_KEY, tzSel.value);
+
   toast('Preferences saved', 'success');
 }
 function restorePrefs() {
@@ -1650,6 +1763,22 @@ function restorePrefs() {
   if (p.defaultCurrency) document.getElementById('default-currency').value = p.defaultCurrency;
   if (p.skipDuplicates != null) document.getElementById('skip-duplicates').checked = p.skipDuplicates;
   if (p.applyRules      != null) document.getElementById('apply-rules').checked     = p.applyRules;
+
+  // Restore timezone selector and live label
+  const tzSel = document.getElementById('timezone-select');
+  if (tzSel) {
+    tzSel.value = getAppTimezone();
+    updateTimezoneLabel();
+    tzSel.addEventListener('change', updateTimezoneLabel);
+  }
+}
+
+/** Updates the descriptive label shown below the timezone <select> in Settings. */
+function updateTimezoneLabel() {
+  const tzSel  = document.getElementById('timezone-select');
+  const lbl    = document.getElementById('timezone-current-label');
+  if (!tzSel || !lbl) return;
+  lbl.textContent = `Current: ${tzLabel(tzSel.value)}`;
 }
 
 // ─── S04 Tax ──────────────────────────────────────────────────────────────────
@@ -2713,7 +2842,8 @@ async function generateS04AEstimate() {
   btn.textContent = '…';
   wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
 
-  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null });
+  const tz  = getAppTimezone();
+  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null, timezone: tz === 'system' ? getSystemTimezone() : tz });
   btn.disabled = false;
   btn.textContent = 'Generate';
 

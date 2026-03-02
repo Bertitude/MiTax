@@ -500,7 +500,7 @@ ipcMain.handle('delete-filing', async (event, id) => {
   }
 });
 
-ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
+ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone }) => {
   try {
     const { getMostRecentS04 }         = require('./src/filings');
     const { generateS04A }             = require('./src/tax/s04');
@@ -508,12 +508,27 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
 
     const priorYearFiling = getMostRecentS04(currentYear - 1);
 
+    // Resolve "today" in the user's configured timezone
+    const todayStr = (() => {
+      const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      try {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+          timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+        }).formatToParts(new Date());
+        const y = parts.find(p => p.type === 'year').value;
+        const m = parts.find(p => p.type === 'month').value;
+        const d = parts.find(p => p.type === 'day').value;
+        return `${y}-${m}-${d}`;
+      } catch {
+        return new Date().toISOString().slice(0, 10);
+      }
+    })();
+
     let currentYtdIncome = 0;
     if (apiKey) {
-      const now    = new Date();
       const ytdTxs = await getTransactions(apiKey, {
         startDate: `${currentYear}-01-01`,
-        endDate:   now.toISOString().slice(0, 10),
+        endDate:   todayStr,
       });
       currentYtdIncome = ytdTxs.reduce((sum, tx) => {
         const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
@@ -521,7 +536,7 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
       }, 0);
     }
 
-    const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome });
+    const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr });
     return { success: true, data: estimate };
   } catch (err) {
     return { success: false, error: err.message };

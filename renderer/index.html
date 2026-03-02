@@ -383,6 +383,34 @@
           <div class="form-group">
             <label><input type="checkbox" id="apply-rules" checked style="width:auto;margin-right:6px;" />Apply LunchMoney rules on upload</label>
           </div>
+          <div class="form-group">
+            <label>Timezone</label>
+            <select id="timezone-select">
+              <option value="system">🌐 Auto — Use System Timezone</option>
+              <optgroup label="Caribbean">
+                <option value="America/Jamaica">Jamaica (UTC−5, no DST)</option>
+                <option value="America/Barbados">Barbados (UTC−4, no DST)</option>
+                <option value="America/Port_of_Spain">Trinidad &amp; Tobago (UTC−4)</option>
+                <option value="America/Cayman">Cayman Islands (UTC−5, no DST)</option>
+              </optgroup>
+              <optgroup label="North America">
+                <option value="America/New_York">Eastern — New York (UTC−5/−4)</option>
+                <option value="America/Chicago">Central — Chicago (UTC−6/−5)</option>
+                <option value="America/Denver">Mountain — Denver (UTC−7/−6)</option>
+                <option value="America/Los_Angeles">Pacific — Los Angeles (UTC−8/−7)</option>
+                <option value="America/Toronto">Toronto (UTC−5/−4)</option>
+                <option value="America/Vancouver">Vancouver (UTC−8/−7)</option>
+              </optgroup>
+              <optgroup label="Europe">
+                <option value="Europe/London">London (UTC±0/+1)</option>
+                <option value="Europe/Paris">Paris / Berlin (UTC+1/+2)</option>
+              </optgroup>
+              <optgroup label="Other">
+                <option value="UTC">UTC</option>
+              </optgroup>
+            </select>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;" id="timezone-current-label"></div>
+          </div>
           <button class="btn btn-secondary btn-sm" id="save-prefs-btn">Save Preferences</button>
         </div>
         <!-- Taxpayer Profile (for PDF exports) -->
@@ -727,6 +755,64 @@
 </div>
 
 <div id="toast-container"></div>
+
+<!-- ─── First-Run Welcome Modal ──────────────────────────────────── -->
+<div class="modal-backdrop" id="welcome-modal" style="display:none;z-index:2000;">
+  <div class="modal" style="width:480px;max-width:95vw;">
+    <div class="modal-title" style="font-size:18px;">👋 Welcome to MiTax</div>
+
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 18px;">
+      Before you begin, confirm a few quick settings. You can change these any time in
+      <strong>Settings → Upload Preferences</strong>.
+    </p>
+
+    <!-- Timezone -->
+    <div class="form-group">
+      <label style="font-weight:600;">Timezone</label>
+      <select id="welcome-timezone-select">
+        <option value="system">🌐 Auto — Use System Timezone</option>
+        <optgroup label="Caribbean">
+          <option value="America/Jamaica">Jamaica (UTC−5, no DST)</option>
+          <option value="America/Barbados">Barbados (UTC−4, no DST)</option>
+          <option value="America/Port_of_Spain">Trinidad &amp; Tobago (UTC−4)</option>
+          <option value="America/Cayman">Cayman Islands (UTC−5, no DST)</option>
+        </optgroup>
+        <optgroup label="North America">
+          <option value="America/New_York">Eastern — New York (UTC−5/−4)</option>
+          <option value="America/Chicago">Central — Chicago (UTC−6/−5)</option>
+          <option value="America/Denver">Mountain — Denver (UTC−7/−6)</option>
+          <option value="America/Los_Angeles">Pacific — Los Angeles (UTC−8/−7)</option>
+          <option value="America/Toronto">Toronto (UTC−5/−4)</option>
+          <option value="America/Vancouver">Vancouver (UTC−8/−7)</option>
+        </optgroup>
+        <optgroup label="Europe">
+          <option value="Europe/London">London (UTC±0/+1)</option>
+          <option value="Europe/Paris">Paris / Berlin (UTC+1/+2)</option>
+        </optgroup>
+        <optgroup label="Other">
+          <option value="UTC">UTC</option>
+        </optgroup>
+      </select>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;" id="welcome-tz-label"></div>
+    </div>
+
+    <!-- Default Currency -->
+    <div class="form-group">
+      <label style="font-weight:600;">Default Currency</label>
+      <select id="welcome-currency-select">
+        <option value="JMD" selected>JMD — Jamaican Dollar</option>
+        <option value="USD">USD — US Dollar</option>
+        <option value="GBP">GBP — British Pound</option>
+      </select>
+    </div>
+
+    <div class="modal-footer" style="margin-top:20px;">
+      <button class="btn btn-primary" id="welcome-get-started-btn" style="width:100%;justify-content:center;">
+        Get Started →
+      </button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

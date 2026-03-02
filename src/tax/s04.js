@@ -367,7 +367,7 @@ const S04A_DUE_DATES = [
   { q: 4, label: 'Q4 (Oct–Dec)', due: 'Dec 15' },
 ];
 
-function generateS04A({ currentYear, priorYearFiling, currentYtdIncome }) {
+function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr }) {
   const r2 = v => Math.round((v || 0) * 100) / 100;
 
   const priorTaxPayable  = priorYearFiling ? (priorYearFiling.tax_payable  || 0) : 0;
@@ -377,7 +377,8 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome }) {
   const baseQuarterly = r2(priorTaxPayable / 4);
 
   // Current-year trend: extrapolate YTD income to full-year estimate
-  const now            = new Date();
+  // Use todayStr (YYYY-MM-DD, already resolved to user's timezone) when provided
+  const now = todayStr ? new Date(`${todayStr}T12:00:00`) : new Date();
   const monthsElapsed  = Math.max(0.5, (now.getMonth() + 1) + (now.getDate() / 31));
   const annualTrend    = r2((currentYtdIncome / monthsElapsed) * 12);
 
