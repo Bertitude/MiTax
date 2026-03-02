@@ -445,8 +445,14 @@ ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
 // ─── IPC: S04 Tax ────────────────────────────────────────────────────────────
 ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCategoryMappings }) => {
   try {
-    const { generateS04 } = require('./src/tax/s04');
-    const report = await generateS04({ year, apiKey, manualData, userCategoryMappings: userCategoryMappings || {} });
+    const { generateS04 }          = require('./src/tax/s04');
+    const { getP24TotalsForYear }  = require('./src/p24');
+    const p24Totals = getP24TotalsForYear(year);
+    const report = await generateS04({
+      year, apiKey, manualData,
+      userCategoryMappings: userCategoryMappings || {},
+      p24Totals,
+    });
     return { success: true, data: report };
   } catch (err) {
     return { success: false, error: err.message };
@@ -517,6 +523,37 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey }) => {
 
     const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome });
     return { success: true, data: estimate };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: P24 Employment Income Entries ──────────────────────────────────────
+
+ipcMain.handle('p24:save', async (event, payload) => {
+  try {
+    const { saveEntry } = require('./src/p24');
+    const result = saveEntry(payload);
+    return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('p24:get-for-year', async (event, year) => {
+  try {
+    const { getEntriesForYear } = require('./src/p24');
+    return { success: true, data: getEntriesForYear(year) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('p24:delete', async (event, id) => {
+  try {
+    const { deleteEntry } = require('./src/p24');
+    deleteEntry(id);
+    return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
