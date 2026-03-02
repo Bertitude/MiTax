@@ -1,31 +1,31 @@
 {
   "name": "mitax",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "MiTax — LunchMoney statement importer with Jamaica S04 tax support",
   "main": "main.js",
   "scripts": {
-    "start":         "electron .",
-    "build":         "electron-builder",
-    "build:win":     "electron-builder --win",
-    "build:mac":     "electron-builder --mac",
-    "build:linux":   "electron-builder --linux",
-    "release":       "electron-builder --publish always",
-    "postinstall":   "electron-builder install-app-deps"
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "release": "electron-builder --publish always",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
-    "better-sqlite3":  "^9.4.3",
+    "better-sqlite3": "^9.4.3",
     "electron-updater": "^6.3.9",
-    "node-fetch":      "^2.7.0",
-    "pdf-parse":       "^1.1.1"
+    "node-fetch": "^2.7.0",
+    "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
-    "electron":         "^29.0.0",
+    "electron": "^29.0.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId":       "net.fuzionworks.mitax",
+    "appId": "net.fuzionworks.mitax",
     "productName": "MiTax",
-    "copyright":   "© 2025 Kaiel Eytle / FuzionWorks",
+    "copyright": "© 2025 Kaiel Eytle / FuzionWorks",
     "asar": true,
     "asarUnpack": [
       "node_modules/better-sqlite3/**",
@@ -43,49 +43,84 @@
     ],
     "publish": {
       "provider": "github",
-      "owner":    "Bertitude",
-      "repo":     "MiTax",
+      "owner": "Bertitude",
+      "repo": "MiTax",
       "releaseType": "release"
     },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "assets/icons/icon.ico"
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "icon": "assets/icons/icon.icns",
       "category": "public.app-category.finance"
     },
     "linux": {
-      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "assets/icons/icon.png",
       "category": "Finance"
     },
     "nsis": {
-      "oneClick":              false,
+      "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon":         "assets/icons/icon.ico",
-      "uninstallerIcon":       "assets/icons/icon.ico",
-      "installerHeaderIcon":   "assets/icons/icon.ico",
+      "installerIcon": "assets/icons/icon.ico",
+      "uninstallerIcon": "assets/icons/icon.ico",
+      "installerHeaderIcon": "assets/icons/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName":          "MiTax",
-      "runAfterFinish":        false,
-      "differentialPackage":   true
+      "shortcutName": "MiTax",
+      "runAfterFinish": false,
+      "differentialPackage": true
     },
     "dmg": {
-      "title":           "MiTax",
-      "background":      null,
+      "title": "MiTax",
+      "background": null,
       "backgroundColor": "#1a1a2e",
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     }
   },
-  "keywords": ["lunchmoney", "finance", "jamaica", "tax"],
+  "keywords": [
+    "lunchmoney",
+    "finance",
+    "jamaica",
+    "tax"
+  ],
   "author": {
-    "name":  "Kaiel Eytle",
+    "name": "Kaiel Eytle",
     "email": "kaiel.eytle@fuzionworks.net"
   },
   "license": "MIT"
