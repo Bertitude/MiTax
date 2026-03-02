@@ -20,10 +20,23 @@
       </div>
     </div>
 
-    <!-- Active LunchMoney account name — populated by app.js after connect -->
-    <div id="sidebar-account-block" style="display:none;">
-      <div id="sidebar-account-name"></div>
-      <div id="sidebar-account-budget"></div>
+    <!-- Active LunchMoney account name — click to switch accounts -->
+    <div id="sidebar-account-block" style="display:none;" title="Click to switch account">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+        <div style="min-width:0;">
+          <div id="sidebar-account-name"></div>
+          <div id="sidebar-account-budget"></div>
+        </div>
+        <svg id="sidebar-account-chevron" viewBox="0 0 16 16" fill="currentColor"
+             style="width:11px;height:11px;flex-shrink:0;opacity:.5;transition:transform .2s;">
+          <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Account-switcher popover (toggled by sidebar-account-block click) -->
+    <div id="account-switcher-popover" style="display:none;">
+      <div id="account-switcher-list"></div>
     </div>
 
     <nav>

@@ -115,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupValidateModal();
   setupAccountView();
   setupHistoryDetailModal();
+  setupSidebarAccountSwitcher();
   restorePrefs();
   restoreProfile();
 
@@ -1475,6 +1476,7 @@ async function switchLMAccount(id) {
   renderLMAccountsList();
   refreshDashboard();
   refreshTracker();
+  closeSidebarSwitcher();
   toast(`Switched to ${res.data.user_name || res.data.label || 'account'}`, 'success');
 }
 
@@ -1520,7 +1522,85 @@ async function updateSidebarAccountName() {
     block.style.display = 'block';
   } else {
     block.style.display = 'none';
+    closeSidebarSwitcher();
   }
+}
+
+/** Set up the sidebar account-switcher popover (called once on DOMContentLoaded). */
+function setupSidebarAccountSwitcher() {
+  const block   = document.getElementById('sidebar-account-block');
+  const popover = document.getElementById('account-switcher-popover');
+  if (!block || !popover) return;
+
+  // Toggle popover on block click
+  block.addEventListener('click', async () => {
+    const isOpen = popover.style.display !== 'none';
+    if (isOpen) {
+      closeSidebarSwitcher();
+    } else {
+      await openSidebarSwitcher();
+    }
+  });
+
+  // Close when clicking anywhere outside the sidebar
+  document.addEventListener('click', e => {
+    if (!block.contains(e.target) && !popover.contains(e.target)) {
+      closeSidebarSwitcher();
+    }
+  }, true);
+}
+
+async function openSidebarSwitcher() {
+  const block   = document.getElementById('sidebar-account-block');
+  const popover = document.getElementById('account-switcher-popover');
+  const list    = document.getElementById('account-switcher-list');
+
+  const res      = await window.electronAPI.lmAccounts.list();
+  const accounts = res?.data || [];
+
+  if (accounts.length <= 1) {
+    // Only one account — navigate to Settings instead of showing a one-item list
+    closeSidebarSwitcher();
+    navigateTo('settings');
+    return;
+  }
+
+  list.innerHTML = accounts.map(acc => {
+    const initials = (acc.user_name || acc.label || '?')
+      .split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const label = acc.label || acc.user_name || 'Account';
+    const meta  = acc.budget_name && acc.budget_name !== acc.user_name
+      ? acc.budget_name : acc.user_name || '';
+    return `
+      <div class="switcher-row ${acc.is_active ? 'active' : ''}" data-id="${acc.id}">
+        <div class="switcher-avatar">${escHtml(initials)}</div>
+        <div class="switcher-info">
+          <div class="switcher-label">${escHtml(label)}</div>
+          ${meta ? `<div class="switcher-meta">${escHtml(meta)}</div>` : ''}
+        </div>
+        ${acc.is_active ? '<span class="switcher-check">✓</span>' : ''}
+      </div>`;
+  }).join('');
+
+  // Wire row clicks
+  list.querySelectorAll('.switcher-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      const id = parseInt(row.dataset.id);
+      const active = row.classList.contains('active');
+      closeSidebarSwitcher();
+      if (!active) await switchLMAccount(id);
+    });
+  });
+
+  popover.style.display = 'block';
+  block.classList.add('switcher-open');
+}
+
+function closeSidebarSwitcher() {
+  const block   = document.getElementById('sidebar-account-block');
+  const popover = document.getElementById('account-switcher-popover');
+  if (popover) popover.style.display = 'none';
+  if (block)   block.classList.remove('switcher-open');
 }
 
 // ─── Taxpayer Profile ─────────────────────────────────────────────────────────
