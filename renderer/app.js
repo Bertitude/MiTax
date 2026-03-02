@@ -2480,6 +2480,202 @@ function toast(message, type = 'info', duration = 4000) {
 //  ACCOUNT SUMMARY VIEW
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── Payee Detection + Suggestion (renderer-side mirror of src/payee-detect.js) ─
+
+const PAYEE_LEADING_PREFIXES = [
+  /^Point\s+Of\s+Sale\s+Withdrawal\s+/i,
+  /^ATM\s+Withdrawal\s+/i,
+  /^IAT\s+(Deposit|Withdrawal)\s+/i,
+  /^External\s+(Deposit|Withdrawal)\s+/i,
+  /^(Deposit|Withdrawal)\s+Digital\s+Transfer\s+(from|to)\s+\S+\s+(SAV|CK|CHK)\s*/i,
+  /^(Deposit|Withdrawal)\s+/i,
+  /^FX\s+International\s+Fee\s+Non\s+US\s+Funds\s*/i,
+  /^Credit\s+Interest\s*/i,
+  /^Service\s+Charge\s*/i,
+  /^Excessive\s+Transaction\s+Fee\s*/i,
+  /^ACH\s+/i,
+  /^WIRE\s+/i,
+  /^MercuryACH\s+.*?\s+From\s+/i,
+  /\s+via\s+mercury\.com\s*$/i,
+];
+
+const PAYEE_TRAILING_NOISE = [
+  /\b[A-Z]{2}\s+[A-Z]{2}\s*$/,
+  /\b(Kingston|St\.?\s*Andrew|St\.?\s*James|Montego\s*Bay|Portmore|Spanish\s*Town|Liguanea|Barbican|Manor\s*Park|Half\s*Way\s*Tree|Cross\s*Roads|New\s*Kingston|Mona)\s*\d*\s*(JM|Jamaica)?\s*$/i,
+  /\s*\b\d{3}-\d{3}-\d{4}\b\s*/g,
+  /\s+(JM|Jamaica|CA|US|GB|UK)\s*$/i,
+];
+
+const PAYEE_ACRONYMS = new Set(['ATM','BNS','NCB','JN','ACH','FX','IAT','NHT','NIS','TAJ',
+  'KFC','BMW','LLC','INC','LTD','PLC','CO']);
+
+function payeeTitleCase(str) {
+  return str.replace(/\S+/g, w => {
+    if (PAYEE_ACRONYMS.has(w.toUpperCase())) return w.toUpperCase();
+    if (/^\d/.test(w)) return w;
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  });
+}
+
+function isRawBankText(str) {
+  if (!str || str.length < 4) return false;
+  const letters = str.replace(/[^a-zA-Z]/g, '');
+  if (letters.length > 4 && str.replace(/[^A-Z]/g, '').length / letters.length > 0.7) return true;
+  if (/^(Point\s+Of\s+Sale|ATM\s+Withdrawal|IAT\s+(Deposit|Withdrawal)|External\s+(Deposit|Withdrawal)|ACH\s+|WIRE\s+|FX\s+International|Deposit\s+Digital|Withdrawal\s+Digital|Credit\s+Interest|Service\s+Charge|Excessive\s+Transaction)/i.test(str)) return true;
+  if (/\b\d{3}-\d{3}-\d{4}\b/.test(str)) return true;
+  if (/\b[A-Z]{2}\s+[A-Z]{2}\s*$/.test(str)) return true;
+  return false;
+}
+
+function needsPayeeCleanup(tx) {
+  const payee = (tx.payee || '').trim();
+  const orig  = (tx.original_name || '').trim();
+  if (!payee) return true;
+  if (payee === orig && isRawBankText(payee)) return true;
+  return false;
+}
+
+function suggestPayee(tx) {
+  let name = (tx.original_name || tx.payee || '').trim();
+  if (!name) return '';
+  for (const re of PAYEE_LEADING_PREFIXES) name = name.replace(re, '').trim();
+  name = name.replace(/\d[\d,]*\.?\d*\s*(JMD|USD|GBP|EUR)?\s*\*?\s*/gi, ' ').trim();
+  name = name.replace(/\*\s*(BNS|NCB|JN|RBC|CIBC|JMMB|SCOTIABANK)\s*/gi, ' ').trim();
+  for (const re of PAYEE_TRAILING_NOISE) name = name.replace(re, '').trim();
+  name = name.replace(/\s{2,}/g, ' ').trim();
+  if (!name || name.length < 2) return '';
+  return payeeTitleCase(name);
+}
+
+// ─── Payee Cleanup UI ─────────────────────────────────────────────────────────
+
+function renderPayeeCleanup(txs) {
+  const card      = document.getElementById('payee-cleanup-card');
+  const body      = document.getElementById('payee-cleanup-body');
+  const countBadge = document.getElementById('payee-cleanup-count');
+  const applyBtn  = document.getElementById('payee-apply-btn');
+  const selAllBtn = document.getElementById('payee-select-all-btn');
+
+  if (!card || !body) return;
+
+  const candidates = txs
+    .filter(needsPayeeCleanup)
+    .map(tx => ({ tx, suggested: suggestPayee(tx) }))
+    .filter(c => c.suggested); // only show if we have a useful suggestion
+
+  if (!candidates.length) {
+    card.style.display = 'none';
+    return;
+  }
+
+  card.style.display = '';
+  if (countBadge) { countBadge.textContent = `${candidates.length} to review`; countBadge.style.display = ''; }
+
+  // Build table rows — each row has a checkbox, date, original name, and editable suggestion
+  body.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">
+            <th style="padding:6px 8px;width:32px;"></th>
+            <th style="padding:6px 8px;white-space:nowrap;">Date</th>
+            <th style="padding:6px 8px;">Current / Original Name</th>
+            <th style="padding:6px 8px;">Suggested Payee</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${candidates.map((c, i) => `
+            <tr class="payee-cleanup-row" data-idx="${i}" data-txid="${c.tx.id}"
+                style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 8px;text-align:center;">
+                <input type="checkbox" class="payee-row-cb" data-idx="${i}" checked />
+              </td>
+              <td style="padding:6px 8px;white-space:nowrap;color:var(--text-muted);">${escHtml(c.tx.date || '')}</td>
+              <td style="padding:6px 8px;max-width:280px;">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(c.tx.original_name || c.tx.payee || '')}">
+                  ${escHtml(c.tx.payee || c.tx.original_name || '—')}
+                </div>
+              </td>
+              <td style="padding:4px 8px;">
+                <input type="text" class="payee-suggestion-input" data-idx="${i}"
+                  value="${escHtml(c.suggested)}"
+                  style="width:100%;min-width:160px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:12px;" />
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  // Store candidates on the card element for use during apply
+  card._candidates = candidates;
+
+  // Update apply button state based on checkbox state
+  function updateApplyBtn() {
+    const anyChecked = body.querySelectorAll('.payee-row-cb:checked').length > 0;
+    if (applyBtn) applyBtn.disabled = !anyChecked;
+  }
+  body.addEventListener('change', e => { if (e.target.classList.contains('payee-row-cb')) updateApplyBtn(); });
+  updateApplyBtn();
+
+  // Select all / deselect all toggle
+  if (selAllBtn) {
+    selAllBtn._allSelected = true;
+    selAllBtn.addEventListener('click', () => {
+      selAllBtn._allSelected = !selAllBtn._allSelected;
+      body.querySelectorAll('.payee-row-cb').forEach(cb => { cb.checked = selAllBtn._allSelected; });
+      selAllBtn.textContent = selAllBtn._allSelected ? 'Deselect All' : 'Select All';
+      updateApplyBtn();
+    });
+    selAllBtn.textContent = 'Deselect All'; // all start checked
+    selAllBtn._allSelected = true;
+  }
+
+  // Apply button
+  if (applyBtn) {
+    // Remove old listener by replacing the button node
+    const fresh = applyBtn.cloneNode(true);
+    applyBtn.replaceWith(fresh);
+    fresh.addEventListener('click', () => applyPayeeUpdates(card, body, fresh, countBadge));
+  }
+}
+
+async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
+  if (!state.apiKey) { toast('Not connected to LunchMoney', 'error'); return; }
+
+  const candidates = card._candidates || [];
+  const updates = [];
+
+  body.querySelectorAll('.payee-row-cb:checked').forEach(cb => {
+    const idx     = parseInt(cb.dataset.idx);
+    const input   = body.querySelector(`.payee-suggestion-input[data-idx="${idx}"]`);
+    const row     = body.querySelector(`.payee-cleanup-row[data-idx="${idx}"]`);
+    const txId    = parseInt(row?.dataset.txid);
+    const payee   = input?.value.trim();
+    if (txId && payee) updates.push({ id: txId, payee });
+  });
+
+  if (!updates.length) { toast('No transactions selected', 'info'); return; }
+
+  applyBtn.disabled = true;
+  applyBtn.innerHTML = `<span class="spinner"></span> Updating ${updates.length}…`;
+
+  const res = await window.electronAPI.updatePayeeBatch({ apiKey: state.apiKey, updates });
+
+  applyBtn.disabled = false;
+  applyBtn.innerHTML = 'Apply Selected';
+
+  if (!res.success) { toast(`Update failed: ${res.error}`, 'error'); return; }
+
+  const { updated, errors } = res.data;
+  if (errors.length) toast(`Updated ${updated}, ${errors.length} error(s)`, 'warn');
+  else               toast(`✓ Updated ${updated} payee${updated !== 1 ? 's' : ''} in LunchMoney`, 'success');
+
+  // Reload the account view to reflect the changes
+  if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
+}
+
 /** Wire up the static controls on the account summary view (back btn, year change). */
 function setupAccountView() {
   document.getElementById('account-back-btn').addEventListener('click', () => {
@@ -2647,6 +2843,8 @@ function renderAccountSummary(asset, year, txs) {
   const cntEl = document.getElementById('account-tx-count');
   const txEl  = document.getElementById('account-tx-list');
   if (cntEl) cntEl.textContent = `${txs.length} transaction${txs.length !== 1 ? 's' : ''}`;
+
+  renderPayeeCleanup(txs);
 
   if (!txs.length) {
     txEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No transactions for ${year}.</div>`;

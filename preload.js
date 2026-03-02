@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAssetCoverage:   ({ apiKey, assetId, year }) => ipcRenderer.invoke('get-asset-coverage',        { apiKey, assetId, year }),
   // Coverage from local DB (months with an uploaded statement, regardless of tx count)
   getDbCoverage:      ({ lmAssetId, year })       => ipcRenderer.invoke('tracker-get-db-coverage',  { lmAssetId, year }),
+  // Payee batch update
+  updatePayeeBatch:   ({ apiKey, updates })        => ipcRenderer.invoke('payee-update-batch',       { apiKey, updates }),
 
   // CSV Export
   exportCSV: (payload) => ipcRenderer.invoke('export-csv', payload),
