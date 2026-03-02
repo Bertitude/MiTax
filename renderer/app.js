@@ -1249,6 +1249,17 @@ ${escHtml(u.notes)}</pre>
     ` : ''}
   `;
 
+  // Show copy button only when there are notes to copy
+  const copyBtn = document.getElementById('upload-detail-copy');
+  if (u.notes) {
+    copyBtn.style.display = '';
+    copyBtn.textContent = '📋 Copy Errors';
+    copyBtn._notesText = u.notes;
+  } else {
+    copyBtn.style.display = 'none';
+    copyBtn._notesText = '';
+  }
+
   document.getElementById('upload-detail-modal').classList.add('open');
 }
 
@@ -1264,6 +1275,18 @@ function setupHistoryDetailModal() {
 
   document.getElementById('upload-detail-close').addEventListener('click', () => {
     document.getElementById('upload-detail-modal').classList.remove('open');
+  });
+
+  document.getElementById('upload-detail-copy').addEventListener('click', async function () {
+    const text = this._notesText;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.textContent = '✓ Copied!';
+      setTimeout(() => { this.textContent = '📋 Copy Errors'; }, 2000);
+    } catch {
+      toast('Could not copy to clipboard', 'error');
+    }
   });
   document.getElementById('upload-detail-modal').addEventListener('click', e => {
     if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
