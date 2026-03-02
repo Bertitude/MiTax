@@ -4,6 +4,16 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [1.2.16] — 2026-03-02
+
+### Fixed
+- **Upload History: times after midnight showing as 24:xx**
+  `Intl.DateTimeFormat` with `hour12: false` can return hour `24` for
+  midnight instead of `00` (a known spec quirk). Switched to
+  `hourCycle: 'h23'` which enforces the 0–23 range consistently.
+
+---
+
 ## [1.2.15] — 2026-03-02
 
 ### Added
