@@ -7,7 +7,7 @@
  *
  * Table column layout (PDF user units, verified with pdfplumber):
  *   Transaction Date (x < 90)   | Transaction Type (90–182)
- *   Description (183–394)       | Debit (395–464) | Credit (465–514) | Balance (x ≥ 515)
+ *   Description (183–359)       | Debit (360–439) | Credit (440–509) | Balance (x ≥ 510)
  *
  * Date format  : "Jan 01, 2023" — three text tokens in the date column
  * Amount format: plain "1,106.26" (no currency symbol)
@@ -28,10 +28,10 @@ const JN_DATE_MAX    = 90;   // date tokens  : x < 90
 const JN_TYPE_MIN    = 90;   // tx type      : 90 ≤ x < 183
 const JN_TYPE_MAX    = 183;
 const JN_DESC_MIN    = 183;  // description  : 183 ≤ x < 395
-const JN_DESC_MAX    = 395;
-const JN_AMT_MIN     = 395;  // debit amount : 395 ≤ x < 465
-const JN_CREDIT_MIN  = 465;  // credit amount: 465 ≤ x < 515
-const JN_BAL_MIN     = 515;  // balance      : x ≥ 515  (ignored)
+const JN_DESC_MAX    = 360;
+const JN_AMT_MIN     = 360;  // debit amount : 360 ≤ x < 440
+const JN_CREDIT_MIN  = 440;  // credit amount: 440 ≤ x < 510
+const JN_BAL_MIN     = 510;  // balance      : x ≥ 510  (ignored)
 
 // Matches plain amounts: "1,106.26" or "150,000.00"
 const AMT_PAT  = /^[\d,]+\.\d{2}$/;
