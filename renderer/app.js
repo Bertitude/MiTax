@@ -15,6 +15,52 @@ const state = {
   taxReport:     null,
 };
 
+// ─── Timezone Utilities ───────────────────────────────────────────────────────
+
+const TZ_KEY       = 'lm_timezone';
+const SETUP_DONE_KEY = 'lm_setup_complete';
+
+/** Returns the IANA timezone string the user has configured, or 'system'. */
+function getAppTimezone() {
+  return localStorage.getItem(TZ_KEY) || 'system';
+}
+
+/** Returns the system's IANA timezone string detected by the browser. */
+function getSystemTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/**
+ * Returns the current date as YYYY-MM-DD in the configured (or system) timezone.
+ * Used wherever "today" matters for date-range calculations.
+ */
+function getAppNow() {
+  const tz = getAppTimezone();
+  const resolved = tz === 'system' ? getSystemTimezone() : tz;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: resolved,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year').value;
+    const m = parts.find(p => p.type === 'month').value;
+    const d = parts.find(p => p.type === 'day').value;
+    return `${y}-${m}-${d}`;
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+/** Friendly label for a timezone string. */
+function tzLabel(tz) {
+  if (tz === 'system') return `Auto — ${getSystemTimezone()}`;
+  try {
+    const offset = new Intl.DateTimeFormat('en', { timeZoneName: 'short', timeZone: tz })
+      .formatToParts(new Date()).find(p => p.type === 'timeZoneName')?.value || '';
+    return `${tz.replace(/_/g, ' ')} (${offset})`;
+  } catch { return tz; }
+}
+
 // ─── Category Mappings ────────────────────────────────────────────────────────
 // Persisted in localStorage as { [categoryId]: { _raw, incomeType?, isDeductible?, ignore? } }
 
@@ -115,6 +161,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupValidateModal();
   setupAccountView();
   setupHistoryDetailModal();
+  setupSidebarAccountSwitcher();
   restorePrefs();
   restoreProfile();
 
@@ -149,7 +196,69 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshHistory();
   refreshFilingHistory();
   initTrackerYearSelect();
+
+  // Show first-run welcome modal if the user hasn't completed setup yet
+  maybeShowWelcomeModal();
 });
+
+// ─── First-Run Welcome Modal ──────────────────────────────────────────────────
+
+/**
+ * Shows the first-run welcome modal the very first time the app is launched.
+ * When the user clicks "Get Started", their timezone & currency selections are
+ * persisted, setup is marked complete, and the modal closes.
+ */
+function maybeShowWelcomeModal() {
+  if (localStorage.getItem(SETUP_DONE_KEY)) return;   // already done
+
+  const modal    = document.getElementById('welcome-modal');
+  const tzSel    = document.getElementById('welcome-timezone-select');
+  const tzLblEl  = document.getElementById('welcome-tz-label');
+  const currSel  = document.getElementById('welcome-currency-select');
+  const startBtn = document.getElementById('welcome-get-started-btn');
+
+  if (!modal || !tzSel || !startBtn) return;
+
+  // Pre-select the system timezone
+  tzSel.value = 'system';
+  if (tzLblEl) tzLblEl.textContent = `Detected: ${getSystemTimezone()}`;
+
+  // Update label whenever timezone selection changes
+  tzSel.addEventListener('change', () => {
+    if (tzLblEl) tzLblEl.textContent = tzSel.value === 'system'
+      ? `Detected: ${getSystemTimezone()}`
+      : tzLabel(tzSel.value);
+  });
+
+  // Show the modal (backdrop already has display:none; remove it)
+  modal.style.display = 'flex';
+
+  startBtn.addEventListener('click', () => {
+    // Persist timezone
+    const chosenTz = tzSel.value || 'system';
+    localStorage.setItem(TZ_KEY, chosenTz);
+
+    // Persist currency by updating the prefs selector then calling savePrefs
+    const settingsCurrSel = document.getElementById('default-currency');
+    if (settingsCurrSel && currSel) settingsCurrSel.value = currSel.value;
+    savePrefs();
+
+    // Sync the Settings timezone selector to match
+    const settingsTzSel = document.getElementById('timezone-select');
+    if (settingsTzSel) {
+      settingsTzSel.value = chosenTz;
+      updateTimezoneLabel();
+    }
+
+    // Mark setup as complete
+    localStorage.setItem(SETUP_DONE_KEY, '1');
+
+    // Close modal
+    modal.style.display = 'none';
+  });
+}
+
+// ─── Year Selects ─────────────────────────────────────────────────────────────
 
 /**
  * Populate year-selection dropdowns.
@@ -1249,6 +1358,17 @@ ${escHtml(u.notes)}</pre>
     ` : ''}
   `;
 
+  // Show copy button only when there are notes to copy
+  const copyBtn = document.getElementById('upload-detail-copy');
+  if (u.notes) {
+    copyBtn.style.display = '';
+    copyBtn.textContent = '📋 Copy Errors';
+    copyBtn._notesText = u.notes;
+  } else {
+    copyBtn.style.display = 'none';
+    copyBtn._notesText = '';
+  }
+
   document.getElementById('upload-detail-modal').classList.add('open');
 }
 
@@ -1264,6 +1384,18 @@ function setupHistoryDetailModal() {
 
   document.getElementById('upload-detail-close').addEventListener('click', () => {
     document.getElementById('upload-detail-modal').classList.remove('open');
+  });
+
+  document.getElementById('upload-detail-copy').addEventListener('click', async function () {
+    const text = this._notesText;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.textContent = '✓ Copied!';
+      setTimeout(() => { this.textContent = '📋 Copy Errors'; }, 2000);
+    } catch {
+      toast('Could not copy to clipboard', 'error');
+    }
   });
   document.getElementById('upload-detail-modal').addEventListener('click', e => {
     if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
@@ -1452,6 +1584,7 @@ async function switchLMAccount(id) {
   renderLMAccountsList();
   refreshDashboard();
   refreshTracker();
+  closeSidebarSwitcher();
   toast(`Switched to ${res.data.user_name || res.data.label || 'account'}`, 'success');
 }
 
@@ -1497,7 +1630,85 @@ async function updateSidebarAccountName() {
     block.style.display = 'block';
   } else {
     block.style.display = 'none';
+    closeSidebarSwitcher();
   }
+}
+
+/** Set up the sidebar account-switcher popover (called once on DOMContentLoaded). */
+function setupSidebarAccountSwitcher() {
+  const block   = document.getElementById('sidebar-account-block');
+  const popover = document.getElementById('account-switcher-popover');
+  if (!block || !popover) return;
+
+  // Toggle popover on block click
+  block.addEventListener('click', async () => {
+    const isOpen = popover.style.display !== 'none';
+    if (isOpen) {
+      closeSidebarSwitcher();
+    } else {
+      await openSidebarSwitcher();
+    }
+  });
+
+  // Close when clicking anywhere outside the sidebar
+  document.addEventListener('click', e => {
+    if (!block.contains(e.target) && !popover.contains(e.target)) {
+      closeSidebarSwitcher();
+    }
+  }, true);
+}
+
+async function openSidebarSwitcher() {
+  const block   = document.getElementById('sidebar-account-block');
+  const popover = document.getElementById('account-switcher-popover');
+  const list    = document.getElementById('account-switcher-list');
+
+  const res      = await window.electronAPI.lmAccounts.list();
+  const accounts = res?.data || [];
+
+  if (accounts.length <= 1) {
+    // Only one account — navigate to Settings instead of showing a one-item list
+    closeSidebarSwitcher();
+    navigateTo('settings');
+    return;
+  }
+
+  list.innerHTML = accounts.map(acc => {
+    const initials = (acc.user_name || acc.label || '?')
+      .split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const label = acc.label || acc.user_name || 'Account';
+    const meta  = acc.budget_name && acc.budget_name !== acc.user_name
+      ? acc.budget_name : acc.user_name || '';
+    return `
+      <div class="switcher-row ${acc.is_active ? 'active' : ''}" data-id="${acc.id}">
+        <div class="switcher-avatar">${escHtml(initials)}</div>
+        <div class="switcher-info">
+          <div class="switcher-label">${escHtml(label)}</div>
+          ${meta ? `<div class="switcher-meta">${escHtml(meta)}</div>` : ''}
+        </div>
+        ${acc.is_active ? '<span class="switcher-check">✓</span>' : ''}
+      </div>`;
+  }).join('');
+
+  // Wire row clicks
+  list.querySelectorAll('.switcher-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      const id = parseInt(row.dataset.id);
+      const active = row.classList.contains('active');
+      closeSidebarSwitcher();
+      if (!active) await switchLMAccount(id);
+    });
+  });
+
+  popover.style.display = 'block';
+  block.classList.add('switcher-open');
+}
+
+function closeSidebarSwitcher() {
+  const block   = document.getElementById('sidebar-account-block');
+  const popover = document.getElementById('account-switcher-popover');
+  if (popover) popover.style.display = 'none';
+  if (block)   block.classList.remove('switcher-open');
 }
 
 // ─── Taxpayer Profile ─────────────────────────────────────────────────────────
@@ -1540,6 +1751,11 @@ function savePrefs() {
   const prefs = getPrefs();
   localStorage.setItem('lm_prefs', JSON.stringify(prefs));
   state.prefs = prefs;
+
+  // Timezone is stored separately so it's always accessible without loading full prefs
+  const tzSel = document.getElementById('timezone-select');
+  if (tzSel) localStorage.setItem(TZ_KEY, tzSel.value);
+
   toast('Preferences saved', 'success');
 }
 function restorePrefs() {
@@ -1547,6 +1763,22 @@ function restorePrefs() {
   if (p.defaultCurrency) document.getElementById('default-currency').value = p.defaultCurrency;
   if (p.skipDuplicates != null) document.getElementById('skip-duplicates').checked = p.skipDuplicates;
   if (p.applyRules      != null) document.getElementById('apply-rules').checked     = p.applyRules;
+
+  // Restore timezone selector and live label
+  const tzSel = document.getElementById('timezone-select');
+  if (tzSel) {
+    tzSel.value = getAppTimezone();
+    updateTimezoneLabel();
+    tzSel.addEventListener('change', updateTimezoneLabel);
+  }
+}
+
+/** Updates the descriptive label shown below the timezone <select> in Settings. */
+function updateTimezoneLabel() {
+  const tzSel  = document.getElementById('timezone-select');
+  const lbl    = document.getElementById('timezone-current-label');
+  if (!tzSel || !lbl) return;
+  lbl.textContent = `Current: ${tzLabel(tzSel.value)}`;
 }
 
 // ─── S04 Tax ──────────────────────────────────────────────────────────────────
@@ -1561,6 +1793,188 @@ function setupTaxView() {
   // ── Filing history refresh ─────────────────────────────────────────────
   const refreshFilingsBtn = document.getElementById('refresh-filings-btn');
   if (refreshFilingsBtn) refreshFilingsBtn.addEventListener('click', refreshFilingHistory);
+
+  // ── P24 ────────────────────────────────────────────────────────────────
+  setupP24();
+}
+
+// ─── P24 Employment Income ────────────────────────────────────────────────────
+
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function setupP24() {
+  // Sync P24 table when tax year changes
+  const taxYearSel = document.getElementById('tax-year-select');
+  taxYearSel.addEventListener('change', () => loadP24Entries(parseInt(taxYearSel.value)));
+
+  // Add button
+  document.getElementById('p24-add-btn').addEventListener('click', () => openP24Modal());
+
+  // Modal cancel / backdrop
+  document.getElementById('p24-modal-cancel').addEventListener('click', closeP24Modal);
+  document.getElementById('p24-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeP24Modal();
+  });
+
+  // Modal save
+  document.getElementById('p24-modal-save').addEventListener('click', saveP24Entry);
+
+  // Load entries for the current year once the view initialises
+  const initialYear = parseInt(taxYearSel.value) || new Date().getFullYear() - 1;
+  loadP24Entries(initialYear);
+}
+
+async function loadP24Entries(year) {
+  const result = await window.electronAPI.p24.getForYear(year);
+  if (!result.success) { console.error('P24 load error:', result.error); return; }
+
+  const entries = result.data || [];
+  const tbody   = document.getElementById('p24-tbody');
+  const tfoot   = document.getElementById('p24-tfoot');
+  const table   = document.getElementById('p24-table');
+  const empty   = document.getElementById('p24-empty');
+  const fmt     = v => `$${Number(v||0).toLocaleString('en-JM',{minimumFractionDigits:2})}`;
+
+  if (!entries.length) {
+    table.style.display = 'none';
+    empty.style.display = '';
+    return;
+  }
+
+  empty.style.display = 'none';
+  table.style.display = '';
+
+  // Body rows
+  tbody.innerHTML = entries.map(e => `
+    <tr data-p24-id="${e.id}">
+      <td>${MONTH_NAMES[(e.month || 1) - 1]} ${e.year}</td>
+      <td>${escHtml(e.employer_name)}</td>
+      <td style="text-align:right;">${fmt(e.gross_emoluments)}</td>
+      <td style="text-align:right;">${fmt(e.nis_deducted)}</td>
+      <td style="text-align:right;">${fmt(e.nht_deducted)}</td>
+      <td style="text-align:right;">${fmt(e.ed_tax_deducted)}</td>
+      <td style="text-align:right;">${fmt(e.paye_deducted)}</td>
+      <td style="text-align:right;white-space:nowrap;">
+        <button class="btn btn-secondary btn-sm" onclick="openP24Modal(${e.id})" style="padding:2px 8px;font-size:11px;">Edit</button>
+        <button class="btn btn-sm" style="padding:2px 8px;font-size:11px;background:var(--warn);color:#fff;border:none;" onclick="deleteP24Entry(${e.id})">✕</button>
+      </td>
+    </tr>
+  `).join('');
+
+  // Footer totals
+  const totals = entries.reduce((acc, e) => {
+    acc.gross += e.gross_emoluments || 0;
+    acc.nis   += e.nis_deducted     || 0;
+    acc.nht   += e.nht_deducted     || 0;
+    acc.ed    += e.ed_tax_deducted  || 0;
+    acc.paye  += e.paye_deducted    || 0;
+    return acc;
+  }, { gross: 0, nis: 0, nht: 0, ed: 0, paye: 0 });
+
+  tfoot.innerHTML = `
+    <tr style="font-weight:700;border-top:2px solid var(--border);">
+      <td colspan="2" style="color:var(--text-muted);font-size:12px;">TOTALS (${entries.length} entr${entries.length !== 1 ? 'ies' : 'y'})</td>
+      <td style="text-align:right;">${fmt(totals.gross)}</td>
+      <td style="text-align:right;">${fmt(totals.nis)}</td>
+      <td style="text-align:right;">${fmt(totals.nht)}</td>
+      <td style="text-align:right;">${fmt(totals.ed)}</td>
+      <td style="text-align:right;">${fmt(totals.paye)}</td>
+      <td></td>
+    </tr>
+  `;
+
+  // Store raw entries on state for reference
+  state.p24Entries = entries;
+}
+
+function openP24Modal(id) {
+  const modal    = document.getElementById('p24-modal');
+  const title    = document.getElementById('p24-modal-title');
+  const taxYear  = parseInt(document.getElementById('tax-year-select').value) || new Date().getFullYear() - 1;
+
+  // Clear form
+  document.getElementById('p24-entry-id').value      = '';
+  document.getElementById('p24-year').value          = taxYear;
+  document.getElementById('p24-month').value         = '1';
+  document.getElementById('p24-employer-name').value = '';
+  document.getElementById('p24-employer-trn').value  = '';
+  document.getElementById('p24-gross').value         = '';
+  document.getElementById('p24-nis').value           = '';
+  document.getElementById('p24-nht').value           = '';
+  document.getElementById('p24-edtax').value         = '';
+  document.getElementById('p24-paye').value          = '';
+  document.getElementById('p24-net').value           = '';
+  document.getElementById('p24-notes').value         = '';
+
+  if (id) {
+    // Populate with existing entry
+    const entry = (state.p24Entries || []).find(e => e.id === id);
+    if (entry) {
+      title.textContent = '🧾 Edit P24 Entry';
+      document.getElementById('p24-entry-id').value      = entry.id;
+      document.getElementById('p24-year').value          = entry.year;
+      document.getElementById('p24-month').value         = entry.month;
+      document.getElementById('p24-employer-name').value = entry.employer_name;
+      document.getElementById('p24-employer-trn').value  = entry.employer_trn || '';
+      document.getElementById('p24-gross').value         = entry.gross_emoluments || '';
+      document.getElementById('p24-nis').value           = entry.nis_deducted     || '';
+      document.getElementById('p24-nht').value           = entry.nht_deducted     || '';
+      document.getElementById('p24-edtax').value         = entry.ed_tax_deducted  || '';
+      document.getElementById('p24-paye').value          = entry.paye_deducted    || '';
+      document.getElementById('p24-net').value           = entry.net_pay          || '';
+      document.getElementById('p24-notes').value         = entry.notes            || '';
+    }
+  } else {
+    title.textContent = '🧾 Add P24 Entry';
+  }
+
+  modal.classList.add('open');
+}
+
+function closeP24Modal() {
+  document.getElementById('p24-modal').classList.remove('open');
+}
+
+async function saveP24Entry() {
+  const employerName = document.getElementById('p24-employer-name').value.trim();
+  const year         = parseInt(document.getElementById('p24-year').value);
+  const month        = parseInt(document.getElementById('p24-month').value);
+
+  if (!employerName) { toast('Employer name is required', 'error'); return; }
+  if (!year || year < 2000 || year > 2099) { toast('Enter a valid tax year', 'error'); return; }
+
+  const id = document.getElementById('p24-entry-id').value;
+
+  const payload = {
+    id:               id ? parseInt(id) : undefined,
+    year,
+    month,
+    employerName,
+    employerTrn:      document.getElementById('p24-employer-trn').value.trim() || null,
+    grossEmoluments:  parseFloat(document.getElementById('p24-gross').value)  || 0,
+    nisDeducted:      parseFloat(document.getElementById('p24-nis').value)    || 0,
+    nhtDeducted:      parseFloat(document.getElementById('p24-nht').value)    || 0,
+    edTaxDeducted:    parseFloat(document.getElementById('p24-edtax').value)  || 0,
+    payeDeducted:     parseFloat(document.getElementById('p24-paye').value)   || 0,
+    netPay:           parseFloat(document.getElementById('p24-net').value)    || 0,
+    notes:            document.getElementById('p24-notes').value.trim() || null,
+  };
+
+  const result = await window.electronAPI.p24.save(payload);
+  if (!result.success) { toast(`Failed to save P24 entry: ${result.error}`, 'error'); return; }
+
+  closeP24Modal();
+  toast(id ? 'P24 entry updated' : 'P24 entry added', 'success');
+  loadP24Entries(year);
+}
+
+async function deleteP24Entry(id) {
+  if (!confirm('Delete this P24 entry?')) return;
+  const result = await window.electronAPI.p24.delete(id);
+  if (!result.success) { toast(`Failed to delete: ${result.error}`, 'error'); return; }
+  toast('P24 entry deleted', 'info');
+  const year = parseInt(document.getElementById('tax-year-select').value);
+  loadP24Entries(year);
 }
 
 async function generateTax() {
@@ -1621,6 +2035,7 @@ function renderTaxReport(report) {
         <div class="tax-row"><span>Foreign-Sourced</span><span class="tax-amount">${fmt(report.income.foreignSourcedIncome)}</span></div>
         <div class="tax-row"><span>Investment (Dividends, Interest)</span><span class="tax-amount">${fmt(report.income.investmentIncome)}</span></div>
         <div class="tax-row"><span>Rental</span><span class="tax-amount">${fmt(report.income.rentalIncome)}</span></div>
+        ${report.p24 ? `<div class="tax-row"><span>Employment Income <span class="badge badge-blue" style="font-size:10px;vertical-align:middle;">P24 — ${report.p24.entryCount} entr${report.p24.entryCount !== 1 ? 'ies' : 'y'}</span></span><span class="tax-amount">${fmt(report.income.employmentIncome)}</span></div>` : ''}
         <div class="tax-row tax-row-total"><strong>Gross Income</strong><span class="tax-amount highlight">${fmt(report.income.grossIncome)}</span></div>
       </div>
       <div class="tax-section"><div class="card-title">Part B — Deductions</div>
@@ -1636,9 +2051,30 @@ function renderTaxReport(report) {
         <div class="tax-row"><span>Chargeable Income</span><span class="tax-amount">${fmt(report.chargeableIncome)}</span></div>
         <div class="tax-row"><span>Income Tax (25%/30%)</span><span class="tax-amount">${fmt(report.tax.incomeTax)}</span></div>
       </div>
+      ${report.p24 ? `
+      <div class="tax-section">
+        <div class="card-title">Part E — P24 Withholdings (Already Paid via PAYE)</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+          Taxes deducted by your employer and already remitted to TAJ. These are credited against your S04 liability above.
+        </div>
+        <div class="tax-row"><span>NIS withheld by employer</span><span class="tax-amount" style="color:var(--accent2);">− ${fmt(report.p24.nisDeducted)}</span></div>
+        <div class="tax-row"><span>NHT withheld by employer</span><span class="tax-amount" style="color:var(--accent2);">− ${fmt(report.p24.nhtDeducted)}</span></div>
+        <div class="tax-row"><span>Education Tax withheld</span><span class="tax-amount" style="color:var(--accent2);">− ${fmt(report.p24.edTaxDeducted)}</span></div>
+        <div class="tax-row"><span>PAYE Income Tax withheld</span><span class="tax-amount" style="color:var(--accent2);">− ${fmt(report.p24.payeDeducted)}</span></div>
+        <div class="tax-row tax-row-total"><strong>Total P24 Credit</strong><span class="tax-amount" style="color:var(--accent2);">− ${fmt(report.p24.totalWithheld)}</span></div>
+      </div>` : ''}
       <div style="background:var(--surface2);border-radius:8px;padding:16px;margin:16px 0;">
+        ${report.p24 ? `
+        <div class="tax-row" style="border:none;font-size:13px;color:var(--text-muted);padding-bottom:6px;">
+          <span>Gross Tax Liability (before P24 credits)</span>
+          <span>${fmt(report.p24.totalGrossLiability)}</span>
+        </div>
+        <div class="tax-row" style="border:none;font-size:13px;color:var(--accent2);padding-bottom:10px;">
+          <span>Less: P24 Withholdings</span>
+          <span>− ${fmt(report.p24.totalWithheld)}</span>
+        </div>` : ''}
         <div class="tax-row" style="border:none;font-size:16px;font-weight:700;">
-          <span>Total Tax Payable</span>
+          <span>Additional Tax Payable on S04</span>
           <span style="color:var(--warn);font-size:20px;">${fmt(report.totalTaxPayable)}</span>
         </div>
       </div>
@@ -2406,7 +2842,8 @@ async function generateS04AEstimate() {
   btn.textContent = '…';
   wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
 
-  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null });
+  const tz  = getAppTimezone();
+  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null, timezone: tz === 'system' ? getSystemTimezone() : tz });
   btn.disabled = false;
   btn.textContent = 'Generate';
 

@@ -57,7 +57,7 @@ const DEDUCTIBLE_CATEGORIES = [
 
 // ─── Main generator ─────────────────────────────────────────────────────────
 
-async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings = {} }) {
+async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings = {}, p24Totals = null }) {
   const params = TAX_PARAMS[year] || TAX_PARAMS[2024];
 
   let allTransactions = [];
@@ -142,9 +142,24 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   if (manualData.rentalIncome) income.rental += manualData.rentalIncome;
   if (manualData.additionalExpenses) expenses.total += manualData.additionalExpenses;
 
+  // ─── P24 Employment Income ───────────────────────────────────────────────
+
+  const p24 = {
+    grossEmoluments: roundJMD(p24Totals?.grossEmoluments || 0),
+    nisDeducted:     roundJMD(p24Totals?.nisDeducted     || 0),
+    nhtDeducted:     roundJMD(p24Totals?.nhtDeducted     || 0),
+    edTaxDeducted:   roundJMD(p24Totals?.edTaxDeducted   || 0),
+    payeDeducted:    roundJMD(p24Totals?.payeDeducted    || 0),
+    entryCount:      p24Totals?.entryCount || 0,
+  };
+  p24.totalWithheld = roundJMD(p24.nisDeducted + p24.nhtDeducted + p24.edTaxDeducted + p24.payeDeducted);
+
+  // Employment income is included in gross; it flows through the same S04 calculation
+  income.employment = p24.grossEmoluments;
+
   // ─── S04 Calculations ────────────────────────────────────────────────────
 
-  const grossIncome = income.business + income.foreign + income.investment + income.rental + income.other;
+  const grossIncome = income.business + income.foreign + income.investment + income.rental + income.other + income.employment;
 
   // Allowable deductions
   const actualExpenses = expenses.total;
@@ -153,30 +168,41 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 
   const statutoryIncome = Math.max(0, grossIncome - allowableExpenses);
 
-  // NIS (National Insurance Scheme)
-  const nisableIncome = Math.min(grossIncome, params.nisMaxIncome);
-  const nisContribution = nisableIncome * params.nisRate;
+  // NIS (National Insurance Scheme) — calculated on combined income, capped at nisMaxIncome
+  // P24 already withheld NIS on the employment portion; we credit that and only charge
+  // additional NIS on any self-employment income that remains under the cap.
+  const nisableIncome        = Math.min(grossIncome, params.nisMaxIncome);
+  const totalNisLiability    = nisableIncome * params.nisRate;
+  const additionalNis        = Math.max(0, totalNisLiability - p24.nisDeducted);
+  const nisContribution      = additionalNis;  // what's still owed for S04
 
   // NHT (National Housing Trust)
-  const nhtContribution = grossIncome * params.nhtRate;
+  const totalNhtLiability    = grossIncome * params.nhtRate;
+  const additionalNht        = Math.max(0, totalNhtLiability - p24.nhtDeducted);
+  const nhtContribution      = additionalNht;
 
   // Education Tax
-  const edTaxContribution = statutoryIncome * params.edTaxRate;
+  const totalEdTaxLiability  = statutoryIncome * params.edTaxRate;
+  const additionalEdTax      = Math.max(0, totalEdTaxLiability - p24.edTaxDeducted);
+  const edTaxContribution    = additionalEdTax;
 
-  // Chargeable Income
-  const chargeableIncome = Math.max(0, statutoryIncome - params.personalThreshold - nisContribution);
+  // Chargeable Income (uses total NIS liability for the threshold deduction — per Jamaica IT Act)
+  const chargeableIncome = Math.max(0, statutoryIncome - params.personalThreshold - totalNisLiability);
 
   // Income Tax
-  let incomeTax = 0;
+  let totalIncomeTaxLiability = 0;
   if (chargeableIncome > 0) {
     if (chargeableIncome <= params.incomeTaxBand1Max) {
-      incomeTax = chargeableIncome * params.incomeTaxRate1;
+      totalIncomeTaxLiability = chargeableIncome * params.incomeTaxRate1;
     } else {
-      incomeTax = (params.incomeTaxBand1Max * params.incomeTaxRate1) +
-                  ((chargeableIncome - params.incomeTaxBand1Max) * params.incomeTaxRate2);
+      totalIncomeTaxLiability = (params.incomeTaxBand1Max * params.incomeTaxRate1) +
+                                ((chargeableIncome - params.incomeTaxBand1Max) * params.incomeTaxRate2);
     }
   }
+  const additionalIncomeTax = Math.max(0, totalIncomeTaxLiability - p24.payeDeducted);
+  const incomeTax           = additionalIncomeTax;
 
+  // Total additional tax payable on S04 (after crediting all P24 withholdings)
   const totalTaxPayable = incomeTax + nisContribution + nhtContribution + edTaxContribution;
 
   // ─── S04 Form Structure ──────────────────────────────────────────────────
@@ -189,12 +215,30 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     // Part A: Income
     income: {
       businessProfessionalIncome: roundJMD(income.business),
-      foreignSourcedIncome: roundJMD(income.foreign),
-      investmentIncome: roundJMD(income.investment),
-      rentalIncome: roundJMD(income.rental),
-      otherIncome: roundJMD(income.other),
-      grossIncome: roundJMD(grossIncome),
+      foreignSourcedIncome:       roundJMD(income.foreign),
+      investmentIncome:           roundJMD(income.investment),
+      rentalIncome:               roundJMD(income.rental),
+      otherIncome:                roundJMD(income.other),
+      employmentIncome:           roundJMD(income.employment),  // from P24
+      grossIncome:                roundJMD(grossIncome),
     },
+
+    // P24 Employment Withholdings (PAYE already deducted by employer)
+    p24: p24.entryCount > 0 ? {
+      entryCount:            p24.entryCount,
+      grossEmoluments:       p24.grossEmoluments,
+      nisDeducted:           p24.nisDeducted,
+      nhtDeducted:           p24.nhtDeducted,
+      edTaxDeducted:         p24.edTaxDeducted,
+      payeDeducted:          p24.payeDeducted,
+      totalWithheld:         p24.totalWithheld,
+      // Gross liabilities before crediting P24
+      totalNisLiability:     roundJMD(totalNisLiability),
+      totalNhtLiability:     roundJMD(totalNhtLiability),
+      totalEdTaxLiability:   roundJMD(totalEdTaxLiability),
+      totalIncomeTaxLiability: roundJMD(totalIncomeTaxLiability),
+      totalGrossLiability:   roundJMD(totalNisLiability + totalNhtLiability + totalEdTaxLiability + totalIncomeTaxLiability),
+    } : null,
 
     // Part B: Deductions
     deductions: {
@@ -210,11 +254,11 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     // Part C: Statutory Income
     statutoryIncome: roundJMD(statutoryIncome),
 
-    // Part D: Contributions
+    // Part D: Contributions (additional amounts still owed on S04, after P24 credits)
     contributions: {
-      nis: roundJMD(nisContribution),
-      nht: roundJMD(nhtContribution),
-      educationTax: roundJMD(edTaxContribution),
+      nis:                roundJMD(nisContribution),
+      nht:                roundJMD(nhtContribution),
+      educationTax:       roundJMD(edTaxContribution),
       totalContributions: roundJMD(nisContribution + nhtContribution + edTaxContribution),
     },
 
@@ -223,22 +267,26 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     personalThresholdApplied: roundJMD(params.personalThreshold),
 
     tax: {
-      incomeTax: roundJMD(incomeTax),
-      effectiveRate: grossIncome > 0 ? `${((incomeTax / grossIncome) * 100).toFixed(2)}%` : '0%',
+      incomeTax:    roundJMD(incomeTax),
+      effectiveRate: grossIncome > 0
+        ? `${(((incomeTax + p24.payeDeducted) / grossIncome) * 100).toFixed(2)}%`
+        : '0%',
     },
 
     totalTaxPayable: roundJMD(totalTaxPayable),
 
     // Summary for display
     summary: {
-      grossIncome: roundJMD(grossIncome),
-      totalDeductions: roundJMD(allowableExpenses),
-      statutoryIncome: roundJMD(statutoryIncome),
-      nisNhtEdTax: roundJMD(nisContribution + nhtContribution + edTaxContribution),
-      chargeableIncome: roundJMD(chargeableIncome),
-      incomeTax: roundJMD(incomeTax),
-      totalTaxPayable: roundJMD(totalTaxPayable),
-      netIncomeAfterTax: roundJMD(grossIncome - totalTaxPayable),
+      grossIncome:          roundJMD(grossIncome),
+      employmentIncome:     roundJMD(income.employment),
+      totalDeductions:      roundJMD(allowableExpenses),
+      statutoryIncome:      roundJMD(statutoryIncome),
+      nisNhtEdTax:          roundJMD(nisContribution + nhtContribution + edTaxContribution),
+      chargeableIncome:     roundJMD(chargeableIncome),
+      incomeTax:            roundJMD(incomeTax),
+      p24TotalWithheld:     roundJMD(p24.totalWithheld),
+      totalTaxPayable:      roundJMD(totalTaxPayable),
+      netIncomeAfterTax:    roundJMD(grossIncome - totalTaxPayable - p24.totalWithheld),
     },
 
     // Monthly breakdown
@@ -247,6 +295,9 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     // Notes / Disclaimers
     notes: [
       `Tax year: January 1 – December 31, ${year}`,
+      ...(p24.entryCount > 0 ? [
+        `P24 employment income: $${p24.grossEmoluments.toLocaleString()} JMD from ${p24.entryCount} payroll record(s). PAYE withheld: NIS $${p24.nisDeducted.toLocaleString()}, NHT $${p24.nhtDeducted.toLocaleString()}, Ed Tax $${p24.edTaxDeducted.toLocaleString()}, Income Tax $${p24.payeDeducted.toLocaleString()}.`,
+      ] : []),
       `All amounts in your LunchMoney primary currency (JMD). Foreign-currency transactions converted using LunchMoney's historic exchange rates (to_base field) — consistent with how LunchMoney displays amounts in your dashboard.`,
       `${convertedCount} transaction(s) used LunchMoney's converted primary-currency amount; ${unconvertedCount} used original amount (no conversion needed).`,
       `Personal threshold applied: $${params.personalThreshold.toLocaleString()} JMD`,
@@ -316,7 +367,7 @@ const S04A_DUE_DATES = [
   { q: 4, label: 'Q4 (Oct–Dec)', due: 'Dec 15' },
 ];
 
-function generateS04A({ currentYear, priorYearFiling, currentYtdIncome }) {
+function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr }) {
   const r2 = v => Math.round((v || 0) * 100) / 100;
 
   const priorTaxPayable  = priorYearFiling ? (priorYearFiling.tax_payable  || 0) : 0;
@@ -326,7 +377,8 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome }) {
   const baseQuarterly = r2(priorTaxPayable / 4);
 
   // Current-year trend: extrapolate YTD income to full-year estimate
-  const now            = new Date();
+  // Use todayStr (YYYY-MM-DD, already resolved to user's timezone) when provided
+  const now = todayStr ? new Date(`${todayStr}T12:00:00`) : new Date();
   const monthsElapsed  = Math.max(0.5, (now.getMonth() + 1) + (now.getDate() / 31));
   const annualTrend    = r2((currentYtdIncome / monthsElapsed) * 12);
 

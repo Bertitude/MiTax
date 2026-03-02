@@ -30,6 +30,12 @@ const SECTION_RE = /(Membership Share|Savings Account|Checking Account)\s*-\s*(\
 // Lines that anchor a transaction (start with MM/DD/YYYY)
 const DATE_LINE_RE = /^(\d{2}\/\d{2}\/\d{4})\s*(.*)/;
 
+// Convert UNFCU's MM/DD/YYYY to ISO YYYY-MM-DD (normalizeDate would treat it as DD/MM/YYYY)
+function parseMDY(str) {
+  const m = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : '';
+}
+
 // Dollar amounts embedded in text
 const AMOUNT_RE = /\$([\d,]+\.\d{2})/g;
 
@@ -83,7 +89,7 @@ function parseAccountSection(typeLabel, accountNumber, text) {
 
   // Extract statement period from header
   const stmtPeriod = text.match(/Statement\s+Ending\s+(\d{2}\/\d{2}\/\d{4})/i);
-  const endDate    = stmtPeriod ? normalizeDate(stmtPeriod[1]) : '';
+  const endDate    = stmtPeriod ? parseMDY(stmtPeriod[1]) : '';
 
   // ── Find the first "Account Activity" and parse all lines from there ─────
   // Multi-page continuations are handled naturally: "Account Activity (continued)"
@@ -146,7 +152,7 @@ function parseActivityLines(lines, transactions) {
       const fullDesc   = (inlineDesc || pendingDesc).trim() || 'UNFCU Transaction';
 
       const amount = sign * txAmountRaw;
-      const date   = normalizeDate(dateStr);
+      const date   = parseMDY(dateStr);
       if (!date) { pendingDesc = ''; continue; }
 
       transactions.push({

@@ -61,6 +61,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateFilingRecord: (payload) => ipcRenderer.invoke('update-filing', payload),
   deleteFilingRecord: (id)      => ipcRenderer.invoke('delete-filing', id),
 
+  // P24 employment income entries
+  p24: {
+    save:       (payload) => ipcRenderer.invoke('p24:save',         payload),
+    getForYear: (year)    => ipcRenderer.invoke('p24:get-for-year', year),
+    delete:     (id)      => ipcRenderer.invoke('p24:delete',       id),
+  },
+
   // File system
   openFileDialog: ()         => ipcRenderer.invoke('open-file-dialog'),
   readFile:       (filePath) => ipcRenderer.invoke('read-file', filePath),

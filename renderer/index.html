@@ -20,10 +20,23 @@
       </div>
     </div>
 
-    <!-- Active LunchMoney account name — populated by app.js after connect -->
-    <div id="sidebar-account-block" style="display:none;">
-      <div id="sidebar-account-name"></div>
-      <div id="sidebar-account-budget"></div>
+    <!-- Active LunchMoney account name — click to switch accounts -->
+    <div id="sidebar-account-block" style="display:none;" title="Click to switch account">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+        <div style="min-width:0;">
+          <div id="sidebar-account-name"></div>
+          <div id="sidebar-account-budget"></div>
+        </div>
+        <svg id="sidebar-account-chevron" viewBox="0 0 16 16" fill="currentColor"
+             style="width:11px;height:11px;flex-shrink:0;opacity:.5;transition:transform .2s;">
+          <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Account-switcher popover (toggled by sidebar-account-block click) -->
+    <div id="account-switcher-popover" style="display:none;">
+      <div id="account-switcher-list"></div>
     </div>
 
     <nav>
@@ -247,6 +260,39 @@
           </div>
         </div>
 
+        <!-- P24 Employment Income card -->
+        <div class="card" style="margin-top:16px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap;">
+            <div class="card-title" style="margin:0;flex:1;">🧾 P24 — Employment Income (PAYE)</div>
+            <button class="btn btn-secondary btn-sm" id="p24-add-btn">+ Add Entry</button>
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
+            Record payroll deductions from your P24 form. Employment income and taxes already withheld
+            will be credited automatically when generating your S04.
+          </p>
+          <div id="p24-table-wrap">
+            <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:16px 0;" id="p24-empty">
+              No P24 entries for this year. Click <strong>+ Add Entry</strong> to add one.
+            </div>
+            <table class="data-table" id="p24-table" style="display:none;">
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  <th>Employer</th>
+                  <th style="text-align:right;">Gross Pay</th>
+                  <th style="text-align:right;">NIS</th>
+                  <th style="text-align:right;">NHT</th>
+                  <th style="text-align:right;">Ed Tax</th>
+                  <th style="text-align:right;">PAYE</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="p24-tbody"></tbody>
+              <tfoot id="p24-tfoot"></tfoot>
+            </table>
+          </div>
+        </div>
+
         <div id="tax-report-wrap" style="display:none;margin-top:20px;"></div>
 
         <!-- S04A Quarterly Estimates card -->
@@ -336,6 +382,34 @@
           </div>
           <div class="form-group">
             <label><input type="checkbox" id="apply-rules" checked style="width:auto;margin-right:6px;" />Apply LunchMoney rules on upload</label>
+          </div>
+          <div class="form-group">
+            <label>Timezone</label>
+            <select id="timezone-select">
+              <option value="system">🌐 Auto — Use System Timezone</option>
+              <optgroup label="Caribbean">
+                <option value="America/Jamaica">Jamaica (UTC−5, no DST)</option>
+                <option value="America/Barbados">Barbados (UTC−4, no DST)</option>
+                <option value="America/Port_of_Spain">Trinidad &amp; Tobago (UTC−4)</option>
+                <option value="America/Cayman">Cayman Islands (UTC−5, no DST)</option>
+              </optgroup>
+              <optgroup label="North America">
+                <option value="America/New_York">Eastern — New York (UTC−5/−4)</option>
+                <option value="America/Chicago">Central — Chicago (UTC−6/−5)</option>
+                <option value="America/Denver">Mountain — Denver (UTC−7/−6)</option>
+                <option value="America/Los_Angeles">Pacific — Los Angeles (UTC−8/−7)</option>
+                <option value="America/Toronto">Toronto (UTC−5/−4)</option>
+                <option value="America/Vancouver">Vancouver (UTC−8/−7)</option>
+              </optgroup>
+              <optgroup label="Europe">
+                <option value="Europe/London">London (UTC±0/+1)</option>
+                <option value="Europe/Paris">Paris / Berlin (UTC+1/+2)</option>
+              </optgroup>
+              <optgroup label="Other">
+                <option value="UTC">UTC</option>
+              </optgroup>
+            </select>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;" id="timezone-current-label"></div>
           </div>
           <button class="btn btn-secondary btn-sm" id="save-prefs-btn">Save Preferences</button>
         </div>
@@ -603,13 +677,142 @@
     <div class="modal-title">📋 Upload Details</div>
     <div id="upload-detail-body"></div>
     <div class="modal-footer">
+      <button class="btn btn-secondary" id="upload-detail-copy" style="display:none;">📋 Copy Errors</button>
       <button class="btn btn-secondary" id="upload-detail-close">Close</button>
     </div>
   </div>
 </div>
 
 <!-- Toast container -->
+<!-- ════════════════════════════════════════════════════════════════════════
+     MODAL: P24 Entry (Add / Edit)
+════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="p24-modal">
+  <div class="modal" style="width:520px;max-width:95vw;">
+    <div class="modal-title" id="p24-modal-title">🧾 Add P24 Entry</div>
+    <input type="hidden" id="p24-entry-id" />
+    <div class="grid-2" style="gap:10px 16px;">
+      <div class="form-group" style="margin:0;">
+        <label>Tax Year <span style="color:var(--warn);">*</span></label>
+        <input type="number" id="p24-year" min="2010" max="2099" step="1" placeholder="2024" />
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Month <span style="color:var(--warn);">*</span></label>
+        <select id="p24-month">
+          <option value="1">January</option><option value="2">February</option>
+          <option value="3">March</option><option value="4">April</option>
+          <option value="5">May</option><option value="6">June</option>
+          <option value="7">July</option><option value="8">August</option>
+          <option value="9">September</option><option value="10">October</option>
+          <option value="11">November</option><option value="12">December</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin:0;grid-column:1/-1;">
+        <label>Employer Name <span style="color:var(--warn);">*</span></label>
+        <input type="text" id="p24-employer-name" placeholder="e.g. ACME Ltd." />
+      </div>
+      <div class="form-group" style="margin:0;grid-column:1/-1;">
+        <label>Employer TRN <span style="font-weight:400;color:var(--text-muted);">(optional)</span></label>
+        <input type="text" id="p24-employer-trn" placeholder="123-456-789" />
+      </div>
+    </div>
+    <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px;">Amounts (JMD)</div>
+    <div class="grid-2" style="gap:10px 16px;">
+      <div class="form-group" style="margin:0;">
+        <label>Gross Emoluments</label>
+        <input type="number" id="p24-gross" placeholder="0.00" min="0" step="0.01" />
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>NIS Deducted</label>
+        <input type="number" id="p24-nis" placeholder="0.00" min="0" step="0.01" />
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>NHT Deducted</label>
+        <input type="number" id="p24-nht" placeholder="0.00" min="0" step="0.01" />
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Education Tax Deducted</label>
+        <input type="number" id="p24-edtax" placeholder="0.00" min="0" step="0.01" />
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Income Tax (PAYE) Deducted</label>
+        <input type="number" id="p24-paye" placeholder="0.00" min="0" step="0.01" />
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Net Pay <span style="font-weight:400;color:var(--text-muted);">(informational)</span></label>
+        <input type="number" id="p24-net" placeholder="0.00" min="0" step="0.01" />
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:10px;">
+      <label>Notes <span style="font-weight:400;color:var(--text-muted);">(optional)</span></label>
+      <input type="text" id="p24-notes" placeholder="e.g. includes bonus" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="p24-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="p24-modal-save">Save Entry</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast-container"></div>
+
+<!-- ─── First-Run Welcome Modal ──────────────────────────────────── -->
+<div class="modal-backdrop" id="welcome-modal" style="display:none;z-index:2000;">
+  <div class="modal" style="width:480px;max-width:95vw;">
+    <div class="modal-title" style="font-size:18px;">👋 Welcome to MiTax</div>
+
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 18px;">
+      Before you begin, confirm a few quick settings. You can change these any time in
+      <strong>Settings → Upload Preferences</strong>.
+    </p>
+
+    <!-- Timezone -->
+    <div class="form-group">
+      <label style="font-weight:600;">Timezone</label>
+      <select id="welcome-timezone-select">
+        <option value="system">🌐 Auto — Use System Timezone</option>
+        <optgroup label="Caribbean">
+          <option value="America/Jamaica">Jamaica (UTC−5, no DST)</option>
+          <option value="America/Barbados">Barbados (UTC−4, no DST)</option>
+          <option value="America/Port_of_Spain">Trinidad &amp; Tobago (UTC−4)</option>
+          <option value="America/Cayman">Cayman Islands (UTC−5, no DST)</option>
+        </optgroup>
+        <optgroup label="North America">
+          <option value="America/New_York">Eastern — New York (UTC−5/−4)</option>
+          <option value="America/Chicago">Central — Chicago (UTC−6/−5)</option>
+          <option value="America/Denver">Mountain — Denver (UTC−7/−6)</option>
+          <option value="America/Los_Angeles">Pacific — Los Angeles (UTC−8/−7)</option>
+          <option value="America/Toronto">Toronto (UTC−5/−4)</option>
+          <option value="America/Vancouver">Vancouver (UTC−8/−7)</option>
+        </optgroup>
+        <optgroup label="Europe">
+          <option value="Europe/London">London (UTC±0/+1)</option>
+          <option value="Europe/Paris">Paris / Berlin (UTC+1/+2)</option>
+        </optgroup>
+        <optgroup label="Other">
+          <option value="UTC">UTC</option>
+        </optgroup>
+      </select>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;" id="welcome-tz-label"></div>
+    </div>
+
+    <!-- Default Currency -->
+    <div class="form-group">
+      <label style="font-weight:600;">Default Currency</label>
+      <select id="welcome-currency-select">
+        <option value="JMD" selected>JMD — Jamaican Dollar</option>
+        <option value="USD">USD — US Dollar</option>
+        <option value="GBP">GBP — British Pound</option>
+      </select>
+    </div>
+
+    <div class="modal-footer" style="margin-top:20px;">
+      <button class="btn btn-primary" id="welcome-get-started-btn" style="width:100%;justify-content:center;">
+        Get Started →
+      </button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
