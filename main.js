@@ -145,6 +145,12 @@ ipcMain.handle('tracker-get-all-accounts',  async () => {
   return getAllAccounts();
 });
 
+ipcMain.handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => {
+  const { getDbCoverageForAsset } = require('./src/tracker');
+  // Convert Set → Array so it serialises cleanly over IPC
+  return Array.from(getDbCoverageForAsset(lmAssetId, year));
+});
+
 ipcMain.handle('get-oldest-upload-year', async () => {
   const { getOldestUploadYear } = require('./src/tracker');
   const year = getOldestUploadYear();

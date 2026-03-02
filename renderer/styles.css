@@ -272,9 +272,11 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
   cursor: default;
   border: 1px solid transparent;
 }
-.month-cell.covered { background: rgba(63,185,80,0.3); color: var(--accent2); border-color: rgba(63,185,80,0.4); }
-.month-cell.missing { background: rgba(248,81,73,0.15); color: var(--warn); border-color: rgba(248,81,73,0.3); }
-.month-cell.future  { background: var(--surface2); color: var(--border); }
+.month-cell.covered    { background: rgba(63,185,80,0.3);  color: var(--accent2); border-color: rgba(63,185,80,0.4); }
+/* Statement was uploaded but the period had no transactions (e.g. dormant account) */
+.month-cell.db-covered { background: rgba(88,166,255,0.18); color: #58a6ff;        border-color: rgba(88,166,255,0.35); }
+.month-cell.missing    { background: rgba(248,81,73,0.15);  color: var(--warn);    border-color: rgba(248,81,73,0.3); }
+.month-cell.future     { background: var(--surface2);       color: var(--border); }
 
 /* ─── Settings form ─────────────────────────────────────────────────────── */
 #settings-view .form-section { max-width: 520px; }

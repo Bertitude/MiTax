@@ -19,7 +19,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadTransactions: (payload) => ipcRenderer.invoke('upload-transactions', payload),
 
   // Coverage from LunchMoney
-  getAssetCoverage: ({ apiKey, assetId, year }) => ipcRenderer.invoke('get-asset-coverage', { apiKey, assetId, year }),
+  getAssetCoverage:   ({ apiKey, assetId, year }) => ipcRenderer.invoke('get-asset-coverage',        { apiKey, assetId, year }),
+  // Coverage from local DB (months with an uploaded statement, regardless of tx count)
+  getDbCoverage:      ({ lmAssetId, year })       => ipcRenderer.invoke('tracker-get-db-coverage',  { lmAssetId, year }),
 
   // CSV Export
   exportCSV: (payload) => ipcRenderer.invoke('export-csv', payload),
