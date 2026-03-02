@@ -16,6 +16,7 @@ const wiseParser = require('./wise');
 const paypalParser = require('./paypal');
 const stripeParser = require('./stripe');
 const unfcuParser = require('./unfcu');
+const jnParser = require('./jn');
 const genericParser = require('./generic');
 
 const INSTITUTION_PATTERNS = [
@@ -26,6 +27,7 @@ const INSTITUTION_PATTERNS = [
   { name: 'PayPal',     regex: /paypal\s+(transaction|activity|statement)/i,    parser: paypalParser },
   { name: 'Stripe',     regex: /stripe\s+(payout|balance|payments)/i,          parser: stripeParser },
   { name: 'UNFCU',      regex: /unfcu\.org|united\s+nations\s+federal\s+credit\s+union|unfcu\.com/i, parser: unfcuParser },
+  { name: 'JN Bank',    regex: /RSV-\d{9,16}/i,                                parser: jnParser },
 ];
 
 /**
