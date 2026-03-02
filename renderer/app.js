@@ -1296,7 +1296,7 @@ async function refreshHistory() {
     const hasNote  = u.notes ? ' title="Click for details"' : '';
     return `
       <tr data-upload-id="${u.id}" style="cursor:pointer;" class="history-row"${hasNote}>
-        <td style="color:var(--text-muted);font-size:12px;">${u.uploaded_at?u.uploaded_at.slice(0,16).replace('T',' '):'—'}</td>
+        <td style="color:var(--text-muted);font-size:12px;">${fmtUploadTime(u.uploaded_at)}</td>
         <td>${escHtml(u.institution||'')}</td>
         <td>${escHtml(u.account_name||'')}</td>
         <td style="font-size:12px;">${u.period_start?u.period_start.slice(0,7):'—'} ${u.period_end&&u.period_end!==u.period_start?'→ '+u.period_end.slice(0,7):''}</td>
@@ -1322,7 +1322,7 @@ function showUploadDetail(u) {
       <span><span class="badge ${badgeCls}">${u.status || 'unknown'}</span></span>
 
       <span style="color:var(--text-muted);">Date</span>
-      <span>${u.uploaded_at ? u.uploaded_at.slice(0,16).replace('T',' ') : '—'}</span>
+      <span>${fmtUploadTime(u.uploaded_at)}</span>
 
       <span style="color:var(--text-muted);">Institution</span>
       <span>${escHtml(u.institution || '—')}</span>
@@ -2379,6 +2379,34 @@ function fmtAmount(v) {
 function escHtml(s)  { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s)  { return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function today()     { return new Date().toISOString().slice(0,10); }
+
+/**
+ * Formats a SQLite-stored UTC timestamp (e.g. "2024-01-15 14:30:00" or
+ * "2024-01-15T14:30:00") into the user's configured local timezone.
+ * Returns "YYYY-MM-DD HH:MM" in local time so past records are also corrected.
+ */
+function fmtUploadTime(utcStr) {
+  if (!utcStr) return '—';
+  // SQLite datetime('now') produces "YYYY-MM-DD HH:MM:SS" with no tz suffix.
+  // Replace the space separator and append Z so Date() treats it as UTC.
+  const iso = utcStr.trim().replace(' ', 'T').replace(/(\.\d+)?$/, 'Z');
+  const d   = new Date(iso);
+  if (isNaN(d)) return utcStr.slice(0, 16).replace('T', ' ');
+
+  const tz = getAppTimezone();
+  const resolved = tz === 'system' ? getSystemTimezone() : tz;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: resolved,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d);
+    const get = t => parts.find(p => p.type === t)?.value ?? '';
+    return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+  } catch {
+    return utcStr.slice(0, 16).replace('T', ' ');
+  }
+}
 
 function toast(message, type = 'info', duration = 4000) {
   const el = document.createElement('div');
