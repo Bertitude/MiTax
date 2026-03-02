@@ -1219,20 +1219,39 @@ async function refreshTracker() {
       if (cov.success) monthData = cov.data;
     }
 
+    // Fetch which months have an uploaded statement in the local DB for this asset.
+    // This catches dormant-period statements where the bank sent a statement but
+    // recorded zero transactions — LunchMoney has nothing for those months, but
+    // they are genuinely covered (statement was reviewed and uploaded).
+    let dbCoveredMonths = new Set();
+    try {
+      const dbMonths = await window.electronAPI.getDbCoverage({ lmAssetId: asset.id, year });
+      if (Array.isArray(dbMonths)) dbCoveredMonths = new Set(dbMonths);
+    } catch { /* non-fatal — fall back to LM-only coverage */ }
+
     const cells = monthData.map((m, idx) => {
-      const isFuture = new Date(year, idx, 1) > now;
-      const cls   = isFuture ? 'future' : m.hasTxns ? 'covered' : 'missing';
+      const isFuture  = new Date(year, idx, 1) > now;
+      const dbCovered = dbCoveredMonths.has(m.month);
+      // Priority: future → has LM txns → DB statement uploaded → truly missing
+      const cls = isFuture  ? 'future'
+                : m.hasTxns ? 'covered'
+                : dbCovered ? 'db-covered'
+                :             'missing';
       const title = isFuture
         ? `${MONTHS[idx]} ${year} — future`
         : m.hasTxns
           ? `${MONTHS[idx]} ${year} — ${m.count} transaction${m.count !== 1 ? 's' : ''} · ${m.earliestDate} → ${m.latestDate}`
-          : `${MONTHS[idx]} ${year} — no transactions found`;
+          : dbCovered
+            ? `${MONTHS[idx]} ${year} — statement uploaded, no transactions recorded`
+            : `${MONTHS[idx]} ${year} — no transactions found`;
       const countLabel = m.hasTxns ? `<span style="font-size:9px;color:var(--accent2);">${m.count}</span>` : '';
       return `<div class="month-cell ${cls}" title="${title}">${MONTHS[idx]}${countLabel}</div>`;
     }).join('');
 
-    const missingIdxs  = monthData.reduce((acc, m, i) => (!m.hasTxns && new Date(year, i, 1) <= now ? [...acc, i] : acc), []);
-    const coveredCount = monthData.filter(m => m.hasTxns).length;
+    // A month is only "missing" if it has neither LM transactions nor a DB-uploaded statement
+    const missingIdxs  = monthData.reduce((acc, m, i) =>
+      (!m.hasTxns && !dbCoveredMonths.has(m.month) && new Date(year, i, 1) <= now ? [...acc, i] : acc), []);
+    const coveredCount = monthData.filter((m, i) => m.hasTxns || dbCoveredMonths.has(m.month)).length;
     const maxMonth     = now.getFullYear() === year ? now.getMonth() + 1 : 12;
 
     const card   = document.createElement('div');
@@ -1257,7 +1276,7 @@ async function refreshTracker() {
       <div class="coverage-grid">${cells}</div>
       ${missingIdxs.length > 0
         ? `<div style="margin-top:8px;font-size:12px;color:var(--warn);">
-             Missing: ${missingIdxs.slice(0,6).map(i => `${MONTHS[i]} ${year}`).join(', ')}${missingIdxs.length>6?' + '+( missingIdxs.length-6)+' more':''}
+             Missing: ${missingIdxs.slice(0,6).map(i => `${MONTHS[i]} ${year}`).join(', ')}${missingIdxs.length>6?' + '+(missingIdxs.length-6)+' more':''}
            </div>`
         : ''}
     `;

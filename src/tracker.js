@@ -242,4 +242,28 @@ function getOldestUploadYear() {
   return new Date(row.oldest).getFullYear();
 }
 
-module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear };
+/**
+ * Returns a Set of month numbers (1-12) for which a statement has been
+ * uploaded to the local DB for the given LunchMoney asset ID and year.
+ * Used to overlay "statement uploaded but no transactions" coverage on
+ * the tracker grid so those months are not flagged as missing.
+ */
+function getDbCoverageForAsset(lmAssetId, year) {
+  const db = getDB();
+
+  // Resolve the local account row via lm_asset_id
+  const account = db.prepare(
+    `SELECT id FROM accounts WHERE lm_asset_id = ?`
+  ).get(lmAssetId);
+
+  if (!account) return new Set();
+
+  const rows = db.prepare(`
+    SELECT month FROM monthly_coverage
+    WHERE account_id = ? AND year = ? AND covered = 1
+  `).all(account.id, year);
+
+  return new Set(rows.map(r => r.month));
+}
+
+module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };

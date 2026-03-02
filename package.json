@@ -1,6 +1,6 @@
 {
   "name": "mitax",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "description": "MiTax — LunchMoney statement importer with Jamaica S04 tax support",
   "main": "main.js",
   "scripts": {
