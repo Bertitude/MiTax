@@ -940,9 +940,10 @@ async function uploadValidated() {
     byAsset[key].rows.push(row);
   }
 
-  const prefs    = getPrefs();
-  let totalUp    = 0;
-  const allErrors = [];
+  const prefs          = getPrefs();
+  let totalUp          = 0;
+  const allErrors      = [];
+  const processedFiles = new Set();
 
   for (const group of Object.values(byAsset)) {
     const txs = group.rows.map(r => ({
@@ -962,11 +963,59 @@ async function uploadValidated() {
       applyRules:     prefs.applyRules,
     });
 
-    if (result.success && result.data) {
-      totalUp += result.data.uploaded || 0;
+    // Track which queue files are covered by this group
+    const sources = [...new Set(group.rows.map(r => r._source))];
+    sources.forEach(f => processedFiles.add(f));
 
-      // Persist to local tracker per source file
-      const sources = [...new Set(group.rows.map(r => r._source))];
+    if (result.success && result.data) {
+      const uploaded = result.data.uploaded || 0;
+      totalUp += uploaded;
+
+      for (const filename of sources) {
+        const qItem      = state.queue.find(q => q.name === filename);
+        if (!qItem?.parsed) continue;
+        const fileTxCount = group.rows.filter(r => r._source === filename).length;
+
+        if (uploaded > 0) {
+          // Transactions actually landed in LunchMoney
+          await window.electronAPI.saveUpload({
+            institution: qItem.parsed.institution,
+            accountName: qItem.parsed.accountName,
+            accountType: qItem.parsed.accountType,
+            currency:    qItem.parsed.currency,
+            lmAssetId:   group.assetId || null,
+            filename,
+            period:      qItem.parsed.period,
+            txCount:     fileTxCount,
+            lmIds:       result.data.ids,
+            status:      'uploaded',
+          });
+          qItem.status = 'uploaded';
+        } else {
+          // LunchMoney accepted the request but uploaded 0 — all duplicates / rejected
+          const skipNote = 'No transactions uploaded — all may be duplicates or were rejected by LunchMoney';
+          await window.electronAPI.saveUpload({
+            institution: qItem.parsed.institution,
+            accountName: qItem.parsed.accountName,
+            accountType: qItem.parsed.accountType,
+            currency:    qItem.parsed.currency,
+            lmAssetId:   group.assetId || null,
+            filename,
+            period:      qItem.parsed.period,
+            txCount:     fileTxCount,
+            lmIds:       null,
+            status:      'skipped',
+            notes:       skipNote,
+          });
+          qItem.status = 'skipped';
+          allErrors.push(`${group.assetName || filename}: ${skipNote}`);
+        }
+      }
+    } else {
+      // Request itself failed — log to history and surface the error
+      const msg = result.error || (result.data?.errors || []).join(', ') || 'Unknown error';
+      allErrors.push(`${group.assetName || 'Upload'}: ${msg}`);
+
       for (const filename of sources) {
         const qItem = state.queue.find(q => q.name === filename);
         if (!qItem?.parsed) continue;
@@ -979,29 +1028,32 @@ async function uploadValidated() {
           filename,
           period:      qItem.parsed.period,
           txCount:     group.rows.filter(r => r._source === filename).length,
-          lmIds:       result.data.ids,
-          status:      'uploaded',
+          lmIds:       null,
+          status:      'failed',
+          notes:       msg,
         });
-        qItem.status = 'uploaded';
+        qItem.status = 'failed';
       }
-    } else {
-      const msg = result.error || (result.data?.errors || []).join(', ') || 'Unknown error';
-      allErrors.push(msg);
     }
   }
 
   btn.disabled  = false;
   btn.innerHTML = '☁️ Upload Selected to LunchMoney';
 
+  // Always close the modal and remove processed files from the queue
+  document.getElementById('validate-modal').classList.remove('open');
+  state.queue = state.queue.filter(q => !processedFiles.has(q.name));
+  renderQueue();
+  refreshHistory();
+  refreshTracker();
+  initTrackerYearSelect();
+
   if (totalUp > 0) {
-    toast(`✓ Uploaded ${totalUp} transactions to LunchMoney!`, 'success');
-    document.getElementById('validate-modal').classList.remove('open');
-    renderQueue();
-    refreshHistory();
-    refreshTracker();
-    initTrackerYearSelect(); // expand year range if a new oldest year was added
+    toast(`✓ Uploaded ${totalUp} transaction${totalUp !== 1 ? 's' : ''} to LunchMoney!`, 'success');
+  } else if (!allErrors.length) {
+    toast('No new transactions were uploaded.', 'info');
   }
-  if (allErrors.length) toast(`Errors: ${allErrors.join('; ')}`, 'error', 8000);
+  if (allErrors.length) toast(`Upload issues: ${allErrors.join('; ')}`, 'error', 8000);
 }
 
 // ─── CSV Export ───────────────────────────────────────────────────────────────
@@ -1128,7 +1180,7 @@ async function refreshHistory() {
       <td>${escHtml(u.account_name||'')}</td>
       <td style="font-size:12px;">${u.period_start?u.period_start.slice(0,7):'—'} ${u.period_end&&u.period_end!==u.period_start?'→ '+u.period_end.slice(0,7):''}</td>
       <td>${u.tx_count||0}</td>
-      <td><span class="badge ${u.status==='uploaded'?'badge-green':'badge-yellow'}">${u.status||'unknown'}</span></td>
+      <td><span class="badge ${u.status==='uploaded'?'badge-green':u.status==='failed'?'badge-red':'badge-yellow'}">${u.status||'unknown'}</span></td>
     </tr>
   `).join('');
 }
