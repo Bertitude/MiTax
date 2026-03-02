@@ -662,6 +662,25 @@ function autoSuggestAsset(parsed) {
     'employee compensation':['payroll','employment'],
   };
 
+  // Extract meaningful keywords from the parsed account name to use as a
+  // tiebreaker when multiple accounts share the same institution and currency.
+  // Strip the institution name and account number suffix, then keep words
+  // that are meaningful identifiers (e.g. "savings", "checking", "share",
+  // "visa", "platinum"). This lets "UNFCU Savings Account ···3462" prefer
+  // a LM asset called "UNFCU Savings" over one called "UNFCU Checking".
+  const nameKeywords = (() => {
+    const raw = (parsed.accountName || '')
+      .toLowerCase()
+      // remove institution prefix
+      .replace(inst, '')
+      // remove account number suffixes like ···3462 or (3462)
+      .replace(/[·.]{2,}\d+|\(\d+\)/g, '')
+      .trim();
+    // Keep only words >3 chars that aren't generic noise
+    const NOISE = new Set(['account','bank','the','and','for','from','with','ltd','inc']);
+    return raw.split(/\s+/).filter(w => w.length > 3 && !NOISE.has(w));
+  })();
+
   let best = null;
   let bestScore = 0;
   let bestReasons = [];
@@ -706,6 +725,28 @@ function autoSuggestAsset(parsed) {
     if (pType && typeMap[aType] && typeMap[aType].includes(pType)) {
       score += 8;
       reasons.push('Account type matched');
+    }
+
+    // ── Account name keyword match ───────────────────────────────────────────
+    // Critical tiebreaker for institutions with multiple accounts (e.g. UNFCU
+    // Savings vs Checking vs Membership Share). Checks whether descriptive
+    // words from the parsed account name appear in the LM asset name.
+    // Also checks type-derived synonyms so "chequing" matches "checking".
+    const typeSynonyms = {
+      chequing:   ['checking','chequing','current'],
+      savings:    ['savings','share','membership'],
+      credit_card:['credit','visa','mastercard','card'],
+    };
+    const kwToCheck = [
+      ...nameKeywords,
+      ...(typeSynonyms[pType] || []),
+    ];
+    const matchedKws = kwToCheck.filter(kw => aName.includes(kw));
+    if (matchedKws.length) {
+      // +15 per keyword, capped at +25 so it doesn't overpower account number
+      const kwScore = Math.min(25, matchedKws.length * 15);
+      score += kwScore;
+      reasons.push(`Name keyword matched (${matchedKws.join(', ')})`);
     }
 
     if (score > bestScore) {
