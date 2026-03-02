@@ -23,10 +23,23 @@ const MONTH_MAP = {
   JUL:7, AUG:8, SEP:9, OCT:10, NOV:11, DEC:12,
 };
 
-// Column x-boundaries in PDF user units (verified against pdfplumber)
+// ── Debit/Savings statement column boundaries (PDF user units) ────────────────
 const COL_DATE_MAX = 80;   // date token  :  x < 80
 const COL_AMT_MIN  = 390;  // amount block : x ≥ 390
 //                           description   : 80 ≤ x < 390
+
+// ── Credit Card statement column boundaries ───────────────────────────────────
+// Verified against pdfplumber on Scotia CC e-statement
+const CC_TX_DATE_MAX   = 130;   // transaction date : x >= 25 && x < 130
+const CC_POST_DATE_MAX = 210;   // posting date     : 130 ≤ x < 210  (ignored)
+const CC_REF_MAX       = 295;   // reference no.    : 210 ≤ x < 295
+const CC_DESC_MIN      = 295;   // description      : 295 ≤ x < 515
+const CC_DESC_MAX      = 515;
+const CC_AMT_MIN       = 515;   // amount           : x ≥ 515
+
+const CC_DATE_PAT = /^\d{2}-[A-Za-z]{3}-\d{4}$/;   // 23-Jul-2024
+const CC_REF_PAT  = /^\d{8,12}$/;                   // 0895886321
+const CC_AMT_PAT  = /^\$-?[\d,]+\.\d{2}$/;          // $2,575.11 or $-16,000.00
 
 // Header / footer lines to skip when building multi-line descriptions
 const SKIP_LINE = /^(Transaction|Description|Amount|Balance|CREDIT|DEBIT|Page\s+\d|of\s+\d|1-888|www\.|Transactions\s*\(|Your\s+ELEC|Account\s+Summary|\*Trademark)/i;
@@ -36,14 +49,26 @@ const SKIP_LINE = /^(Transaction|Description|Amount|Balance|CREDIT|DEBIT|Page\s+
 async function parse(text, filePath) {
   if (filePath) {
     try {
-      const result = await extractWithCoords(filePath, text);
-      if (result && result.transactions.length > 0) return result;
+      // Route credit card statements to the dedicated CC parser
+      if (isCreditCardStatement(text)) {
+        const result = await extractCCWithCoords(filePath, text);
+        if (result && result.transactions.length > 0) return result;
+        console.warn('[Scotiabank CC] Coordinate extraction returned 0 transactions');
+      } else {
+        const result = await extractWithCoords(filePath, text);
+        if (result && result.transactions.length > 0) return result;
+      }
     } catch (e) {
       console.warn('[Scotiabank] Coordinate extraction failed:', e.message);
     }
   }
   console.warn('[Scotiabank] Falling back to regex parser');
   return regexParse(text);
+}
+
+/** True when the text looks like a CC statement (has posting-date + reference-no columns). */
+function isCreditCardStatement(text) {
+  return /POSTING\s+DATE/i.test(text) && /REFERENCE\s+NO/i.test(text);
 }
 
 // ── Coordinate-aware extraction using pdf-parse pagerender ────────────────────
@@ -164,6 +189,167 @@ async function extractWithCoords(filePath, fullText) {
   };
 }
 
+// ── Credit Card coordinate-aware extraction ───────────────────────────────────
+
+/**
+ * Parses Scotia credit card e-statements.
+ *
+ * CC statement layout (PDF user units, x from left):
+ *   Transaction Date (x < 130)  |  Posting Date (130–210, skipped)
+ *   Reference No. (210–295)     |  Description (295–515)  |  Amount (x ≥ 515)
+ *
+ * Date format  : DD-Mon-YYYY   (e.g. 23-Jul-2024)
+ * Amount format: $NNN.NN  or  $-NNN.NN  (negative = credit/payment)
+ *
+ * Multi-line description handling:
+ *   Some entries have description words on a row BEFORE the date row (pre-desc)
+ *   AND on a row AFTER it (continuation). Both are merged into a single payee.
+ *   Example: "SINGLE LIFE+CRITICAL ILLNESS" appears above the date row and
+ *            "PROTECTION" appears below it.
+ */
+async function extractCCWithCoords(filePath, fullText) {
+  const buffer       = fs.readFileSync(filePath);
+  const allPageItems = [];
+
+  await pdfParse(buffer, {
+    pagerender: async function (pageData) {
+      const content = await pageData.getTextContent();
+      const items = content.items
+        .filter(item => item.str && item.str.trim())
+        .map(item => ({
+          str: item.str.trim(),
+          x:   item.transform[4],
+          y:   item.transform[5],
+        }));
+      allPageItems.push(items);
+      return content.items.map(i => i.str).join(' ');
+    },
+  });
+
+  // ── Metadata ─────────────────────────────────────────────────────────────
+  const accM       = fullText.match(/\*+(\d{4})/);
+  const accountNumber = accM ? accM[1] : '';
+  const currency   = 'JMD'; // Scotia CC statements in Jamaica are always JMD
+
+  // ── Per-page transaction extraction ──────────────────────────────────────
+  const transactions = [];
+
+  for (const pageItems of allPageItems) {
+    if (!pageItems.length) continue;
+
+    // Group items into rows by y-position (3 pt bucket)
+    const rowMap = new Map();
+    for (const item of pageItems) {
+      const yKey = Math.round(item.y / 3) * 3;
+      if (!rowMap.has(yKey)) rowMap.set(yKey, []);
+      rowMap.get(yKey).push(item);
+    }
+
+    // Sort rows top-to-bottom (in PDF coords y increases upward → sort descending)
+    const sortedYKeys = Array.from(rowMap.keys()).sort((a, b) => b - a);
+
+    // ── Classify each row ─────────────────────────────────────────────────
+    const classifiedRows = [];
+
+    for (const yKey of sortedYKeys) {
+      const row = rowMap.get(yKey).sort((a, b) => a.x - b.x);
+
+      const txDateItems = row.filter(w =>
+        w.x >= 25 && w.x < CC_TX_DATE_MAX && CC_DATE_PAT.test(w.str));
+      const refItems    = row.filter(w =>
+        w.x >= CC_POST_DATE_MAX && w.x < CC_REF_MAX && CC_REF_PAT.test(w.str));
+      const descItems   = row.filter(w =>
+        w.x >= CC_DESC_MIN && w.x < CC_DESC_MAX);
+      const amtItems    = row.filter(w =>
+        w.x >= CC_AMT_MIN && CC_AMT_PAT.test(w.str));
+
+      // True if any item sits in the amount zone (even non-matching, e.g. footer words)
+      const hasAmtZoneItem = row.some(w => w.x >= CC_AMT_MIN);
+
+      if (txDateItems.length && refItems.length) {
+        // Full or partial transaction row (date + reference number present)
+        const date   = parseCCDate(txDateItems[0].str);
+        const desc   = descItems.map(w => w.str).join(' ').trim();
+        const amount = amtItems.length ? parseCCAmount(amtItems[0].str) : null;
+        if (date) classifiedRows.push({ type: 'tx', date, desc, amount });
+
+      } else if (descItems.length && !txDateItems.length && !amtItems.length && !refItems.length && !hasAmtZoneItem) {
+        // Description-only row (no date, no amount, no reference, no amt-zone spillover)
+        // The hasAmtZoneItem guard prevents footer/body text from being treated as
+        // transaction continuations (footer lines often have words right of x=515).
+        const desc = descItems.map(w => w.str).join(' ').trim();
+        if (desc && !SKIP_LINE.test(desc)) {
+          classifiedRows.push({ type: 'desc', desc });
+        }
+      }
+    }
+
+    // ── Merge classified rows into transactions ───────────────────────────
+    // Handles three multi-line patterns:
+    //   1. desc-only BEFORE a tx-row with no desc → pre-description
+    //   2. desc-only AFTER a tx-row               → continuation
+    //   3. Both pre-description and continuation for one tx-row
+    let currentTx   = null;
+    let pendingDesc = [];
+
+    function commitTx() {
+      if (!currentTx) return;
+      // Attach any trailing continuation descriptions
+      if (pendingDesc.length) {
+        currentTx.desc = [currentTx.desc, ...pendingDesc].filter(Boolean).join(' ');
+        pendingDesc = [];
+      }
+      if (currentTx.date && currentTx.amount !== null) {
+        transactions.push(finaliseCCTx(currentTx, currency));
+      }
+      currentTx = null;
+    }
+
+    for (const row of classifiedRows) {
+      if (row.type === 'tx') {
+        if (row.desc) {
+          // TX has its own description — any pending desc is a continuation
+          // of the PREVIOUS transaction (flush it there before committing)
+          if (currentTx && pendingDesc.length) {
+            currentTx.desc = [currentTx.desc, ...pendingDesc].filter(Boolean).join(' ');
+            pendingDesc = [];
+          }
+          commitTx();
+          currentTx   = { date: row.date, desc: row.desc, amount: row.amount };
+          pendingDesc = [];
+        } else {
+          // TX has no description — use accumulated pendingDesc as pre-description
+          const preDesc = pendingDesc.join(' ');
+          pendingDesc   = [];
+          commitTx();
+          currentTx = { date: row.date, desc: preDesc, amount: row.amount };
+        }
+      } else if (row.type === 'desc') {
+        pendingDesc.push(row.desc);
+      }
+    }
+
+    // End of page — flush any trailing continuations then commit last tx
+    commitTx();
+  }
+
+  // ── Period from actual transaction dates ──────────────────────────────────
+  const txDates = transactions.map(t => t.date).filter(Boolean).sort();
+  const period  = txDates.length
+    ? { start: txDates[0], end: txDates[txDates.length - 1] }
+    : { start: '', end: '' };
+
+  return {
+    institution:  'Scotiabank',
+    accountType:  'credit_card',
+    accountName:  accountNumber ? `Scotiabank CC ...${accountNumber}` : 'Scotiabank Credit Card',
+    accountNumber,
+    currency,
+    period,
+    transactions,
+  };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
@@ -195,6 +381,41 @@ function parseDdmmm(ddmmm, periodStart, periodEnd) {
   }
 
   return `${year}-${String(mo).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+}
+
+/**
+ * Parse a CC statement date string "23-Jul-2024" → "2024-07-23".
+ */
+function parseCCDate(str) {
+  const m = str.match(/^(\d{2})-([A-Za-z]{3})-(\d{4})$/);
+  if (!m) return null;
+  const MONTHS = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+  const mo = MONTHS[m[2].toLowerCase()];
+  if (!mo) return null;
+  return `${m[3]}-${String(mo).padStart(2,'0')}-${String(parseInt(m[1],10)).padStart(2,'0')}`;
+}
+
+/**
+ * Parse a CC amount string "$2,575.11" or "$-16,000.00".
+ * Returns a signed float (positive = debit/charge, negative = credit/payment).
+ */
+function parseCCAmount(str) {
+  const m = str.match(/^\$(-?[\d,]+\.\d{2})$/);
+  if (!m) return null;
+  return parseFloat(m[1].replace(/,/g, ''));
+}
+
+function finaliseCCTx(tx, currency) {
+  const payee = cleanPayee(tx.desc) || 'Scotiabank CC Transaction';
+  return {
+    date:     tx.date,
+    payee,
+    amount:   tx.amount,
+    currency,
+    notes:    '',
+    category: categorize(payee, tx.amount),
+    type:     tx.amount < 0 ? 'credit' : 'debit',
+  };
 }
 
 /** Parse "J$ 4,025.00 -" or "J$ 300.00 +" from an array of word objects. */
@@ -308,8 +529,9 @@ function categorize(payee, amount) {
   if (/gct|govt tax/.test(p))                                     return 'Taxes';
   if (/jps|nwc|flow|digicel|lime|c&w/.test(p))                    return 'Bills & Utilities';
   if (/insurance/.test(p))                                        return 'Insurance';
-  if (/transfer|itb|third party/.test(p))                         return 'Transfer';
-  if (/service charge|bank fee|record keeping/.test(p))           return 'Bank Fees';
+  if (/transfer|itb|third party|card payment/.test(p))            return 'Transfer';
+  if (/service charge|bank fee|record keeping|overlimit|over limit|late payment|debit interest/.test(p)) return 'Bank Fees';
+  if (/cinema|theatre|theater|stadium|amusement/.test(p))        return 'Entertainment';
   if (amount > 0)                                                  return 'Income';
   return 'Uncategorized';
 }
