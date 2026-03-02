@@ -19,6 +19,13 @@
         <div class="logo-sub">Jamaica Edition</div>
       </div>
     </div>
+
+    <!-- Active LunchMoney account name — populated by app.js after connect -->
+    <div id="sidebar-account-block" style="display:none;">
+      <div id="sidebar-account-name"></div>
+      <div id="sidebar-account-budget"></div>
+    </div>
+
     <nav>
       <div class="nav-item active" data-view="dashboard">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h6v6H1zm0 8h6v6H1zm8-8h6v6H9zm0 8h6v6H9z"/></svg>
@@ -45,7 +52,7 @@
         <span class="nav-label">Settings</span>
       </div>
     </nav>
-    <div class="sidebar-footer">v1.2.1 · MiTax</div>
+    <div class="sidebar-footer">v1.2.5 · MiTax</div>
   </aside>
 
   <!-- ─── Main ──────────────────────────────────────────────────────── -->
@@ -273,7 +280,36 @@
 
       <!-- ═══ SETTINGS VIEW ════════════════════════════════════════════ -->
       <div class="view" id="settings-view">
+
+        <!-- LunchMoney Accounts -->
         <div class="card form-section">
+          <div class="card-title">LunchMoney Accounts</div>
+          <div id="lm-accounts-list" style="margin-bottom:16px;">
+            <!-- populated by app.js -->
+          </div>
+
+          <!-- Add account form -->
+          <div id="add-account-form" style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px;">
+            <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;">Add Account</div>
+            <div class="grid-2" style="gap:10px;">
+              <div class="form-group" style="margin:0;">
+                <label>Label <span style="font-weight:400;color:var(--text-muted);">(optional)</span></label>
+                <input type="text" id="new-account-label" placeholder="e.g. Personal, Business…" />
+              </div>
+              <div class="form-group" style="margin:0;">
+                <label>API Key</label>
+                <input type="password" id="new-account-key" placeholder="Paste LunchMoney API key" />
+              </div>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+              <button class="btn btn-primary btn-sm" id="add-account-btn">Connect &amp; Save</button>
+              <span id="add-account-status" style="font-size:12px;color:var(--text-muted);"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Legacy single-key input (hidden once accounts exist; kept for first-run) -->
+        <div class="card form-section" id="legacy-api-card" style="display:none;">
           <div class="card-title">LunchMoney API</div>
           <div class="form-group">
             <label>API Key</label>

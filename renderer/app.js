@@ -114,18 +114,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupAccountModal();
   setupValidateModal();
   setupAccountView();
-
-  if (state.apiKey) {
-    document.getElementById('api-key-input').value = state.apiKey;
-    await connectAPI(state.apiKey, false);
-  }
   restorePrefs();
   restoreProfile();
+
+  // ── Multi-account startup ──────────────────────────────────────────────
+  // 1. Try to load the active account from the DB.
+  // 2. If none exists but localStorage has a legacy key, migrate it first.
+  // 3. Connect with the resolved key.
+
+  const activeRes = await window.electronAPI.lmAccounts.getActive();
+  let startKey    = activeRes?.data?.api_key || null;
+
+  if (!startKey && state.apiKey) {
+    // First run after upgrade: migrate the localStorage key into the DB
+    await window.electronAPI.lmAccounts.migrate({ apiKey: state.apiKey });
+    const migratedRes = await window.electronAPI.lmAccounts.getActive();
+    startKey = migratedRes?.data?.api_key || state.apiKey;
+  }
+
+  if (startKey) {
+    state.apiKey = startKey;
+    // Keep legacy input populated for fallback / test-connection button
+    const legacyInput = document.getElementById('api-key-input');
+    if (legacyInput) legacyInput.value = startKey;
+    await connectAPI(startKey, false);
+  }
+
+  // Render account list in Settings (even if not connected)
+  renderLMAccountsList();
+
   refreshDashboard();
   refreshTracker();
   refreshHistory();
   refreshFilingHistory();
-  // Populate tracker year select from oldest DB record (async — non-blocking)
   initTrackerYearSelect();
 });
 
@@ -263,6 +284,7 @@ async function connectAPI(apiKey, showFeedback = true) {
     label.textContent = `Connected · ${state.lmAssets.length} accounts`;
 
     renderCategoryMappings();
+    updateSidebarAccountName();   // pull name from DB active account
 
     if (showFeedback) {
       document.getElementById('settings-success').style.display = 'block';
@@ -1114,17 +1136,31 @@ async function refreshHistory() {
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 function setupSettings() {
-  document.getElementById('save-api-key-btn').addEventListener('click', async () => {
-    const key = document.getElementById('api-key-input').value.trim();
-    if (!key) { toast('Please enter an API key', 'error'); return; }
-    localStorage.setItem('lm_api_key', key);
-    await connectAPI(key, true);
+  // ── Add LunchMoney account ───────────────────────────────────────────────
+  document.getElementById('add-account-btn').addEventListener('click', addLMAccount);
+  document.getElementById('new-account-key').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addLMAccount();
   });
-  document.getElementById('test-api-btn').addEventListener('click', async () => {
-    const key = document.getElementById('api-key-input').value.trim();
-    if (!key) { toast('Enter an API key first', 'error'); return; }
-    await connectAPI(key, true);
-  });
+
+  // ── Legacy single-key fallback (hidden once accounts exist) ─────────────
+  const saveApiBtn = document.getElementById('save-api-key-btn');
+  const testApiBtn = document.getElementById('test-api-btn');
+  if (saveApiBtn) {
+    saveApiBtn.addEventListener('click', async () => {
+      const key = document.getElementById('api-key-input').value.trim();
+      if (!key) { toast('Please enter an API key', 'error'); return; }
+      localStorage.setItem('lm_api_key', key);
+      await connectAPI(key, true);
+    });
+  }
+  if (testApiBtn) {
+    testApiBtn.addEventListener('click', async () => {
+      const key = document.getElementById('api-key-input').value.trim();
+      if (!key) { toast('Enter an API key first', 'error'); return; }
+      await connectAPI(key, true);
+    });
+  }
+
   document.getElementById('save-prefs-btn').addEventListener('click', savePrefs);
 
   // ── Taxpayer profile ────────────────────────────────────────────────────
@@ -1169,6 +1205,161 @@ function setupSettings() {
       renderCategoryMappings();
       toast('All category mappings cleared.', 'info');
     });
+  }
+}
+
+// ─── Taxpayer Profile ─────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  LUNCHMONEY MULTI-ACCOUNT MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Render the saved-accounts list in Settings. */
+async function renderLMAccountsList() {
+  const el = document.getElementById('lm-accounts-list');
+  if (!el) return;
+
+  const res = await window.electronAPI.lmAccounts.list();
+  const accounts = res?.data || [];
+
+  if (!accounts.length) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0 12px;">
+      No accounts saved yet. Add one below.
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = accounts.map(acc => {
+    const initials = (acc.user_name || acc.label || '?')
+      .split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const meta = [acc.user_name, acc.budget_name].filter(Boolean).join(' · ') || 'LunchMoney account';
+    return `<div class="lm-account-row ${acc.is_active ? 'active' : ''}" data-id="${acc.id}">
+      <div class="lm-account-avatar">${escHtml(initials)}</div>
+      <div class="lm-account-info">
+        <div class="lm-account-label">${escHtml(acc.label)}</div>
+        <div class="lm-account-meta">${escHtml(meta)}</div>
+      </div>
+      ${acc.is_active
+        ? `<span class="lm-account-active-badge">Active</span>`
+        : `<button class="btn btn-secondary btn-sm lm-switch-btn" data-id="${acc.id}" style="font-size:11px;padding:3px 10px;">Switch</button>`}
+      <button class="btn btn-danger btn-sm lm-remove-btn" data-id="${acc.id}" style="font-size:11px;padding:3px 8px;" title="Remove account">✕</button>
+    </div>`;
+  }).join('');
+
+  // Wire switch buttons
+  el.querySelectorAll('.lm-switch-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchLMAccount(parseInt(btn.dataset.id)));
+  });
+  // Wire remove buttons
+  el.querySelectorAll('.lm-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeLMAccount(parseInt(btn.dataset.id)));
+  });
+}
+
+/** Connect & save a new LunchMoney account from the Settings form. */
+async function addLMAccount() {
+  const keyInput    = document.getElementById('new-account-key');
+  const labelInput  = document.getElementById('new-account-label');
+  const statusEl    = document.getElementById('add-account-status');
+  const btn         = document.getElementById('add-account-btn');
+
+  const apiKey = keyInput?.value.trim();
+  const label  = labelInput?.value.trim();
+
+  if (!apiKey) { toast('Please paste an API key', 'error'); return; }
+
+  btn.disabled     = true;
+  btn.textContent  = 'Connecting…';
+  if (statusEl) statusEl.textContent = '';
+
+  const res = await window.electronAPI.lmAccounts.add({ label, apiKey });
+
+  btn.disabled    = false;
+  btn.textContent = 'Connect & Save';
+
+  if (!res.success) {
+    if (statusEl) statusEl.textContent = `✗ ${res.error}`;
+    toast(`Failed to connect: ${res.error}`, 'error');
+    return;
+  }
+
+  // Clear form
+  if (keyInput)   keyInput.value   = '';
+  if (labelInput) labelInput.value = '';
+  if (statusEl)   statusEl.textContent = '✓ Connected';
+  setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+
+  // Switch to the new account
+  state.apiKey = apiKey;
+  localStorage.setItem('lm_api_key', apiKey);
+  await connectAPI(apiKey, false);
+  renderLMAccountsList();
+  toast(`Account added: ${res.data.userName || res.data.budgetName || label || 'new account'}`, 'success');
+}
+
+/** Switch to a different saved LunchMoney account. */
+async function switchLMAccount(id) {
+  const res = await window.electronAPI.lmAccounts.switch(id);
+  if (!res.success) { toast(`Switch failed: ${res.error}`, 'error'); return; }
+
+  const newKey = res.data?.api_key;
+  if (!newKey) { toast('Could not read API key for this account', 'error'); return; }
+
+  state.apiKey = newKey;
+  localStorage.setItem('lm_api_key', newKey);
+
+  const legacyInput = document.getElementById('api-key-input');
+  if (legacyInput) legacyInput.value = newKey;
+
+  await connectAPI(newKey, false);
+  renderLMAccountsList();
+  refreshDashboard();
+  refreshTracker();
+  toast(`Switched to ${res.data.user_name || res.data.label || 'account'}`, 'success');
+}
+
+/** Remove a saved account (prompts if it's the active one). */
+async function removeLMAccount(id) {
+  const res = await window.electronAPI.lmAccounts.remove(id);
+  if (!res.success) { toast(`Remove failed: ${res.error}`, 'error'); return; }
+
+  // If a new active account was returned, switch to it; else clear connection
+  const newActive = res.data;
+  if (newActive?.api_key) {
+    state.apiKey = newActive.api_key;
+    localStorage.setItem('lm_api_key', newActive.api_key);
+    await connectAPI(newActive.api_key, false);
+  } else {
+    state.apiKey = null;
+    localStorage.removeItem('lm_api_key');
+    const dot   = document.getElementById('api-dot');
+    const label = document.getElementById('api-label');
+    if (dot)   dot.className     = 'status-dot';
+    if (label) label.textContent = 'Not connected';
+    updateSidebarAccountName();
+  }
+
+  renderLMAccountsList();
+  toast('Account removed.', 'info');
+}
+
+/** Pull the active account's user/budget name from DB and update the sidebar. */
+async function updateSidebarAccountName() {
+  const block  = document.getElementById('sidebar-account-block');
+  const nameEl = document.getElementById('sidebar-account-name');
+  const budgEl = document.getElementById('sidebar-account-budget');
+  if (!block) return;
+
+  const res = await window.electronAPI.lmAccounts.getActive();
+  const acc  = res?.data;
+
+  if (acc && (acc.user_name || acc.budget_name || acc.label)) {
+    nameEl.textContent = acc.user_name || acc.label;
+    budgEl.textContent = acc.budget_name && acc.budget_name !== acc.user_name
+      ? acc.budget_name : '';
+    block.style.display = 'block';
+  } else {
+    block.style.display = 'none';
   }
 }
 

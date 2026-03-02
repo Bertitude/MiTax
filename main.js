@@ -166,6 +166,85 @@ ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year
   }
 });
 
+// ─── IPC: LunchMoney Multi-Account Management ────────────────────────────────
+
+ipcMain.handle('lm-accounts:list', async () => {
+  const { getAllAccounts } = require('./src/lm-accounts');
+  return { success: true, data: getAllAccounts() };
+});
+
+ipcMain.handle('lm-accounts:get-active', async () => {
+  const { getActiveAccount } = require('./src/lm-accounts');
+  const acc = getActiveAccount();
+  return { success: true, data: acc };
+});
+
+/**
+ * Validate an API key against LunchMoney /me, then save & activate the account.
+ * Returns { success, data: { id, userName, budgetName } } or { success: false, error }.
+ */
+ipcMain.handle('lm-accounts:add', async (event, { label, apiKey }) => {
+  try {
+    const { getMe }       = require('./src/lunchmoney');
+    const { addAccount, setActiveAccount } = require('./src/lm-accounts');
+
+    const me = await getMe(apiKey);
+    const id = addAccount({
+      label:      label || me.user_name || me.budget_name || 'Account',
+      apiKey,
+      userName:   me.user_name   || null,
+      budgetName: me.budget_name || null,
+    });
+    setActiveAccount(id);
+    return { success: true, data: { id, userName: me.user_name, budgetName: me.budget_name } };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('lm-accounts:switch', async (event, id) => {
+  try {
+    const { setActiveAccount, getActiveAccount } = require('./src/lm-accounts');
+    setActiveAccount(id);
+    const acc = getActiveAccount();
+    return { success: true, data: acc };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('lm-accounts:remove', async (event, id) => {
+  try {
+    const { removeAccount, getActiveAccount } = require('./src/lm-accounts');
+    removeAccount(id);
+    const acc = getActiveAccount();
+    return { success: true, data: acc }; // returns new active (if any) so renderer can reconnect
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+/**
+ * One-time migration: if renderer has a legacy localStorage key and no DB
+ * accounts exist yet, persist it as the first account.
+ */
+ipcMain.handle('lm-accounts:migrate', async (event, { apiKey }) => {
+  try {
+    const { getMe } = require('./src/lunchmoney');
+    const { migrateFromLegacyKey } = require('./src/lm-accounts');
+    let userName = null, budgetName = null;
+    try {
+      const me = await getMe(apiKey);
+      userName   = me.user_name   || null;
+      budgetName = me.budget_name || null;
+    } catch { /* tolerate offline/invalid key during migration */ }
+    const id = migrateFromLegacyKey({ apiKey, userName, budgetName });
+    return { success: true, data: { id, userName, budgetName } };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Categories ────────────────────────────────────────────────────────
 ipcMain.handle('get-lm-categories', async (event, apiKey) => {
   try {

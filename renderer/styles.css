@@ -668,3 +668,77 @@ tr.dupe-row:hover td { background: rgba(210,153,34,0.14); }
 .acct-tx-amount { font-family: monospace; font-weight: 600; white-space: nowrap; }
 .acct-tx-amount.credit { color: var(--accent2); }
 .acct-tx-amount.debit  { color: var(--warn); }
+
+/* ─── Sidebar account name ──────────────────────────────────────────────── */
+#sidebar-account-block {
+  margin: 0 12px 12px;
+  padding: 8px 10px;
+  background: rgba(88,166,255,0.07);
+  border: 1px solid rgba(88,166,255,0.15);
+  border-radius: 8px;
+}
+#sidebar-account-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#sidebar-account-budget {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── LM account list in Settings ──────────────────────────────────────── */
+.lm-account-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  transition: border-color 0.15s;
+}
+.lm-account-row.active {
+  border-color: var(--accent);
+  background: rgba(88,166,255,0.07);
+}
+.lm-account-row:last-child { margin-bottom: 0; }
+.lm-account-avatar {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.lm-account-info { flex: 1; min-width: 0; }
+.lm-account-label {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lm-account-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lm-account-active-badge {
+  font-size: 10px;
+  background: rgba(88,166,255,0.15);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-weight: 600;
+  flex-shrink: 0;
+}

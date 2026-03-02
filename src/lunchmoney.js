@@ -29,6 +29,16 @@ async function lmRequest(method, endpoint, apiKey, body = null) {
   return data;
 }
 
+// ─── User / Me ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the authenticated user's profile.
+ * Returns { user_name, budget_name, primary_currency, api_key_label, ... }
+ */
+async function getMe(apiKey) {
+  return lmRequest('GET', '/me', apiKey);
+}
+
 // ─── Assets ─────────────────────────────────────────────────────────────────
 
 async function getAssets(apiKey) {
@@ -267,6 +277,7 @@ async function getTransactionsByYear(apiKey, year) {
 }
 
 module.exports = {
+  getMe,
   getAssets,
   createAsset,
   getCategories,

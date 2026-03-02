@@ -30,6 +30,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMissingMonths: (accountId) => ipcRenderer.invoke('tracker-get-missing-months', accountId),
   getAllAccounts:   ()          => ipcRenderer.invoke('tracker-get-all-accounts'),
 
+  // LunchMoney multi-account management
+  lmAccounts: {
+    list:      ()              => ipcRenderer.invoke('lm-accounts:list'),
+    getActive: ()              => ipcRenderer.invoke('lm-accounts:get-active'),
+    add:       (payload)       => ipcRenderer.invoke('lm-accounts:add',     payload),
+    switch:    (id)            => ipcRenderer.invoke('lm-accounts:switch',  id),
+    remove:    (id)            => ipcRenderer.invoke('lm-accounts:remove',  id),
+    migrate:   (payload)       => ipcRenderer.invoke('lm-accounts:migrate', payload),
+  },
+
   // Dashboard
   getDashboardData: (payload) => ipcRenderer.invoke('get-dashboard-data', payload),
 
