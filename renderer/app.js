@@ -114,6 +114,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupAccountModal();
   setupValidateModal();
   setupAccountView();
+  setupHistoryDetailModal();
   restorePrefs();
   restoreProfile();
 
@@ -993,7 +994,10 @@ async function uploadValidated() {
           qItem.status = 'uploaded';
         } else {
           // LunchMoney accepted the request but uploaded 0 — all duplicates / rejected
-          const skipNote = 'No transactions uploaded — all may be duplicates or were rejected by LunchMoney';
+          const lmErrors = (result.data.errors || []).filter(Boolean).join('; ');
+          const skipNote = lmErrors
+            ? `No transactions uploaded. LunchMoney error: ${lmErrors}`
+            : 'No transactions uploaded — all may be duplicates or were rejected by LunchMoney';
           await window.electronAPI.saveUpload({
             institution: qItem.parsed.institution,
             accountName: qItem.parsed.accountName,
@@ -1173,16 +1177,97 @@ async function refreshHistory() {
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">No uploads yet</td></tr>';
     return;
   }
-  tbody.innerHTML = uploads.map(u => `
-    <tr>
-      <td style="color:var(--text-muted);font-size:12px;">${u.uploaded_at?u.uploaded_at.slice(0,16).replace('T',' '):'—'}</td>
-      <td>${escHtml(u.institution||'')}</td>
-      <td>${escHtml(u.account_name||'')}</td>
-      <td style="font-size:12px;">${u.period_start?u.period_start.slice(0,7):'—'} ${u.period_end&&u.period_end!==u.period_start?'→ '+u.period_end.slice(0,7):''}</td>
-      <td>${u.tx_count||0}</td>
-      <td><span class="badge ${u.status==='uploaded'?'badge-green':u.status==='failed'?'badge-red':'badge-yellow'}">${u.status||'unknown'}</span></td>
-    </tr>
-  `).join('');
+
+  // Store in a map for quick lookup when a row is clicked
+  state.uploadMap = {};
+  uploads.forEach(u => { state.uploadMap[u.id] = u; });
+
+  tbody.innerHTML = uploads.map(u => {
+    const badgeCls = u.status === 'uploaded' ? 'badge-green' : u.status === 'failed' ? 'badge-red' : 'badge-yellow';
+    const hasNote  = u.notes ? ' title="Click for details"' : '';
+    return `
+      <tr data-upload-id="${u.id}" style="cursor:pointer;" class="history-row"${hasNote}>
+        <td style="color:var(--text-muted);font-size:12px;">${u.uploaded_at?u.uploaded_at.slice(0,16).replace('T',' '):'—'}</td>
+        <td>${escHtml(u.institution||'')}</td>
+        <td>${escHtml(u.account_name||'')}</td>
+        <td style="font-size:12px;">${u.period_start?u.period_start.slice(0,7):'—'} ${u.period_end&&u.period_end!==u.period_start?'→ '+u.period_end.slice(0,7):''}</td>
+        <td>${u.tx_count||0}</td>
+        <td><span class="badge ${badgeCls}">${u.status||'unknown'}</span>${u.notes?'<span style="margin-left:6px;font-size:10px;color:var(--text-muted);">ⓘ</span>':''}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function showUploadDetail(u) {
+  const body = document.getElementById('upload-detail-body');
+  const badgeCls = u.status === 'uploaded' ? 'badge-green' : u.status === 'failed' ? 'badge-red' : 'badge-yellow';
+
+  let lmIds = null;
+  try { lmIds = JSON.parse(u.lm_ids || 'null'); } catch { /* ignore */ }
+
+  const isError = u.status === 'failed' || u.status === 'skipped';
+
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:130px 1fr;gap:8px 16px;font-size:13px;margin-bottom:16px;">
+      <span style="color:var(--text-muted);">Status</span>
+      <span><span class="badge ${badgeCls}">${u.status || 'unknown'}</span></span>
+
+      <span style="color:var(--text-muted);">Date</span>
+      <span>${u.uploaded_at ? u.uploaded_at.slice(0,16).replace('T',' ') : '—'}</span>
+
+      <span style="color:var(--text-muted);">Institution</span>
+      <span>${escHtml(u.institution || '—')}</span>
+
+      <span style="color:var(--text-muted);">Account</span>
+      <span>${escHtml(u.account_name || '—')}</span>
+
+      <span style="color:var(--text-muted);">File</span>
+      <span style="word-break:break-all;font-size:12px;color:var(--text-muted);">${escHtml(u.filename || '—')}</span>
+
+      <span style="color:var(--text-muted);">Period</span>
+      <span>${u.period_start ? u.period_start.slice(0,7) : '—'}${u.period_end && u.period_end !== u.period_start ? ' → ' + u.period_end.slice(0,7) : ''}</span>
+
+      <span style="color:var(--text-muted);">Transactions</span>
+      <span>${u.tx_count || 0}</span>
+
+      ${lmIds && lmIds.length ? `
+        <span style="color:var(--text-muted);">LM IDs</span>
+        <span style="font-size:11px;color:var(--text-muted);">
+          ${lmIds.slice(0,12).join(', ')}${lmIds.length > 12 ? ` + ${lmIds.length - 12} more` : ''}
+        </span>
+      ` : ''}
+    </div>
+
+    ${u.notes ? `
+      <div style="font-size:12px;font-weight:600;color:${isError ? 'var(--warn)' : 'var(--text-muted)'};margin-bottom:6px;">
+        ${isError ? '⚠ Error Details' : 'Notes'}
+      </div>
+      <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;
+                  font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0;
+                  max-height:200px;overflow-y:auto;color:${isError ? 'var(--warn)' : 'inherit'};">
+${escHtml(u.notes)}</pre>
+    ` : ''}
+  `;
+
+  document.getElementById('upload-detail-modal').classList.add('open');
+}
+
+// Wire history row clicks and upload-detail close (called once after DOM ready)
+function setupHistoryDetailModal() {
+  const tbody = document.getElementById('history-tbody');
+  tbody.addEventListener('click', e => {
+    const row = e.target.closest('tr[data-upload-id]');
+    if (!row) return;
+    const u = state.uploadMap?.[row.dataset.uploadId];
+    if (u) showUploadDetail(u);
+  });
+
+  document.getElementById('upload-detail-close').addEventListener('click', () => {
+    document.getElementById('upload-detail-modal').classList.remove('open');
+  });
+  document.getElementById('upload-detail-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+  });
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
