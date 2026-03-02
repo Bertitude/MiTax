@@ -113,27 +113,52 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupTaxView();
   setupAccountModal();
   setupValidateModal();
-
-  if (state.apiKey) {
-    document.getElementById('api-key-input').value = state.apiKey;
-    await connectAPI(state.apiKey, false);
-  }
+  setupAccountView();
   restorePrefs();
   restoreProfile();
+
+  // ── Multi-account startup ──────────────────────────────────────────────
+  // 1. Try to load the active account from the DB.
+  // 2. If none exists but localStorage has a legacy key, migrate it first.
+  // 3. Connect with the resolved key.
+
+  const activeRes = await window.electronAPI.lmAccounts.getActive();
+  let startKey    = activeRes?.data?.api_key || null;
+
+  if (!startKey && state.apiKey) {
+    // First run after upgrade: migrate the localStorage key into the DB
+    await window.electronAPI.lmAccounts.migrate({ apiKey: state.apiKey });
+    const migratedRes = await window.electronAPI.lmAccounts.getActive();
+    startKey = migratedRes?.data?.api_key || state.apiKey;
+  }
+
+  if (startKey) {
+    state.apiKey = startKey;
+    // Keep legacy input populated for fallback / test-connection button
+    const legacyInput = document.getElementById('api-key-input');
+    if (legacyInput) legacyInput.value = startKey;
+    await connectAPI(startKey, false);
+  }
+
+  // Render account list in Settings (even if not connected)
+  renderLMAccountsList();
+
   refreshDashboard();
   refreshTracker();
   refreshHistory();
   refreshFilingHistory();
+  initTrackerYearSelect();
 });
 
 /**
- * Populate year-selection dropdowns with a rolling 5-year window so they always
- * show the current year as the default, regardless of when the app is opened.
+ * Populate year-selection dropdowns.
+ * The tracker year select is populated separately by initTrackerYearSelect()
+ * once the oldest DB record is known.
  */
 function initYearSelects() {
   const currentYear = new Date().getFullYear();
 
-  // Tracker year — default to current year
+  // Tracker year — seed with a minimal fallback range; expanded async by initTrackerYearSelect()
   const trackerSel = document.getElementById('tracker-year');
   if (trackerSel) {
     trackerSel.innerHTML = '';
@@ -173,28 +198,68 @@ function initYearSelects() {
   }
 }
 
+/**
+ * Async: fetches the year of the oldest upload from SQLite and repopulates the
+ * tracker year select so it goes back as far as the user's actual data.
+ * Called once on DOMContentLoaded and again after each successful upload.
+ */
+async function initTrackerYearSelect() {
+  const sel = document.getElementById('tracker-year');
+  if (!sel) return;
+
+  const currentYear = new Date().getFullYear();
+  let oldestYear = currentYear - 4; // fallback if no uploads yet
+
+  try {
+    const res = await window.electronAPI.getOldestUploadYear();
+    if (res.success && res.data != null) {
+      oldestYear = Math.min(res.data, currentYear);
+    }
+  } catch { /* leave fallback */ }
+
+  // Preserve the currently selected year if possible
+  const prevVal = parseInt(sel.value) || currentYear;
+
+  sel.innerHTML = '';
+  for (let y = currentYear; y >= oldestYear; y--) {
+    const opt = document.createElement('option');
+    opt.value       = y;
+    opt.textContent = y;
+    if (y === (prevVal >= oldestYear ? prevVal : currentYear)) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
 const PAGE_TITLES = {
   dashboard: 'Dashboard',      import: 'Import Statements',
   tracker:   'Coverage Tracker', history: 'Upload History',
   tax:       'S04 Tax Return', settings: 'Settings',
+  account:   'Account Summary',
 };
 
 function setupNav() {
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
       const view = item.dataset.view;
-      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-      item.classList.add('active');
-      document.getElementById(`${view}-view`).classList.add('active');
-      document.getElementById('page-title').textContent = PAGE_TITLES[view] || view;
+      navigateTo(view);
       if (view === 'dashboard') refreshDashboard();
       if (view === 'tracker')   refreshTracker();
       if (view === 'history')   refreshHistory();
     });
   });
+}
+
+/** Navigate to any view by name (including non-nav views like 'account'). */
+function navigateTo(view) {
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.classList.toggle('active', n.dataset.view === view);
+  });
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const target = document.getElementById(`${view}-view`);
+  if (target) target.classList.add('active');
+  document.getElementById('page-title').textContent = PAGE_TITLES[view] || view;
 }
 
 // ─── API Connection ───────────────────────────────────────────────────────────
@@ -219,6 +284,7 @@ async function connectAPI(apiKey, showFeedback = true) {
     label.textContent = `Connected · ${state.lmAssets.length} accounts`;
 
     renderCategoryMappings();
+    updateSidebarAccountName();   // pull name from DB active account
 
     if (showFeedback) {
       document.getElementById('settings-success').style.display = 'block';
@@ -933,6 +999,7 @@ async function uploadValidated() {
     renderQueue();
     refreshHistory();
     refreshTracker();
+    initTrackerYearSelect(); // expand year range if a new oldest year was added
   }
   if (allErrors.length) toast(`Errors: ${allErrors.join('; ')}`, 'error', 8000);
 }
@@ -1069,17 +1136,31 @@ async function refreshHistory() {
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 function setupSettings() {
-  document.getElementById('save-api-key-btn').addEventListener('click', async () => {
-    const key = document.getElementById('api-key-input').value.trim();
-    if (!key) { toast('Please enter an API key', 'error'); return; }
-    localStorage.setItem('lm_api_key', key);
-    await connectAPI(key, true);
+  // ── Add LunchMoney account ───────────────────────────────────────────────
+  document.getElementById('add-account-btn').addEventListener('click', addLMAccount);
+  document.getElementById('new-account-key').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addLMAccount();
   });
-  document.getElementById('test-api-btn').addEventListener('click', async () => {
-    const key = document.getElementById('api-key-input').value.trim();
-    if (!key) { toast('Enter an API key first', 'error'); return; }
-    await connectAPI(key, true);
-  });
+
+  // ── Legacy single-key fallback (hidden once accounts exist) ─────────────
+  const saveApiBtn = document.getElementById('save-api-key-btn');
+  const testApiBtn = document.getElementById('test-api-btn');
+  if (saveApiBtn) {
+    saveApiBtn.addEventListener('click', async () => {
+      const key = document.getElementById('api-key-input').value.trim();
+      if (!key) { toast('Please enter an API key', 'error'); return; }
+      localStorage.setItem('lm_api_key', key);
+      await connectAPI(key, true);
+    });
+  }
+  if (testApiBtn) {
+    testApiBtn.addEventListener('click', async () => {
+      const key = document.getElementById('api-key-input').value.trim();
+      if (!key) { toast('Enter an API key first', 'error'); return; }
+      await connectAPI(key, true);
+    });
+  }
+
   document.getElementById('save-prefs-btn').addEventListener('click', savePrefs);
 
   // ── Taxpayer profile ────────────────────────────────────────────────────
@@ -1092,6 +1173,193 @@ function setupSettings() {
       e.preventDefault();
       require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
     });
+  }
+
+  // ── Category → Tax mapping panel ────────────────────────────────────────
+  const toggleArea = document.getElementById('cat-map-toggle');
+  const toggleBtn  = document.getElementById('cat-map-toggle-btn');
+  const panel      = document.getElementById('cat-map-panel');
+  if (toggleArea && panel) {
+    toggleArea.addEventListener('click', e => {
+      if (e.target.closest('#cat-map-panel')) return;
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      if (toggleBtn) toggleBtn.textContent = open ? '▶ Show' : '▼ Hide';
+    });
+  }
+
+  const catSearch = document.getElementById('cat-map-search');
+  if (catSearch) {
+    catSearch.addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      document.querySelectorAll('#cat-map-tbody tr').forEach(tr => {
+        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+  }
+
+  const clearAllBtn = document.getElementById('cat-map-clear-all');
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', () => {
+      localStorage.removeItem(CAT_MAPPING_KEY);
+      renderCategoryMappings();
+      toast('All category mappings cleared.', 'info');
+    });
+  }
+}
+
+// ─── Taxpayer Profile ─────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  LUNCHMONEY MULTI-ACCOUNT MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Render the saved-accounts list in Settings. */
+async function renderLMAccountsList() {
+  const el = document.getElementById('lm-accounts-list');
+  if (!el) return;
+
+  const res = await window.electronAPI.lmAccounts.list();
+  const accounts = res?.data || [];
+
+  if (!accounts.length) {
+    el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0 12px;">
+      No accounts saved yet. Add one below.
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = accounts.map(acc => {
+    const initials = (acc.user_name || acc.label || '?')
+      .split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const meta = [acc.user_name, acc.budget_name].filter(Boolean).join(' · ') || 'LunchMoney account';
+    return `<div class="lm-account-row ${acc.is_active ? 'active' : ''}" data-id="${acc.id}">
+      <div class="lm-account-avatar">${escHtml(initials)}</div>
+      <div class="lm-account-info">
+        <div class="lm-account-label">${escHtml(acc.label)}</div>
+        <div class="lm-account-meta">${escHtml(meta)}</div>
+      </div>
+      ${acc.is_active
+        ? `<span class="lm-account-active-badge">Active</span>`
+        : `<button class="btn btn-secondary btn-sm lm-switch-btn" data-id="${acc.id}" style="font-size:11px;padding:3px 10px;">Switch</button>`}
+      <button class="btn btn-danger btn-sm lm-remove-btn" data-id="${acc.id}" style="font-size:11px;padding:3px 8px;" title="Remove account">✕</button>
+    </div>`;
+  }).join('');
+
+  // Wire switch buttons
+  el.querySelectorAll('.lm-switch-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchLMAccount(parseInt(btn.dataset.id)));
+  });
+  // Wire remove buttons
+  el.querySelectorAll('.lm-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeLMAccount(parseInt(btn.dataset.id)));
+  });
+}
+
+/** Connect & save a new LunchMoney account from the Settings form. */
+async function addLMAccount() {
+  const keyInput    = document.getElementById('new-account-key');
+  const labelInput  = document.getElementById('new-account-label');
+  const statusEl    = document.getElementById('add-account-status');
+  const btn         = document.getElementById('add-account-btn');
+
+  const apiKey = keyInput?.value.trim();
+  const label  = labelInput?.value.trim();
+
+  if (!apiKey) { toast('Please paste an API key', 'error'); return; }
+
+  btn.disabled     = true;
+  btn.textContent  = 'Connecting…';
+  if (statusEl) statusEl.textContent = '';
+
+  const res = await window.electronAPI.lmAccounts.add({ label, apiKey });
+
+  btn.disabled    = false;
+  btn.textContent = 'Connect & Save';
+
+  if (!res.success) {
+    if (statusEl) statusEl.textContent = `✗ ${res.error}`;
+    toast(`Failed to connect: ${res.error}`, 'error');
+    return;
+  }
+
+  // Clear form
+  if (keyInput)   keyInput.value   = '';
+  if (labelInput) labelInput.value = '';
+  if (statusEl)   statusEl.textContent = '✓ Connected';
+  setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+
+  // Switch to the new account
+  state.apiKey = apiKey;
+  localStorage.setItem('lm_api_key', apiKey);
+  await connectAPI(apiKey, false);
+  renderLMAccountsList();
+  toast(`Account added: ${res.data.userName || res.data.budgetName || label || 'new account'}`, 'success');
+}
+
+/** Switch to a different saved LunchMoney account. */
+async function switchLMAccount(id) {
+  const res = await window.electronAPI.lmAccounts.switch(id);
+  if (!res.success) { toast(`Switch failed: ${res.error}`, 'error'); return; }
+
+  const newKey = res.data?.api_key;
+  if (!newKey) { toast('Could not read API key for this account', 'error'); return; }
+
+  state.apiKey = newKey;
+  localStorage.setItem('lm_api_key', newKey);
+
+  const legacyInput = document.getElementById('api-key-input');
+  if (legacyInput) legacyInput.value = newKey;
+
+  await connectAPI(newKey, false);
+  renderLMAccountsList();
+  refreshDashboard();
+  refreshTracker();
+  toast(`Switched to ${res.data.user_name || res.data.label || 'account'}`, 'success');
+}
+
+/** Remove a saved account (prompts if it's the active one). */
+async function removeLMAccount(id) {
+  const res = await window.electronAPI.lmAccounts.remove(id);
+  if (!res.success) { toast(`Remove failed: ${res.error}`, 'error'); return; }
+
+  // If a new active account was returned, switch to it; else clear connection
+  const newActive = res.data;
+  if (newActive?.api_key) {
+    state.apiKey = newActive.api_key;
+    localStorage.setItem('lm_api_key', newActive.api_key);
+    await connectAPI(newActive.api_key, false);
+  } else {
+    state.apiKey = null;
+    localStorage.removeItem('lm_api_key');
+    const dot   = document.getElementById('api-dot');
+    const label = document.getElementById('api-label');
+    if (dot)   dot.className     = 'status-dot';
+    if (label) label.textContent = 'Not connected';
+    updateSidebarAccountName();
+  }
+
+  renderLMAccountsList();
+  toast('Account removed.', 'info');
+}
+
+/** Pull the active account's user/budget name from DB and update the sidebar. */
+async function updateSidebarAccountName() {
+  const block  = document.getElementById('sidebar-account-block');
+  const nameEl = document.getElementById('sidebar-account-name');
+  const budgEl = document.getElementById('sidebar-account-budget');
+  if (!block) return;
+
+  const res = await window.electronAPI.lmAccounts.getActive();
+  const acc  = res?.data;
+
+  if (acc && (acc.user_name || acc.budget_name || acc.label)) {
+    nameEl.textContent = acc.user_name || acc.label;
+    budgEl.textContent = acc.budget_name && acc.budget_name !== acc.user_name
+      ? acc.budget_name : '';
+    block.style.display = 'block';
+  } else {
+    block.style.display = 'none';
   }
 }
 
@@ -1148,39 +1416,6 @@ function restorePrefs() {
 
 function setupTaxView() {
   document.getElementById('generate-tax-btn').addEventListener('click', generateTax);
-
-  // ── Category mapping panel ──────────────────────────────────────────────
-  const toggleArea = document.getElementById('cat-map-toggle');
-  const toggleBtn  = document.getElementById('cat-map-toggle-btn');
-  const panel      = document.getElementById('cat-map-panel');
-  if (toggleArea && panel) {
-    toggleArea.addEventListener('click', e => {
-      // Don't trigger on clicks inside the panel itself
-      if (e.target.closest('#cat-map-panel')) return;
-      const open = panel.style.display !== 'none';
-      panel.style.display = open ? 'none' : 'block';
-      if (toggleBtn) toggleBtn.textContent = open ? '▶ Show' : '▼ Hide';
-    });
-  }
-
-  const catSearch = document.getElementById('cat-map-search');
-  if (catSearch) {
-    catSearch.addEventListener('input', e => {
-      const q = e.target.value.toLowerCase();
-      document.querySelectorAll('#cat-map-tbody tr').forEach(tr => {
-        tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
-      });
-    });
-  }
-
-  const clearAllBtn = document.getElementById('cat-map-clear-all');
-  if (clearAllBtn) {
-    clearAllBtn.addEventListener('click', () => {
-      localStorage.removeItem(CAT_MAPPING_KEY);
-      renderCategoryMappings();
-      toast('All category mappings cleared.', 'info');
-    });
-  }
 
   // ── S04A button ────────────────────────────────────────────────────────
   const s04aBtn = document.getElementById('generate-s04a-btn');
@@ -1440,7 +1675,7 @@ function renderDashboardBalances(assets) {
     const isNeg = bal < 0;
     const cur  = (a.currency || 'JMD').toUpperCase();
     const asOf = a.balance_as_of || '';
-    return `<div class="dash-balance-card">
+    return `<div class="dash-balance-card" data-asset-id="${a.id}" style="cursor:pointer;" title="Click to view account summary">
       <div class="dash-balance-icon">${icon}</div>
       <div class="dash-balance-body">
         <div class="dash-balance-name" title="${escHtml(a.display_name || a.name)}">${escHtml(a.display_name || a.name)}</div>
@@ -1452,6 +1687,15 @@ function renderDashboardBalances(assets) {
       </div>
     </div>`;
   }).join('');
+
+  // Wire click → account summary view
+  el.querySelectorAll('.dash-balance-card[data-asset-id]').forEach(card => {
+    card.addEventListener('click', () => {
+      const assetId = parseInt(card.dataset.assetId);
+      const asset   = assets.find(a => a.id === assetId);
+      if (asset) showAccountView(asset);
+    });
+  });
 }
 
 function renderDashboardMissing(trackerAccounts, qLabel) {
@@ -1569,6 +1813,201 @@ function toast(message, type = 'info', duration = 4000) {
   el.textContent = message;
   document.getElementById('toast-container').appendChild(el);
   setTimeout(() => el.remove(), duration);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ACCOUNT SUMMARY VIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Wire up the static controls on the account summary view (back btn, year change). */
+function setupAccountView() {
+  document.getElementById('account-back-btn').addEventListener('click', () => {
+    navigateTo('dashboard');
+  });
+  document.getElementById('account-refresh-btn').addEventListener('click', () => {
+    const asset = state._accountViewAsset;
+    if (asset) loadAccountSummary(asset);
+  });
+  document.getElementById('account-year-select').addEventListener('change', () => {
+    const asset = state._accountViewAsset;
+    if (asset) loadAccountSummary(asset);
+  });
+}
+
+/** Navigate to the account view for a given LunchMoney asset object. */
+function showAccountView(asset) {
+  state._accountViewAsset = asset;
+
+  // Populate year selector (current year back to oldest or 5 years)
+  const sel = document.getElementById('account-year-select');
+  const cur = new Date().getFullYear();
+  sel.innerHTML = '';
+  for (let y = cur; y >= cur - 6; y--) {
+    const opt = document.createElement('option');
+    opt.value = y; opt.textContent = y;
+    if (y === cur) opt.selected = true;
+    sel.appendChild(opt);
+  }
+
+  // Update header
+  document.getElementById('account-view-name').textContent =
+    asset.display_name || asset.name || 'Account';
+  document.getElementById('account-view-meta').textContent =
+    [asset.institution_name, asset.type_name, (asset.currency || '').toUpperCase()]
+      .filter(Boolean).join(' · ');
+
+  navigateTo('account');
+  loadAccountSummary(asset);
+}
+
+/** Fetch transactions for the selected year and render the account summary. */
+async function loadAccountSummary(asset) {
+  const year    = parseInt(document.getElementById('account-year-select').value);
+  const statsEl = document.getElementById('account-summary-stats');
+  const monthEl = document.getElementById('account-monthly-wrap');
+  const txEl    = document.getElementById('account-tx-list');
+  const cntEl   = document.getElementById('account-tx-count');
+
+  statsEl.innerHTML = monthEl.innerHTML = txEl.innerHTML = '';
+  monthEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0;"><span class="spinner"></span> Loading ${year} transactions…</div>`;
+
+  if (!state.apiKey) {
+    monthEl.innerHTML = `<div class="empty-state"><p>Connect to LunchMoney in Settings to view account data.</p></div>`;
+    return;
+  }
+
+  const res = await window.electronAPI.getAccountTransactions({
+    apiKey:  state.apiKey,
+    assetId: asset.id,
+    year,
+  });
+
+  if (!res.success) {
+    monthEl.innerHTML = `<div style="color:var(--warn);padding:12px 0;">Error: ${escHtml(res.error)}</div>`;
+    return;
+  }
+
+  const txs = res.data || [];
+  renderAccountSummary(asset, year, txs);
+}
+
+function renderAccountSummary(asset, year, txs) {
+  const fmt     = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
+  const cur     = (asset.currency || 'JMD').toUpperCase();
+  const MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const now     = new Date();
+
+  // Build per-month buckets
+  const months = Array.from({ length: 12 }, (_, i) => ({
+    label: MONTHS[i], idx: i,
+    income: 0, expenses: 0, count: 0,
+    isFuture: new Date(year, i, 1) > now,
+  }));
+
+  txs.forEach(tx => {
+    const m = parseInt((tx.date || '').slice(5, 7), 10) - 1;
+    if (m < 0 || m > 11) return;
+    const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+    months[m].count++;
+    if (amount < 0)  months[m].income   += Math.abs(amount);
+    else             months[m].expenses += amount;
+  });
+
+  // Summary stats
+  const totalIncome   = months.reduce((s, m) => s + m.income, 0);
+  const totalExpenses = months.reduce((s, m) => s + m.expenses, 0);
+  const net           = totalIncome - totalExpenses;
+  const statsEl       = document.getElementById('account-summary-stats');
+  statsEl.innerHTML   = `
+    <div class="stat-card">
+      <div class="stat-label">Total Income (${year})</div>
+      <div class="stat-value" style="font-size:18px;color:var(--accent2);">${fmt(totalIncome)}</div>
+      <div class="stat-sub">${cur}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Expenses (${year})</div>
+      <div class="stat-value" style="font-size:18px;color:var(--warn);">${fmt(totalExpenses)}</div>
+      <div class="stat-sub">${cur}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Net (${year})</div>
+      <div class="stat-value" style="font-size:18px;color:${net >= 0 ? 'var(--accent2)' : 'var(--warn)'};">${fmt(net)}</div>
+      <div class="stat-sub">${txs.length} transactions</div>
+    </div>
+  `;
+
+  // Monthly breakdown table
+  const maxBar = Math.max(...months.map(m => m.income + m.expenses), 1);
+  const monthEl = document.getElementById('account-monthly-wrap');
+  if (!txs.length) {
+    monthEl.innerHTML = `<div class="empty-state" style="padding:24px 0;"><div class="empty-icon">📭</div><p>No transactions found for ${year}.</p></div>`;
+  } else {
+    monthEl.innerHTML = `
+      <table class="acct-monthly-table">
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th class="num">Income</th>
+            <th class="num">Expenses</th>
+            <th class="num">Net</th>
+            <th class="num"># Txns</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${months.map(m => {
+            if (m.isFuture && m.count === 0) return '';
+            const netM = m.income - m.expenses;
+            const barW = Math.round(((m.income + m.expenses) / maxBar) * 100);
+            return `
+              <tr>
+                <td>
+                  <div>${m.label}</div>
+                  <div class="acct-month-bar" style="width:${barW}%;background:${netM >= 0 ? 'var(--accent2)' : 'var(--warn)'};"></div>
+                </td>
+                <td class="num pos">${m.income  > 0 ? fmt(m.income)  : '—'}</td>
+                <td class="num neg">${m.expenses > 0 ? fmt(m.expenses) : '—'}</td>
+                <td class="num ${netM >= 0 ? 'pos' : 'neg'}">${m.income > 0 || m.expenses > 0 ? fmt(netM) : '—'}</td>
+                <td class="num">${m.count || '—'}</td>
+              </tr>`;
+          }).join('')}
+          <tr class="month-total">
+            <td>Total</td>
+            <td class="num pos">${fmt(totalIncome)}</td>
+            <td class="num neg">${fmt(totalExpenses)}</td>
+            <td class="num ${net >= 0 ? 'pos' : 'neg'}">${fmt(net)}</td>
+            <td class="num">${txs.length}</td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+  }
+
+  // Transaction list (newest first)
+  const cntEl = document.getElementById('account-tx-count');
+  const txEl  = document.getElementById('account-tx-list');
+  if (cntEl) cntEl.textContent = `${txs.length} transaction${txs.length !== 1 ? 's' : ''}`;
+
+  if (!txs.length) {
+    txEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No transactions for ${year}.</div>`;
+    return;
+  }
+
+  const sorted = [...txs].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  txEl.innerHTML = sorted.map(tx => {
+    const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+    const isCredit = amount < 0;
+    const dispAmt  = Math.abs(amount);
+    return `<div class="acct-tx-row">
+      <div class="acct-tx-date">${escHtml(tx.date || '')}</div>
+      <div style="flex:1;min-width:0;">
+        <div class="acct-tx-payee">${escHtml(tx.payee || tx.original_name || '—')}</div>
+        ${tx.category_name ? `<div class="acct-tx-cat">${escHtml(tx.category_name)}</div>` : ''}
+      </div>
+      <div class="acct-tx-amount ${isCredit ? 'credit' : 'debit'}">
+        ${isCredit ? '+' : '−'} ${cur} ${fmtAmount(dispAmt)}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
