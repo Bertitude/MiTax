@@ -2200,7 +2200,14 @@ function renderTaxReport(report) {
         </div>
       </div>
       <div class="tax-section"><div class="card-title">Monthly Breakdown</div>${bars}</div>
-      <div style="margin-top:16px;">${report.notes.map(n => `<div class="tax-note">• ${n}</div>`).join('')}</div>
+      <div style="margin-top:16px;">${report.notes.map(n => {
+        const isWarn = typeof n === 'string' && n.trim().startsWith('⚠');
+        const cls    = isWarn ? 'tax-note tax-note-warn' : 'tax-note';
+        const style  = isWarn
+          ? 'background:#fff3cd;border-left:3px solid #f0ad4e;padding:8px 10px;margin:6px 0;color:#8a6d3b;border-radius:4px;font-weight:600;'
+          : '';
+        return `<div class="${cls}"${style ? ` style="${style}"` : ''}>${isWarn ? '' : '• '}${n}</div>`;
+      }).join('')}</div>
 
       <!-- Save as Filed form (collapsed by default) -->
       <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">

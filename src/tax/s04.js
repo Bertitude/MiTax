@@ -2,42 +2,98 @@
  * Jamaica S04 Annual Return — Self Employed Income Tax
  * Based on Tax Administration Jamaica (TAJ) S04 form structure.
  *
- * Income Tax Act (Jamaica) thresholds for 2024/2025:
- *   - Annual Income Tax Threshold: $1,500,096 JMD
- *   - NIS: 3% of gross income (capped at $1,500,000 JMD)
- *   - NHT: 2% of gross income
- *   - Education Tax (Ed Tax): 2.25% of statutory income
- *   - Income Tax: 25% on income above threshold (up to ~$6M), 30% above $6M
+ * Per-year tax parameters are defined in TAX_PARAMS below. Each entry carries
+ * a `source` URL and `verifiedAt` ISO date so reviewers can spot stale
+ * figures. TAJ's Technical Advisory is the authoritative source — verify
+ * against the portal before filing season.
  */
 
 const { getTransactions } = require('../lunchmoney');
 
-// ─── Tax Rates & Thresholds (update yearly) ────────────────────────────────
+// ─── Tax Rates & Thresholds ─────────────────────────────────────────────────
+//
+// Sources cross-referenced: TAJ Technical Advisory 042025/01, KPMG 2025/2026
+// budget summary, JIS threshold announcements, PwC Jamaica tax summaries,
+// MLSS NIS rate sheets. NIS ceiling history: $1.5M through 2020, $3M in 2021,
+// $5M from April 2022 onward (MLSS, PwC).
 
 const TAX_PARAMS = {
-  2024: {
+  2023: {
     personalThreshold: 1500096,
     nisRate: 0.03,
-    nisMaxIncome: 1500000,
-    nhtRate: 0.02,
-    edTaxRate: 0.0225,
-    incomeTaxRate1: 0.25,
-    incomeTaxRate2: 0.30,
-    incomeTaxBand1Max: 6000000,
-    standardDeductionRate: 0.20, // 20% of gross for business expenses (simplified method)
-  },
-  2025: {
-    personalThreshold: 1500096, // Update when TAJ publishes 2025 threshold
-    nisRate: 0.03,
-    nisMaxIncome: 1500000,
+    nisMaxIncome: 5000000,         // $5M since April 2022
     nhtRate: 0.02,
     edTaxRate: 0.0225,
     incomeTaxRate1: 0.25,
     incomeTaxRate2: 0.30,
     incomeTaxBand1Max: 6000000,
     standardDeductionRate: 0.20,
+    source: 'https://taxsummaries.pwc.com/jamaica/individual/taxes-on-personal-income',
+    verifiedAt: '2026-04-14',
+  },
+  2024: {
+    personalThreshold: 1700088,    // $1.7M effective for tax year 2024
+    nisRate: 0.03,
+    nisMaxIncome: 5000000,
+    nhtRate: 0.02,
+    edTaxRate: 0.0225,
+    incomeTaxRate1: 0.25,
+    incomeTaxRate2: 0.30,
+    incomeTaxBand1Max: 6000000,
+    standardDeductionRate: 0.20,
+    source: 'https://kpmg.com/us/en/taxnewsflash/news/2025/03/tnf-jamaica-tax-measures-in-2025-2026-budget.html',
+    verifiedAt: '2026-04-14',
+  },
+  2025: {
+    personalThreshold: 1799376,    // First tranche of the 2025/2026 budget's 3-step rise to $2M
+    nisRate: 0.03,
+    nisMaxIncome: 5000000,
+    nhtRate: 0.02,
+    edTaxRate: 0.0225,
+    incomeTaxRate1: 0.25,
+    incomeTaxRate2: 0.30,
+    incomeTaxBand1Max: 6000000,
+    standardDeductionRate: 0.20,
+    source: 'https://kpmg.com/us/en/taxnewsflash/news/2025/03/tnf-jamaica-tax-measures-in-2025-2026-budget.html',
+    verifiedAt: '2026-04-14',
+  },
+  2026: {
+    // Threshold bumped from $1,799,376 to $1,902,360 effective Apr 1, 2026.
+    // TAJ publishes the weighted full-year-effective value of $1,876,614 for
+    // tax-year 2026 returns — that's what individuals actually use when filing.
+    personalThreshold: 1876614,
+    nisRate: 0.03,
+    nisMaxIncome: 5000000,
+    nhtRate: 0.02,
+    edTaxRate: 0.0225,
+    incomeTaxRate1: 0.25,
+    incomeTaxRate2: 0.30,
+    incomeTaxBand1Max: 6000000,
+    standardDeductionRate: 0.20,
+    source: 'https://jamaica-gleaner.com/article/news/20260413/new-income-tax-threshold-effect-employers-reminded-make-adjustment',
+    verifiedAt: '2026-04-14',
   },
 };
+
+/**
+ * Return the tax parameters for a given year, plus a flag indicating whether
+ * those are an exact match or a fallback to the most recent defined year.
+ *
+ * Returns { params, fallback: { usedYear, requestedYear } | null }.
+ */
+function getTaxParams(year) {
+  if (TAX_PARAMS[year]) return { params: TAX_PARAMS[year], fallback: null };
+
+  // Fall back to the latest defined year <= requested year; if none, use the
+  // newest defined year overall.
+  const definedYears = Object.keys(TAX_PARAMS).map(Number).sort((a, b) => a - b);
+  const earlier = definedYears.filter(y => y <= year);
+  const usedYear = earlier.length ? earlier[earlier.length - 1] : definedYears[definedYears.length - 1];
+  return {
+    params:   TAX_PARAMS[usedYear],
+    fallback: { usedYear, requestedYear: year },
+  };
+}
 
 // ─── Category to income-type mapping ───────────────────────────────────────
 
@@ -58,7 +114,7 @@ const DEDUCTIBLE_CATEGORIES = [
 // ─── Main generator ─────────────────────────────────────────────────────────
 
 async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings = {}, p24Totals = null }) {
-  const params = TAX_PARAMS[year] || TAX_PARAMS[2024];
+  const { params, fallback } = getTaxParams(year);
 
   let allTransactions = [];
 
@@ -211,6 +267,7 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     year,
     generatedAt: new Date().toISOString(),
     taxParams: params,
+    taxParamsFallback: fallback,   // non-null when requested year has no exact match
 
     // Part A: Income
     income: {
@@ -295,15 +352,19 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     // Notes / Disclaimers
     notes: [
       `Tax year: January 1 – December 31, ${year}`,
+      ...(fallback ? [
+        `⚠ WARNING: No tax parameters are defined for ${fallback.requestedYear}. Using ${fallback.usedYear} values as a fallback. File src/tax/s04.js::TAX_PARAMS needs an entry for ${fallback.requestedYear} before this return is filed.`,
+      ] : []),
       ...(p24.entryCount > 0 ? [
         `P24 employment income: $${p24.grossEmoluments.toLocaleString()} JMD from ${p24.entryCount} payroll record(s). PAYE withheld: NIS $${p24.nisDeducted.toLocaleString()}, NHT $${p24.nhtDeducted.toLocaleString()}, Ed Tax $${p24.edTaxDeducted.toLocaleString()}, Income Tax $${p24.payeDeducted.toLocaleString()}.`,
       ] : []),
       `All amounts in your LunchMoney primary currency (JMD). Foreign-currency transactions converted using LunchMoney's historic exchange rates (to_base field) — consistent with how LunchMoney displays amounts in your dashboard.`,
       `${convertedCount} transaction(s) used LunchMoney's converted primary-currency amount; ${unconvertedCount} used original amount (no conversion needed).`,
       `Personal threshold applied: $${params.personalThreshold.toLocaleString()} JMD`,
-      `NIS rate: ${params.nisRate * 100}% (max income: $${params.nisMaxIncome.toLocaleString()})`,
+      `NIS rate: ${params.nisRate * 100}% (max insurable income: $${params.nisMaxIncome.toLocaleString()})`,
       `NHT rate: ${params.nhtRate * 100}%`,
       `Education Tax rate: ${params.edTaxRate * 100}%`,
+      ...(params.source ? [`Tax parameters source: ${params.source} (verified ${params.verifiedAt || 'n/a'})`] : []),
       'DISCLAIMER: This report is for informational purposes only. Consult a qualified tax professional or TAJ for official filing.',
     ],
   };
@@ -392,7 +453,7 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   // If no prior filing exists, estimate from current YTD using s04 params
   let recommendedAnnualTax = priorTaxPayable;
   if (!hasHistory && annualTrend > 0) {
-    const params     = TAX_PARAMS[currentYear - 1] || TAX_PARAMS[2025];
+    const { params } = getTaxParams(currentYear - 1);
     const stdDed     = annualTrend * params.standardDeductionRate;
     const statutory  = Math.max(0, annualTrend - stdDed);
     const nis        = Math.min(annualTrend, params.nisMaxIncome) * params.nisRate;
@@ -461,4 +522,4 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   };
 }
 
-module.exports = { generateS04, generateS04A, TAX_PARAMS };
+module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams };

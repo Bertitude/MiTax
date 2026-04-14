@@ -9,7 +9,15 @@ const LM_BASE = 'https://dev.lunchmoney.app/v1';
 
 // ─── API Helpers ────────────────────────────────────────────────────────────
 
-async function lmRequest(method, endpoint, apiKey, body = null) {
+// Retry budget for transient errors (429, 5xx). Delays: 1s, 2s, 4s.
+const MAX_RETRIES   = 3;
+const RETRY_BASE_MS = 1000;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   const opts = {
     method,
     headers: {
@@ -20,7 +28,16 @@ async function lmRequest(method, endpoint, apiKey, body = null) {
   if (body) opts.body = JSON.stringify(body);
 
   const res = await fetch(`${LM_BASE}${endpoint}`, opts);
-  const data = await res.json();
+
+  // Retry transient failures (rate limit, server errors) before parsing body.
+  if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+    const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
+    console.warn(`[LunchMoney] ${method} ${endpoint} → ${res.status}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+    await sleep(delayMs);
+    return lmRequest(method, endpoint, apiKey, body, attempt + 1);
+  }
+
+  const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
     const msg = data.error || data.message || `HTTP ${res.status}`;
@@ -120,13 +137,30 @@ async function getPayees(apiKey) {
 // ─── Transactions ────────────────────────────────────────────────────────────
 
 async function getTransactions(apiKey, { startDate, endDate, assetId } = {}) {
-  const params = new URLSearchParams();
-  if (startDate) params.append('start_date', startDate);
-  if (endDate)   params.append('end_date',   endDate);
-  if (assetId)   params.append('asset_id',   assetId);
+  // LunchMoney paginates with `limit`/`offset`; we fetch every page and
+  // concatenate. Loop cap is defensive — 500 pages × 500 = 250,000 rows.
+  const PAGE_SIZE = 500;
+  const MAX_PAGES = 500;
 
-  const data = await lmRequest('GET', `/transactions?${params}`, apiKey);
-  return data.transactions || [];
+  const all = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const params = new URLSearchParams();
+    if (startDate) params.append('start_date', startDate);
+    if (endDate)   params.append('end_date',   endDate);
+    if (assetId)   params.append('asset_id',   assetId);
+    params.append('limit',  String(PAGE_SIZE));
+    params.append('offset', String(page * PAGE_SIZE));
+
+    const data = await lmRequest('GET', `/transactions?${params}`, apiKey);
+    const batch = data.transactions || [];
+    all.push(...batch);
+
+    // Prefer explicit has_more flag if server returns one; otherwise fall
+    // back to "batch shorter than page size means we're done".
+    if (data.has_more === false) break;
+    if (batch.length < PAGE_SIZE) break;
+  }
+  return all;
 }
 
 /**
@@ -211,7 +245,9 @@ async function uploadTransactions(transactions, apiKey, options = {}) {
     return obj;
   });
 
-  const BATCH_SIZE = 500;
+  // LunchMoney caps transaction inserts at 500 per request; use 499 to leave
+  // headroom for any server-side counting idiosyncrasies.
+  const BATCH_SIZE = 499;
   const results = [];
 
   for (let i = 0; i < lmTransactions.length; i += BATCH_SIZE) {
