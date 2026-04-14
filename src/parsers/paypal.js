@@ -30,7 +30,7 @@ function parse(text, filePath) {
       currency,
       notes: `Type: ${type} | Gross: ${gross} | Fee: ${feeStr}`,
       category: categorize(type, net),
-      type: net < 0 ? 'debit' : 'credit',
+      type: net < 0 ? 'credit' : 'debit',
     });
   }
 
@@ -61,8 +61,8 @@ function fallbackParse(lines, transactions, currency) {
       amount: amounts[amounts.length - 1],
       currency,
       notes: '',
-      category: amounts[amounts.length - 1] < 0 ? 'Payment Sent' : 'Payment Received',
-      type: amounts[amounts.length - 1] < 0 ? 'debit' : 'credit',
+      category: amounts[amounts.length - 1] < 0 ? 'Payment Received' : 'Payment Sent',
+      type: amounts[amounts.length - 1] < 0 ? 'credit' : 'debit',
     });
   }
 }
@@ -79,13 +79,13 @@ function cleanPayee(str) {
 }
 
 function categorize(type, amount) {
-  if (!type) return amount > 0 ? 'Income' : 'Expense';
+  if (!type) return amount < 0 ? 'Income' : 'Expense';
   const t = type.toLowerCase();
   if (t.includes('refund')) return 'Refund';
   if (t.includes('fee')) return 'Fees';
   if (t.includes('transfer') || t.includes('withdrawal')) return 'Transfer';
   if (t.includes('subscription')) return 'Subscriptions';
-  if (amount > 0) return 'Income';
+  if (amount < 0) return 'Income';
   return 'Payment Sent';
 }
 

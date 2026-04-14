@@ -437,7 +437,7 @@ function finaliseTx(tx, currency) {
     currency,
     notes:    '',
     category: categorize(payee, tx.amount),
-    type:     tx.amount < 0 ? 'debit' : 'credit',
+    type:     tx.amount < 0 ? 'credit' : 'debit',
   };
 }
 

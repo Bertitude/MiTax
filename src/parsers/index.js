@@ -144,7 +144,7 @@ function normalizeCSVRow(row) {
     currency,
     notes,
     category: row['category'] || '',
-    type: amount < 0 ? 'debit' : 'credit',
+    type: amount < 0 ? 'credit' : 'debit',
   };
 }
 
