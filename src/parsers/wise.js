@@ -36,7 +36,7 @@ function parse(text, filePath) {
       currency: cur || currency,
       notes: '',
       category: categorize(payee, amount),
-      type: amount < 0 ? 'debit' : 'credit',
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 
@@ -67,7 +67,7 @@ function fallbackParse(lines, transactions, currency) {
       currency,
       notes: '',
       category: categorize(payee, amounts[0]),
-      type: amounts[0] < 0 ? 'debit' : 'credit',
+      type: amounts[0] < 0 ? 'credit' : 'debit',
     });
   }
 }
@@ -89,7 +89,7 @@ function categorize(payee, amount) {
   if (/fee|charge/i.test(p)) return 'Fees';
   if (/transfer/i.test(p)) return 'Transfer';
   if (/refund/i.test(p)) return 'Refund';
-  if (amount > 0) return 'Income';
+  if (amount < 0) return 'Income';
   return 'Uncategorized';
 }
 
