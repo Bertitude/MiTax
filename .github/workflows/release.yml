@@ -1,10 +1,11 @@
 name: Build & Release
 
-# Only triggers on version tags pushed to main — dev branch changes are ignored
+# Triggers on version tags, or can be run manually from the Actions UI
 on:
   push:
     tags:
       - 'v*'           # e.g. v1.1.2  → creates a public GitHub Release
+  workflow_dispatch:   # allows "Run workflow" button in the Actions UI
 
 permissions:
   contents: write   # required to create GitHub Releases and upload assets
@@ -19,21 +20,21 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
-      # ── 1. Checkout code ──────────────────────────────────────────────────
+      # ── 1. Checkout code ───────────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Set up Node.js ─────────────────────────────────────────────────
+      # ── 2. Set up Node.js ───────────────────────────────────────────────────
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ── 3. Install dependencies ───────────────────────────────────────────
+      # ── 3. Install dependencies ───────────────────────────────────────────────
       - name: Install dependencies
         run: npm install
 
-      # ── 4. Build & publish to GitHub Releases ────────────────────────────
+      # ── 4. Build & publish to GitHub Releases ───────────────────────────────
       - name: Build & Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided by GitHub Actions
