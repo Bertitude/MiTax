@@ -34,6 +34,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMissingMonths: (accountId) => ipcRenderer.invoke('tracker-get-missing-months', accountId),
   getAllAccounts:   ()          => ipcRenderer.invoke('tracker-get-all-accounts'),
 
+  // Fix flipped signs (pre-v1.2.18 recovery)
+  fixFlippedSigns: ({ uploadId, apiKey }) => ipcRenderer.invoke('fix-flipped-signs', { uploadId, apiKey }),
+  onFixFlippedProgress: (callback) => {
+    const sub = (_, data) => callback(data);
+    ipcRenderer.on('fix-flipped-signs:progress', sub);
+    return () => ipcRenderer.removeListener('fix-flipped-signs:progress', sub);
+  },
+
   // LunchMoney multi-account management
   lmAccounts: {
     list:      ()              => ipcRenderer.invoke('lm-accounts:list'),

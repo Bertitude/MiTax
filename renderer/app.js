@@ -1400,6 +1400,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ─── History ──────────────────────────────────────────────────────────────────
 
+// Fix-dates for the debit/credit sign-flip bug. Uploads made *before* these
+// dates used parsers that emitted flipped signs; the "Fix Signs" action
+// corrects them in place in LunchMoney.
+const SIGN_FIX_V1217 = new Date('2026-03-02T00:00:00Z'); // NCB, UNFCU, Scotiabank, JMMB
+const SIGN_FIX_V1218 = new Date('2026-04-15T00:00:00Z'); // PayPal, Wise, Stripe, generic/CSV
+const V1217_PARSERS  = ['ncb', 'unfcu', 'scotiabank', 'jmmb'];
+const V1218_PARSERS  = ['paypal', 'wise', 'stripe', 'csv import', 'unknown'];
+
+/**
+ * True when an upload's transactions in LunchMoney have flipped debit/credit
+ * signs and haven't yet been corrected. Eligible uploads show a "Flipped"
+ * chip in Upload History and expose a "Fix signs" button in the detail modal.
+ */
+function isFlippedEligible(u) {
+  if (!u || u.status !== 'uploaded') return false;
+  if (u.signs_fixed_at)               return false;
+  if (!u.lm_ids || u.lm_ids === 'null' || u.lm_ids === '[]') return false;
+  const uploadedAt = u.uploaded_at ? new Date(u.uploaded_at) : null;
+  if (!uploadedAt || isNaN(uploadedAt)) return false;
+  const inst = (u.institution || '').toLowerCase();
+  if (V1217_PARSERS.some(p => inst.includes(p)) && uploadedAt < SIGN_FIX_V1217) return true;
+  if (V1218_PARSERS.some(p => inst.includes(p)) && uploadedAt < SIGN_FIX_V1218) return true;
+  return false;
+}
+
 async function refreshHistory() {
   const uploads = await window.electronAPI.getUploads();
   const tbody   = document.getElementById('history-tbody');
@@ -1415,6 +1440,9 @@ async function refreshHistory() {
   tbody.innerHTML = uploads.map(u => {
     const badgeCls = u.status === 'uploaded' ? 'badge-green' : u.status === 'failed' ? 'badge-red' : 'badge-yellow';
     const hasNote  = u.notes ? ' title="Click for details"' : '';
+    const flippedChip = isFlippedEligible(u)
+      ? '<span class="badge badge-yellow" style="margin-left:6px;" title="This upload used a parser with the pre-v1.2.18 sign-flip bug. Click the row to fix.">⚠ Flipped</span>'
+      : '';
     return `
       <tr data-upload-id="${u.id}" style="cursor:pointer;" class="history-row"${hasNote}>
         <td style="color:var(--text-muted);font-size:12px;">${fmtUploadTime(u.uploaded_at)}</td>
@@ -1422,7 +1450,7 @@ async function refreshHistory() {
         <td>${escHtml(u.account_name||'')}</td>
         <td style="font-size:12px;">${u.period_start?u.period_start.slice(0,7):'—'} ${u.period_end&&u.period_end!==u.period_start?'→ '+u.period_end.slice(0,7):''}</td>
         <td>${u.tx_count||0}</td>
-        <td><span class="badge ${badgeCls}">${u.status||'unknown'}</span>${u.notes?'<span style="margin-left:6px;font-size:10px;color:var(--text-muted);">ⓘ</span>':''}</td>
+        <td><span class="badge ${badgeCls}">${u.status||'unknown'}</span>${u.notes?'<span style="margin-left:6px;font-size:10px;color:var(--text-muted);">ⓘ</span>':''}${flippedChip}</td>
       </tr>
     `;
   }).join('');
@@ -1435,12 +1463,14 @@ function showUploadDetail(u) {
   let lmIds = null;
   try { lmIds = JSON.parse(u.lm_ids || 'null'); } catch { /* ignore */ }
 
-  const isError = u.status === 'failed' || u.status === 'skipped';
+  const isError  = u.status === 'failed' || u.status === 'skipped';
+  const eligible = isFlippedEligible(u);
+  const alreadyFixed = !!u.signs_fixed_at;
 
   body.innerHTML = `
     <div style="display:grid;grid-template-columns:130px 1fr;gap:8px 16px;font-size:13px;margin-bottom:16px;">
       <span style="color:var(--text-muted);">Status</span>
-      <span><span class="badge ${badgeCls}">${u.status || 'unknown'}</span></span>
+      <span><span class="badge ${badgeCls}">${u.status || 'unknown'}</span>${alreadyFixed ? ' <span class="badge badge-green" style="margin-left:6px;">signs fixed</span>' : ''}</span>
 
       <span style="color:var(--text-muted);">Date</span>
       <span>${fmtUploadTime(u.uploaded_at)}</span>
@@ -1468,6 +1498,18 @@ function showUploadDetail(u) {
       ` : ''}
     </div>
 
+    ${eligible ? `
+      <div id="fix-signs-panel" style="border:1px solid var(--warn);border-radius:6px;padding:12px;margin-bottom:12px;background:rgba(255,193,7,0.05);">
+        <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:6px;">⚠ Flipped debit/credit signs detected</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+          This upload was created with a parser that produced inverted amount signs (debits as negative, credits as positive).
+          Clicking below will flip the sign on <strong>${(lmIds || []).length}</strong> transaction${(lmIds || []).length === 1 ? '' : 's'} in LunchMoney.
+        </div>
+        <button class="btn btn-primary btn-sm" id="fix-signs-btn" data-upload-id="${u.id}">🔧 Fix signs for this upload</button>
+        <div id="fix-signs-progress" style="display:none;margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
+      </div>
+    ` : ''}
+
     ${u.notes ? `
       <div style="font-size:12px;font-weight:600;color:${isError ? 'var(--warn)' : 'var(--text-muted)'};margin-bottom:6px;">
         ${isError ? '⚠ Error Details' : 'Notes'}
@@ -1490,7 +1532,65 @@ ${escHtml(u.notes)}</pre>
     copyBtn._notesText = '';
   }
 
+  // Wire the Fix Signs button (re-created each time the modal opens).
+  const fixBtn = document.getElementById('fix-signs-btn');
+  if (fixBtn) fixBtn.addEventListener('click', () => runFixSigns(u));
+
   document.getElementById('upload-detail-modal').classList.add('open');
+}
+
+/**
+ * Handle "Fix signs" click. Confirms intent, calls the IPC handler,
+ * streams progress into the modal, toasts the outcome, and refreshes
+ * history so the ⚠ chip disappears.
+ */
+async function runFixSigns(u) {
+  if (!state.apiKey) {
+    toast('Connect a LunchMoney API key in Settings first.', 'error');
+    return;
+  }
+  let lmIds = [];
+  try { lmIds = JSON.parse(u.lm_ids || '[]') || []; } catch { lmIds = []; }
+  if (!lmIds.length) {
+    toast('This upload has no LunchMoney transaction IDs recorded.', 'error');
+    return;
+  }
+
+  const msg = `This will flip the sign on ${lmIds.length} transaction${lmIds.length === 1 ? '' : 's'} in LunchMoney for "${u.filename || u.account_name}".\n\nThis cannot be undone by this tool (you would need to run it again to revert).\n\nProceed?`;
+  if (!window.confirm(msg)) return;
+
+  const btn       = document.getElementById('fix-signs-btn');
+  const progEl    = document.getElementById('fix-signs-progress');
+  if (btn)    { btn.disabled = true; btn.textContent = 'Fixing…'; }
+  if (progEl) { progEl.style.display = ''; progEl.textContent = `Starting… 0 / ${lmIds.length}`; }
+
+  // Subscribe to progress events for the duration of this run.
+  const unsub = window.electronAPI.onFixFlippedProgress(({ uploadId, done, total }) => {
+    if (String(uploadId) !== String(u.id)) return;
+    if (progEl) progEl.textContent = `Fixing ${done} / ${total}…`;
+  });
+
+  try {
+    const res = await window.electronAPI.fixFlippedSigns({ uploadId: u.id, apiKey: state.apiKey });
+    if (!res.success) {
+      toast(`Fix failed: ${res.error}`, 'error');
+      if (btn) { btn.disabled = false; btn.textContent = '🔧 Fix signs for this upload'; }
+      return;
+    }
+    const { ok, failed, skipped } = res.data;
+    const parts = [`${ok} fixed`];
+    if (skipped) parts.push(`${skipped} skipped`);
+    if (failed && failed.length) parts.push(`${failed.length} failed`);
+    toast(`Flipped signs: ${parts.join(', ')}.`, failed && failed.length ? 'error' : 'success');
+    // Close modal + refresh history so the chip disappears.
+    document.getElementById('upload-detail-modal').classList.remove('open');
+    await refreshHistory();
+  } catch (err) {
+    toast(`Fix failed: ${err.message}`, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '🔧 Fix signs for this upload'; }
+  } finally {
+    if (typeof unsub === 'function') unsub();
+  }
 }
 
 // Wire history row clicks and upload-detail close (called once after DOM ready)

@@ -15,7 +15,17 @@ function getDB() {
   const dbPath = path.join(app.getPath('userData'), 'lunchmoney-tracker.db');
   db = new Database(dbPath);
   initSchema(db);
+  migrateSchema(db);
   return db;
+}
+
+// Add columns introduced after the initial schema. Safe to re-run — checks
+// the current column list before ALTER TABLE. Keep this additive-only.
+function migrateSchema(db) {
+  const cols = db.prepare(`PRAGMA table_info(uploads)`).all().map(c => c.name);
+  if (!cols.includes('signs_fixed_at')) {
+    db.exec(`ALTER TABLE uploads ADD COLUMN signs_fixed_at TEXT`);
+  }
 }
 
 function initSchema(db) {
@@ -165,6 +175,22 @@ function getUploadsForAccount(accountId) {
   `).all(accountId);
 }
 
+function getUpload(id) {
+  const db = getDB();
+  return db.prepare(`
+    SELECT u.*, a.institution, a.account_name, a.account_type, a.currency, a.lm_asset_id
+    FROM uploads u
+    JOIN accounts a ON u.account_id = a.id
+    WHERE u.id = ?
+  `).get(id);
+}
+
+function markSignsFixed(uploadId, timestamp) {
+  const db = getDB();
+  db.prepare(`UPDATE uploads SET signs_fixed_at = ? WHERE id = ?`)
+    .run(timestamp || new Date().toISOString(), uploadId);
+}
+
 // ─── Missing months ─────────────────────────────────────────────────────────
 
 /**
@@ -266,4 +292,4 @@ function getDbCoverageForAsset(lmAssetId, year) {
   return new Set(rows.map(r => r.month));
 }
 
-module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };
+module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getUpload, markSignsFixed, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };

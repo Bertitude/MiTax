@@ -168,6 +168,42 @@ ipcMain.handle('get-oldest-upload-year', async () => {
   return { success: true, data: year };
 });
 
+// ─── IPC: Fix Flipped Signs (recover from pre-v1.2.18 sign bug) ─────────────
+// Given a tracker upload id, flip the LunchMoney `amount` sign on every
+// tx id stored in that upload's lm_ids. Sends progress events to the
+// renderer so the UI can draw a progress bar. Marks the upload as fixed
+// on success so it can't be run twice (protects against re-flipping).
+ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
+  try {
+    const { getUpload, markSignsFixed } = require('./src/tracker');
+    const { flipTransactionSigns }      = require('./src/lunchmoney');
+
+    const upload = getUpload(uploadId);
+    if (!upload)               return { success: false, error: 'Upload not found' };
+    if (upload.signs_fixed_at) return { success: false, error: 'Signs already fixed for this upload' };
+
+    let lmIds = [];
+    try { lmIds = JSON.parse(upload.lm_ids || '[]') || []; } catch { lmIds = []; }
+    if (!Array.isArray(lmIds) || !lmIds.length) {
+      return { success: false, error: 'No LunchMoney transaction IDs recorded for this upload' };
+    }
+
+    const result = await flipTransactionSigns(apiKey, lmIds, progress => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('fix-flipped-signs:progress', { uploadId, ...progress });
+      }
+    });
+
+    // Mark fixed even if some rows failed — prevents double-flips on retry.
+    // The UI surfaces failures so the user can address them individually.
+    markSignsFixed(uploadId, new Date().toISOString());
+
+    return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
 ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year }) => {
   try {
