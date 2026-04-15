@@ -312,14 +312,68 @@ async function getTransactionsByYear(apiKey, year) {
   });
 }
 
-// ─── Payee Update ─────────────────────────────────────────────────────────────
+// ─── Single-transaction read / update ────────────────────────────────────────
 
 /**
- * Update a single transaction's editable fields (payee, notes, category_id, etc.)
- * PUT /v1/transactions/:id
+ * Fetch a single transaction by ID.
+ * GET /v1/transactions/:id
+ */
+async function getTransaction(apiKey, txId) {
+  return lmRequest('GET', `/transactions/${txId}`, apiKey);
+}
+
+/**
+ * Update a single transaction's editable fields (payee, notes, category_id,
+ * amount, etc.)  PUT /v1/transactions/:id
  */
 async function updateTransaction(apiKey, txId, fields) {
   return lmRequest('PUT', `/transactions/${txId}`, apiKey, { transaction: fields });
+}
+
+/**
+ * Flip the sign of the `amount` on every transaction in `txIds`.
+ *
+ * Used to recover from the pre-v1.2.18 debit/credit sign-flip bug without
+ * re-uploading statements: for each id, GET current amount → PUT `-amount`.
+ * Sequential to respect LM rate limits (lmRequest retries 429/5xx).
+ *
+ * `onProgress({ done, total })` is called after each row so the renderer can
+ * draw a progress bar. Transactions deleted in LM (404) count as `skipped`
+ * rather than failing the batch.
+ *
+ * Returns { ok, failed: [{id, error}], skipped }.
+ */
+async function flipTransactionSigns(apiKey, txIds, onProgress) {
+  const result = { ok: 0, failed: [], skipped: 0 };
+  const total  = txIds.length;
+
+  for (let i = 0; i < total; i++) {
+    const id = txIds[i];
+    try {
+      const tx = await getTransaction(apiKey, id);
+      // LM returns the tx fields at the top level for this endpoint; tolerate
+      // a wrapped { transaction: {...} } shape defensively.
+      const current = tx && (tx.amount != null ? tx : tx.transaction);
+      const amt     = current && parseFloat(current.amount);
+      if (!Number.isFinite(amt) || amt === 0) {
+        result.skipped++;
+      } else {
+        await updateTransaction(apiKey, id, { amount: String(-amt) });
+        result.ok++;
+      }
+    } catch (err) {
+      if (/HTTP 404|not found/i.test(err.message || '')) {
+        result.skipped++;
+      } else {
+        result.failed.push({ id, error: err.message || String(err) });
+      }
+    }
+    if (typeof onProgress === 'function') {
+      try { onProgress({ done: i + 1, total }); } catch { /* ignore */ }
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -353,6 +407,8 @@ module.exports = {
   getAllAssetsCoverage,
   uploadTransactions,
   formatAsCSV,
+  getTransaction,
   updateTransaction,
+  flipTransactionSigns,
   batchUpdatePayees,
 };
