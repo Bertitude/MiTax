@@ -9,9 +9,33 @@ const LM_BASE = 'https://dev.lunchmoney.app/v1';
 
 // ─── API Helpers ────────────────────────────────────────────────────────────
 
-// Retry budget for transient errors (429, 5xx). Delays: 1s, 2s, 4s.
+// Retry budget for transient errors (network blips, 429, 5xx). Delays: 1s, 2s, 4s.
 const MAX_RETRIES   = 3;
 const RETRY_BASE_MS = 1000;
+
+// Node-level network errors that are worth retrying — DNS blips (common on
+// Windows / flaky Wi-Fi), TCP resets, connection timeouts, etc. We avoid
+// blanket-retrying all errors so that 4xx responses (which throw via
+// `res.ok` check below) still fail fast.
+const RETRYABLE_NET_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN',    // DNS resolution failed / temporarily unavailable
+  'ECONNRESET', 'ECONNREFUSED',
+  'ETIMEDOUT', 'ESOCKETTIMEDOUT',
+  'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+]);
+
+function isRetryableNetworkError(err) {
+  if (!err) return false;
+  if (err.code && RETRYABLE_NET_CODES.has(err.code)) return true;
+  // node-fetch wraps underlying network errors in FetchError; the original
+  // code is preserved on `err.code`, but some variants only expose it in the
+  // message. Check the message as a fallback.
+  const msg = String(err.message || '');
+  for (const code of RETRYABLE_NET_CODES) {
+    if (msg.includes(code)) return true;
+  }
+  return false;
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -27,9 +51,22 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   };
   if (body) opts.body = JSON.stringify(body);
 
-  const res = await fetch(`${LM_BASE}${endpoint}`, opts);
+  let res;
+  try {
+    res = await fetch(`${LM_BASE}${endpoint}`, opts);
+  } catch (err) {
+    // Retry transient network-layer failures (DNS, reset, timeout) with the
+    // same backoff we use for 429/5xx. Non-retryable errors propagate.
+    if (isRetryableNetworkError(err) && attempt < MAX_RETRIES) {
+      const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
+      console.warn(`[LunchMoney] ${method} ${endpoint} → ${err.code || err.message}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await sleep(delayMs);
+      return lmRequest(method, endpoint, apiKey, body, attempt + 1);
+    }
+    throw err;
+  }
 
-  // Retry transient failures (rate limit, server errors) before parsing body.
+  // Retry transient HTTP failures (rate limit, server errors) before parsing body.
   if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
     const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
     console.warn(`[LunchMoney] ${method} ${endpoint} → ${res.status}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
