@@ -3061,10 +3061,15 @@ function setupUpdater() {
   const banner  = document.getElementById('update-banner');
   const checkBtn = document.getElementById('check-update-btn');
 
-  // Show current version
+  // Show current version (top banner + sidebar footer + About card)
   updater.getVersion().then(v => {
-    const el = document.getElementById('app-version');
-    if (el) el.textContent = `v${v}`;
+    const versionStr = `v${v}`;
+    const appEl      = document.getElementById('app-version');
+    const sideEl     = document.getElementById('sidebar-version');
+    const aboutEl    = document.getElementById('about-version');
+    if (appEl)   appEl.textContent   = versionStr;
+    if (sideEl)  sideEl.textContent  = `${versionStr} · MiTax`;
+    if (aboutEl) aboutEl.textContent = `MiTax ${versionStr}`;
   }).catch(() => {});
 
   // Manual check button
