@@ -109,22 +109,67 @@ function parseAccountSection(typeLabel, accountNumber, text) {
 // ── Transaction line state machine ────────────────────────────────────────────
 
 function parseActivityLines(lines, transactions) {
-  let pendingDesc = '';   // description prefix from the line BEFORE the date
-  let prevBalance = null; // running balance for sign determination
+  let pendingDesc = '';    // description from a line BEFORE the date (prefix form)
+  let wrapped     = null;  // { date, desc } — a date-line whose amounts landed on a later line
+  let prevBalance = null;  // running balance, for debit/credit sign derivation
+
+  // Emit one transaction using the resolved (date, rest, baseDesc). Returns true
+  // if a transaction was emitted. `rest` must include the "$amount $balance" tail.
+  const emit = (dateStr, rest, baseDesc) => {
+    const amounts = extractAmounts(rest);
+    if (amounts.length < 2) return false;
+
+    const txAmountRaw = amounts[0];
+    const balance     = amounts[amounts.length - 1];
+
+    // LunchMoney convention — positive = expense/debit, negative = income/credit.
+    // Balance going UP means money was deposited (credit → negative amount).
+    // Balance going DOWN means money was withdrawn (debit → positive amount).
+    let sign = 1;
+    if (prevBalance !== null) {
+      sign = balance > prevBalance - 0.001 ? -1 : 1;
+    } else {
+      // First real transaction — derive from keywords or assume debit
+      sign = /withdrawal|debit|fee|fx international/i.test(baseDesc + rest) ? 1 : -1;
+    }
+    prevBalance = balance;
+
+    const inlineDesc = rest.replace(/\s*\$[\d,]+\.\d{2}.*/g, '').trim();
+    const fullDesc   = (inlineDesc || baseDesc).trim() || 'UNFCU Transaction';
+
+    const amount = sign * txAmountRaw;
+    const date   = parseMDY(dateStr);
+    if (!date) return false;
+
+    transactions.push({
+      date,
+      payee:    cleanPayee(fullDesc),
+      amount,
+      currency: 'USD',
+      notes:    '',
+      category: categorize(fullDesc, amount),
+      type:     amount < 0 ? 'credit' : 'debit',
+    });
+    return true;
+  };
 
   for (const line of lines) {
     // Always skip header / footer / metadata lines
-    if (SKIP_RE.test(line)) { pendingDesc = ''; continue; }
+    if (SKIP_RE.test(line)) { pendingDesc = ''; wrapped = null; continue; }
 
     const dateMatch = line.match(DATE_LINE_RE);
 
     if (dateMatch) {
+      // Starting a new date line — any prior wrapped txn that never got its
+      // amounts can't be completed; drop it (defensive, shouldn't happen on
+      // well-formed statements).
+      wrapped = null;
+
       const dateStr  = dateMatch[1];            // MM/DD/YYYY
       const rest     = dateMatch[2].trim();     // everything after the date
 
       // Skip sentinel lines
       if (/^(Beginning\s+Balance|Ending\s+Balance)/i.test(rest)) {
-        // Capture the balance for sign tracking
         const balAmts = extractAmounts(rest);
         if (balAmts.length) prevBalance = balAmts[balAmts.length - 1];
         pendingDesc = '';
@@ -132,48 +177,46 @@ function parseActivityLines(lines, transactions) {
       }
 
       const amounts = extractAmounts(rest);
-      if (amounts.length < 2) { pendingDesc = ''; continue; } // need tx + balance
-
-      const txAmountRaw = amounts[0];
-      const balance     = amounts[amounts.length - 1];
-
-      // Sign: LunchMoney convention — positive = expense/debit, negative = income/credit.
-      // Balance going UP means money was deposited (credit → negative amount).
-      // Balance going DOWN means money was withdrawn (debit → positive amount).
-      let sign = 1;
-      if (prevBalance !== null) {
-        sign = balance > prevBalance - 0.001 ? -1 : 1;
+      if (amounts.length >= 2) {
+        // Inline form: date + description + amounts all on one line.
+        emit(dateStr, rest, pendingDesc);
+        pendingDesc = '';
       } else {
-        // First real transaction — derive from keywords or assume debit
-        sign = /withdrawal|debit|fee|fx international/i.test(pendingDesc + rest) ? 1 : -1;
+        // Wrapped form: the date + start-of-description are on this line,
+        // but the "$amount $balance" pair landed on a later line (long
+        // descriptions like "External Deposit Watooka Films MercuryACH…
+        // From Watooka Films via mercury.com $1,000.00 $1,000.02" often
+        // reflow this way in pdf-parse output). Stash and wait.
+        wrapped = { date: dateStr, desc: rest };
+        pendingDesc = '';
       }
-      prevBalance = balance;
-
-      // Description: prefer inline text (everything before first $), fallback to pending prefix
-      const inlineDesc = rest.replace(/\s*\$[\d,]+\.\d{2}.*/g, '').trim();
-      const fullDesc   = (inlineDesc || pendingDesc).trim() || 'UNFCU Transaction';
-
-      const amount = sign * txAmountRaw;
-      const date   = parseMDY(dateStr);
-      if (!date) { pendingDesc = ''; continue; }
-
-      transactions.push({
-        date,
-        payee:    cleanPayee(fullDesc),
-        amount,
-        currency: 'USD',
-        notes:    '',
-        category: categorize(fullDesc, amount),
-        type:     amount < 0 ? 'credit' : 'debit',
-      });
-
-      pendingDesc = ''; // reset after consuming
 
     } else {
-      // No date — could be a description prefix for the next date line
-      // or a continuation of the last transaction.
-      // Keep only if it looks like a transaction description (not a $ amounts line)
-      if (!extractAmounts(line).length && line.length > 3) {
+      // Non-date line. Three possibilities, in priority order:
+      //   1. Completes a wrapped txn (has the "$amount $balance" pair)
+      //   2. Continues a wrapped description (no amounts, appended to desc)
+      //   3. Is a standalone description prefix for the NEXT date line
+      const lineAmounts = extractAmounts(line);
+
+      if (wrapped && lineAmounts.length >= 2) {
+        // Finish the wrapped transaction. Concatenate so the combined string
+        // carries both the description text and the trailing "$x $y" for
+        // `emit()` to parse.
+        const combinedRest = `${wrapped.desc} ${line}`.trim();
+        emit(wrapped.date, combinedRest, pendingDesc);
+        wrapped = null;
+        pendingDesc = '';
+        continue;
+      }
+
+      if (wrapped && lineAmounts.length === 0 && line.length > 0) {
+        // Description continuation across multiple lines.
+        wrapped.desc = `${wrapped.desc} ${line}`.trim();
+        continue;
+      }
+
+      // Otherwise: description prefix for the next date line (existing path).
+      if (!lineAmounts.length && line.length > 3) {
         pendingDesc = line;
       } else {
         pendingDesc = '';
