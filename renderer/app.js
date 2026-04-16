@@ -1405,6 +1405,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // corrects them in place in LunchMoney.
 const SIGN_FIX_V1217 = new Date('2026-03-02T00:00:00Z'); // NCB, UNFCU, Scotiabank, JMMB
 const SIGN_FIX_V1218 = new Date('2026-04-15T00:00:00Z'); // PayPal, Wise, Stripe, generic/CSV
+const SIGN_FIX_V1222 = new Date('2026-04-16T00:00:00Z'); // ALL parsers — v1.2.22 global convention flip
 const V1217_PARSERS  = ['ncb', 'unfcu', 'scotiabank', 'jmmb'];
 const V1218_PARSERS  = ['paypal', 'wise', 'stripe', 'csv import', 'unknown'];
 
@@ -1420,8 +1421,12 @@ function isFlippedEligible(u) {
   const uploadedAt = u.uploaded_at ? new Date(u.uploaded_at) : null;
   if (!uploadedAt || isNaN(uploadedAt)) return false;
   const inst = (u.institution || '').toLowerCase();
+  // Pre-v1.2.17/18 parser-specific sign-flip bug
   if (V1217_PARSERS.some(p => inst.includes(p)) && uploadedAt < SIGN_FIX_V1217) return true;
   if (V1218_PARSERS.some(p => inst.includes(p)) && uploadedAt < SIGN_FIX_V1218) return true;
+  // v1.2.22 global convention flip — every upload from before this date used
+  // positive-debit (old convention) and needs its LM amounts negated
+  if (uploadedAt < SIGN_FIX_V1222) return true;
   return false;
 }
 
@@ -1441,7 +1446,7 @@ async function refreshHistory() {
     const badgeCls = u.status === 'uploaded' ? 'badge-green' : u.status === 'failed' ? 'badge-red' : 'badge-yellow';
     const hasNote  = u.notes ? ' title="Click for details"' : '';
     const flippedChip = isFlippedEligible(u)
-      ? '<span class="badge badge-yellow" style="margin-left:6px;" title="This upload used a parser with the pre-v1.2.18 sign-flip bug. Click the row to fix.">⚠ Flipped</span>'
+      ? '<span class="badge badge-yellow" style="margin-left:6px;" title="Transactions in LunchMoney used the old positive-debit convention (pre-v1.2.22). Click the row to fix.">⚠ Flipped</span>'
       : '';
     return `
       <tr data-upload-id="${u.id}" style="cursor:pointer;" class="history-row"${hasNote}>
@@ -1502,7 +1507,7 @@ function showUploadDetail(u) {
       <div id="fix-signs-panel" style="border:1px solid var(--warn);border-radius:6px;padding:12px;margin-bottom:12px;background:rgba(255,193,7,0.05);">
         <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:6px;">⚠ Flipped debit/credit signs detected</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
-          This upload was created with a parser that produced inverted amount signs (debits as positive, credits as negative).
+          This upload was made before v1.2.22 (which changed the debit/credit convention). Amounts in LunchMoney are currently inverted.
           Clicking below will flip the sign on <strong>${(lmIds || []).length}</strong> transaction${(lmIds || []).length === 1 ? '' : 's'} in LunchMoney.
         </div>
         <button class="btn btn-primary btn-sm" id="fix-signs-btn" data-upload-id="${u.id}">🔧 Fix signs for this upload</button>

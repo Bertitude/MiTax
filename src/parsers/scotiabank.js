@@ -426,7 +426,7 @@ function parseAmount(amountItems) {
   const m    = text.match(/([\d,]+\.\d{2})\s*([-+])/);
   if (!m) return null;
   const val = parseFloat(m[1].replace(/,/g, ''));
-  return m[2] === '+' ? val : -val;
+  return m[2] === '+' ? -val : val; // '+' = credit (negative internally); '-' = debit (positive internally)
 }
 
 function finaliseTx(tx, currency) {
