@@ -6,7 +6,7 @@
  *   amount > 0 → debit  (money out / expense)
  *   amount < 0 → credit (money in / income)
  */
-const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 // Amount regex with optional trailing DR/CR indicator (common on Caribbean/UK
 // statements). Captures: group 1 = signed number, group 2 = DR|CR (if present).
@@ -68,6 +68,7 @@ function parse(text, filePath) {
   const rawAccNum   = accMatch ? accMatch[1].replace(/[^0-9]/g, '') : '';
   const accountNumber = rawAccNum.length >= 4 ? rawAccNum.slice(-4) : rawAccNum;
 
+  applySignConvention(transactions);
   return {
     institution,
     accountType: 'unknown',

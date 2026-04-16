@@ -2,7 +2,7 @@
  * NCB Jamaica Statement Parser
  * Handles NCB personal/business chequing and savings account PDFs.
  */
-const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -59,6 +59,7 @@ function parse(text, filePath) {
     fallbackParse(lines, transactions, currency);
   }
 
+  applySignConvention(transactions);
   const period = derivePeriodFromTransactions(transactions);
 
   return {

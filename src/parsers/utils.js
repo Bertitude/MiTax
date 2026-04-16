@@ -50,4 +50,27 @@ function derivePeriodFromTransactions(transactions) {
   return { start, end, year, month };
 }
 
-module.exports = { normalizeDate, derivePeriodFromTransactions };
+/**
+ * Negate the sign on every transaction's amount so that the final output
+ * uses the user-facing convention:
+ *
+ *   amount < 0  →  debit  (money out / expense / withdrawal)
+ *   amount > 0  →  credit (money in / income / deposit)
+ *
+ * Parsers internally compute amounts with the inverse convention (positive =
+ * debit) because that's how balance-delta math and column parsing naturally
+ * work. This post-processing step flips the sign once, at the boundary,
+ * so every downstream consumer (LunchMoney upload, tax calcs, UI) sees the
+ * user-facing convention.
+ */
+function applySignConvention(transactions) {
+  for (const tx of transactions) {
+    if (tx.amount != null) {
+      tx.amount = -tx.amount;
+      tx.type = tx.amount > 0 ? 'credit' : 'debit';
+    }
+  }
+  return transactions;
+}
+
+module.exports = { normalizeDate, derivePeriodFromTransactions, applySignConvention };

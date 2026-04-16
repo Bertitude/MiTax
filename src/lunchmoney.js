@@ -261,7 +261,7 @@ async function getAllAssetsCoverage(apiKey, assets, year) {
  * LunchMoney field mapping:
  *   payee   → displayed name (matched/guessed merchant)
  *   notes   → the original bank description
- *   amount  → signed number (positive = expense/debit, negative = income/credit)
+ *   amount  → signed number (negative = expense/debit, positive = income/credit)
  *   date    → YYYY-MM-DD
  *   currency→ lowercase ISO code
  */
@@ -272,7 +272,7 @@ async function uploadTransactions(transactions, apiKey, options = {}) {
     const obj = {
       date:     tx.date,
       payee:    (tx.payee || 'Unknown').substring(0, 140),
-      amount:   String(tx.amount),          // signed; positive = outflow
+      amount:   String(tx.amount),          // signed; negative = outflow
       currency: (tx.currency || 'JMD').toLowerCase(),
       notes:    (tx.notes || '').substring(0, 350),
       status:   'cleared',
@@ -292,7 +292,7 @@ async function uploadTransactions(transactions, apiKey, options = {}) {
     const payload = {
       transactions: batch,
       check_for_recurring: false,
-      debit_as_negative:   false,   // we handle sign ourselves
+      debit_as_negative:   true,    // negative = expense/debit, positive = income/credit
       skip_duplicates:     skipDuplicates,
       apply_rules:         applyRules,
     };
