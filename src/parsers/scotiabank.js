@@ -15,7 +15,7 @@
 
 const pdfParse = require('pdf-parse');
 const fs       = require('fs');
-const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 // Month abbreviation → number
 const MONTH_MAP = {
@@ -178,6 +178,7 @@ async function extractWithCoords(filePath, fullText) {
     ? { start: txDates[0], end: txDates[txDates.length - 1] }
     : { start: '', end: '' };
 
+  applySignConvention(transactions);
   return {
     institution:  'Scotiabank',
     accountType,
@@ -339,6 +340,7 @@ async function extractCCWithCoords(filePath, fullText) {
     ? { start: txDates[0], end: txDates[txDates.length - 1] }
     : { start: '', end: '' };
 
+  applySignConvention(transactions);
   return {
     institution:  'Scotiabank',
     accountType:  'credit_card',
@@ -499,6 +501,7 @@ function regexParse(text) {
     }
   }
 
+  applySignConvention(transactions);
   const period = derivePeriodFromTransactions(transactions);
   return {
     institution:  'Scotiabank',

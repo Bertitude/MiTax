@@ -21,7 +21,7 @@
 
 const pdfParse = require('pdf-parse');
 const fs       = require('fs');
-const { derivePeriodFromTransactions } = require('./utils');
+const { derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 // Column boundaries (PDF user units, x from left edge)
 const JN_DATE_MAX    = 90;   // date tokens  : x < 90
@@ -181,6 +181,7 @@ async function extractWithCoords(filePath, fullText) {
       ? { start: headerPeriodStart, end: headerPeriodEnd || headerPeriodStart }
       : { start: '', end: '' };
 
+  applySignConvention(transactions);
   return {
     institution:  'JN Bank',
     accountType:  'savings',

@@ -22,7 +22,7 @@
 
 'use strict';
 
-const { normalizeDate } = require('./utils');
+const { normalizeDate, applySignConvention } = require('./utils');
 
 // ── Account section headers ───────────────────────────────────────────────────
 const SECTION_RE = /(Membership Share|Savings Account|Checking Account)\s*-\s*(\d{8,})/g;
@@ -262,6 +262,8 @@ function categorize(desc, amount) {
 }
 
 function buildResult(typeLabel, accountNumberLast4, accountType, transactions, endDate) {
+  applySignConvention(transactions);
+
   const txDates = transactions.map(t => t.date).filter(Boolean).sort();
   const period  = txDates.length
     ? { start: txDates[0], end: txDates[txDates.length - 1] }

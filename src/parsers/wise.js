@@ -2,7 +2,7 @@
  * Wise (TransferWise) Statement Parser
  * Wise exports CSV statements; we handle PDF too via text extraction.
  */
-const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -44,6 +44,7 @@ function parse(text, filePath) {
 
   const period = derivePeriodFromTransactions(transactions);
 
+  applySignConvention(transactions);
   return { institution: 'Wise', accountType: 'international', accountName: `Wise (${currency})`, accountNumber, currency, period, transactions };
 }
 

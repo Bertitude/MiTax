@@ -355,10 +355,10 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
         endDate:   ytdEnd,
       });
 
-      // YTD income = sum of credits (negative amounts in LunchMoney) in primary currency
+      // YTD income = sum of credits (positive amounts) in primary currency
       result.ytdIncome = ytdTxs.reduce((sum, tx) => {
         const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
-        return amount < 0 ? sum + Math.abs(amount) : sum;
+        return amount > 0 ? sum + amount : sum;
       }, 0);
 
       // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates
@@ -585,7 +585,7 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone })
       });
       currentYtdIncome = ytdTxs.reduce((sum, tx) => {
         const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
-        return amt < 0 ? sum + Math.abs(amt) : sum;
+        return amt > 0 ? sum + amt : sum;
       }, 0);
     }
 

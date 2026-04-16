@@ -1502,7 +1502,7 @@ function showUploadDetail(u) {
       <div id="fix-signs-panel" style="border:1px solid var(--warn);border-radius:6px;padding:12px;margin-bottom:12px;background:rgba(255,193,7,0.05);">
         <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:6px;">⚠ Flipped debit/credit signs detected</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
-          This upload was created with a parser that produced inverted amount signs (debits as negative, credits as positive).
+          This upload was created with a parser that produced inverted amount signs (debits as positive, credits as negative).
           Clicking below will flip the sign on <strong>${(lmIds || []).length}</strong> transaction${(lmIds || []).length === 1 ? '' : 's'} in LunchMoney.
         </div>
         <button class="btn btn-primary btn-sm" id="fix-signs-btn" data-upload-id="${u.id}">🔧 Fix signs for this upload</button>
@@ -2947,8 +2947,8 @@ function renderAccountSummary(asset, year, txs) {
     if (m < 0 || m > 11) return;
     const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
     months[m].count++;
-    if (amount < 0)  months[m].income   += Math.abs(amount);
-    else             months[m].expenses += amount;
+    if (amount > 0)  months[m].income   += amount;
+    else             months[m].expenses += Math.abs(amount);
   });
 
   // Summary stats

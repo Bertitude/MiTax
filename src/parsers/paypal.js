@@ -1,7 +1,7 @@
 /**
  * PayPal Statement Parser
  */
-const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -39,6 +39,7 @@ function parse(text, filePath) {
   const period = derivePeriodFromTransactions(transactions);
 
   const accountName = accountNumber ? `PayPal (${accountNumber})` : 'PayPal';
+  applySignConvention(transactions);
   return { institution: 'PayPal', accountType: 'international', accountName, accountNumber, currency, period, transactions };
 }
 

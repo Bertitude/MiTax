@@ -162,20 +162,19 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 
     if (userMapping && userMapping.ignore) continue;   // explicitly excluded
 
-    // Classify income (negative amounts in LunchMoney = credits/income)
-    if (amount < 0) {
-      const absAmount = Math.abs(amount);
+    // Classify income (positive amounts = credits/income)
+    if (amount > 0) {
       let incomeType = null;
       if (userMapping && userMapping.incomeType) {
         incomeType = userMapping.incomeType;           // user-mapped income type
       } else {
         incomeType = classifyIncome(category, notes);  // keyword fallback
       }
-      if (incomeType && income[incomeType] !== undefined) income[incomeType] += absAmount;
+      if (incomeType && income[incomeType] !== undefined) income[incomeType] += amount;
     }
 
-    // Classify deductible expenses (positive amounts = debits/expenses)
-    if (amount > 0) {
+    // Classify deductible expenses (negative amounts = debits/expenses)
+    if (amount < 0) {
       let isDeductible = false;
       if (userMapping) {
         isDeductible = !!userMapping.isDeductible;     // user-mapped
@@ -185,8 +184,9 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
         );
       }
       if (isDeductible) {
-        expenses.total += amount;
-        expenses.breakdown[category] = (expenses.breakdown[category] || 0) + amount;
+        const absAmt = Math.abs(amount);
+        expenses.total += absAmt;
+        expenses.breakdown[category] = (expenses.breakdown[category] || 0) + absAmt;
       }
     }
   }
@@ -404,8 +404,8 @@ function buildMonthlyBreakdown(transactions, year) {
 
     // Use to_base for consistency with the main calculation
     const amount = parseFloat(tx.to_base ?? tx.amount) || 0;
-    if (amount < 0) months[txMonth].income += Math.abs(amount);
-    else months[txMonth].expenses += amount;
+    if (amount > 0) months[txMonth].income += amount;
+    else months[txMonth].expenses += Math.abs(amount);
   }
 
   months.forEach(m => { m.net = roundJMD(m.income - m.expenses); m.income = roundJMD(m.income); m.expenses = roundJMD(m.expenses); });

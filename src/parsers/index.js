@@ -7,7 +7,7 @@ const pdfParse = require('pdf-parse');
 const fs = require('fs');
 const path = require('path');
 
-const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 const ncbParser = require('./ncb');
 const scotiabankParser = require('./scotiabank');
@@ -109,6 +109,7 @@ function parseCSV(filePath) {
   const institution = guessInstitutionFromCSV(headers);
   const period = derivePeriodFromTransactions(transactions);
 
+  applySignConvention(transactions);
   return { institution, accountType: 'csv-import', accountName: institution, currency: 'JMD', period, transactions };
 }
 
