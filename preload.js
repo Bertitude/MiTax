@@ -42,6 +42,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('fix-flipped-signs:progress', sub);
   },
 
+  // Per-transaction sign flip (account view)
+  flipSingleTransaction: ({ apiKey, txId }) => ipcRenderer.invoke('flip-single-transaction', { apiKey, txId }),
+
   // LunchMoney multi-account management
   lmAccounts: {
     list:      ()              => ipcRenderer.invoke('lm-accounts:list'),

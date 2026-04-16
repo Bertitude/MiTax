@@ -204,6 +204,25 @@ ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
   }
 });
 
+// ─── IPC: Flip Single Transaction (one-off correction from account view) ────
+// Reuses flipTransactionSigns with a single-element array so we get the same
+// retry/backoff and skip-if-deleted behaviour as the per-upload path.
+ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
+  try {
+    const { flipTransactionSigns } = require('./src/lunchmoney');
+    const result = await flipTransactionSigns(apiKey, [txId]);
+    if (result.failed && result.failed.length) {
+      return { success: false, error: result.failed[0].error || 'Flip failed' };
+    }
+    if (result.skipped && result.skipped.length) {
+      return { success: false, error: 'Transaction not found in LunchMoney' };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
 ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year }) => {
   try {
