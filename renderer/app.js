@@ -3042,17 +3042,40 @@ function renderAccountSummary(asset, year, txs) {
     const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
     const isCredit = amount < 0;
     const dispAmt  = Math.abs(amount);
-    return `<div class="acct-tx-row">
+    return `<div class="acct-tx-row" data-tx-id="${tx.id}">
       <div class="acct-tx-date">${escHtml(tx.date || '')}</div>
       <div style="flex:1;min-width:0;">
         <div class="acct-tx-payee">${escHtml(tx.payee || tx.original_name || '—')}</div>
         ${tx.category_name ? `<div class="acct-tx-cat">${escHtml(tx.category_name)}</div>` : ''}
       </div>
+      <button class="acct-tx-flip-btn" data-tx-id="${tx.id}" title="Flip the sign of this transaction in LunchMoney">⇄</button>
       <div class="acct-tx-amount ${isCredit ? 'credit' : 'debit'}">
         ${isCredit ? '+' : '−'} ${cur} ${fmtAmount(dispAmt)}
       </div>
     </div>`;
   }).join('');
+
+  // Wire per-transaction flip buttons
+  txEl.querySelectorAll('.acct-tx-flip-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const txId = parseInt(btn.dataset.txId, 10);
+      if (!txId) return;
+      if (!state.apiKey) { toast('Not connected to LunchMoney', 'error'); return; }
+      if (!confirm('Flip the sign of this transaction in LunchMoney?')) return;
+      btn.disabled    = true;
+      btn.textContent = '…';
+      const res = await window.electronAPI.flipSingleTransaction({ apiKey: state.apiKey, txId });
+      if (res.success) {
+        toast('Sign flipped', 'success');
+        if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
+      } else {
+        btn.disabled    = false;
+        btn.textContent = '⇄';
+        toast(`Failed: ${res.error}`, 'error');
+      }
+    });
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

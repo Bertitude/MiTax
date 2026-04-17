@@ -678,6 +678,22 @@ tr.dupe-row:hover td { background: rgba(210,153,34,0.14); }
 .acct-tx-amount.credit { color: var(--accent2); }
 .acct-tx-amount.debit  { color: var(--warn); }
 
+.acct-tx-flip-btn {
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.acct-tx-row:hover .acct-tx-flip-btn { opacity: 1; }
+.acct-tx-flip-btn:hover:not(:disabled) { background: var(--bg-elev); color: var(--text); }
+.acct-tx-flip-btn:disabled { opacity: 0.5; cursor: wait; }
+
 /* ─── Sidebar account name ──────────────────────────────────────────────── */
 #sidebar-account-block {
   margin: 0 12px 12px;
