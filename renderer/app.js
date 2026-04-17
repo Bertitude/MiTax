@@ -2875,6 +2875,165 @@ function setupAccountView() {
     const asset = state._accountViewAsset;
     if (asset) loadAccountSummary(asset);
   });
+  document.getElementById('account-reconcile-btn').addEventListener('click', startReconcile);
+
+  // Reconcile modal close
+  document.getElementById('reconcile-close-btn').addEventListener('click', () => {
+    document.getElementById('reconcile-modal').classList.remove('open');
+  });
+  document.getElementById('reconcile-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'reconcile-modal') e.target.classList.remove('open');
+  });
+}
+
+// ─── Reconcile from statement ───────────────────────────────────────────────
+
+async function startReconcile() {
+  const asset = state._accountViewAsset;
+  if (!asset)         { toast('No account selected', 'error'); return; }
+  if (!state.apiKey)  { toast('Not connected to LunchMoney', 'error'); return; }
+
+  const fileResult = await window.electronAPI.openFileDialog();
+  if (!fileResult || !fileResult.length) return;
+  const filePath = Array.isArray(fileResult) ? fileResult[0] : fileResult;
+
+  const year = parseInt(document.getElementById('account-year-select').value);
+  const body = document.getElementById('reconcile-body');
+  const applyBtn = document.getElementById('reconcile-apply-btn');
+  applyBtn.disabled = true;
+
+  body.innerHTML = '<div style="padding:20px;color:var(--text-muted);"><span class="spinner"></span> Parsing statement and comparing with LunchMoney…</div>';
+  document.getElementById('reconcile-modal').classList.add('open');
+
+  const res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+
+  if (!res.success) {
+    body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(res.error)}</div>`;
+    return;
+  }
+
+  const { signMismatches, phantomBalances } = res.data;
+
+  if (!signMismatches.length && !phantomBalances.length) {
+    body.innerHTML = '<div style="padding:20px;color:var(--text-muted);">All transactions match — nothing to fix.</div>';
+    return;
+  }
+
+  const cur = (asset.currency || 'JMD').toUpperCase();
+  let html = '';
+
+  if (signMismatches.length) {
+    html += `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">
+          ⇄ Sign Mismatches <span class="badge badge-yellow">${signMismatches.length}</span>
+          <label style="font-weight:400;font-size:11px;margin-left:12px;cursor:pointer;">
+            <input type="checkbox" id="reconcile-flip-all" checked> Select all
+          </label>
+        </div>
+        <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              <th style="padding:6px;width:30px;"></th>
+              <th style="padding:6px;text-align:left;">Date</th>
+              <th style="padding:6px;text-align:left;">Payee</th>
+              <th style="padding:6px;text-align:right;">LM Amount</th>
+              <th style="padding:6px;text-align:right;">Correct</th>
+            </tr></thead>
+            <tbody>${signMismatches.map(m => `
+              <tr>
+                <td style="padding:4px 6px;"><input type="checkbox" class="reconcile-flip-cb" data-lm-id="${m.lmId}" checked></td>
+                <td style="padding:4px 6px;">${escHtml(m.date)}</td>
+                <td style="padding:4px 6px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(m.payee)}</td>
+                <td style="padding:4px 6px;text-align:right;color:var(--warn);">${cur} ${Number(m.lmAmount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+                <td style="padding:4px 6px;text-align:right;color:var(--accent2);">${cur} ${Number(m.parsedAmount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  if (phantomBalances.length) {
+    html += `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">
+          🗑 Phantom Balance Entries <span class="badge badge-red">${phantomBalances.length}</span>
+          <label style="font-weight:400;font-size:11px;margin-left:12px;cursor:pointer;">
+            <input type="checkbox" id="reconcile-delete-all" checked> Select all
+          </label>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+          These entries match "Beginning Balance" / "Balance Forward" patterns — they are not real transactions.
+        </div>
+        <div style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              <th style="padding:6px;width:30px;"></th>
+              <th style="padding:6px;text-align:left;">Date</th>
+              <th style="padding:6px;text-align:left;">Payee</th>
+              <th style="padding:6px;text-align:right;">Amount</th>
+            </tr></thead>
+            <tbody>${phantomBalances.map(p => `
+              <tr>
+                <td style="padding:4px 6px;"><input type="checkbox" class="reconcile-delete-cb" data-lm-id="${p.lmId}" checked></td>
+                <td style="padding:4px 6px;">${escHtml(p.date)}</td>
+                <td style="padding:4px 6px;">${escHtml(p.payee)}</td>
+                <td style="padding:4px 6px;text-align:right;">${cur} ${Number(p.amount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  body.innerHTML = html;
+  applyBtn.disabled = false;
+
+  // Select-all toggles
+  const flipAll = document.getElementById('reconcile-flip-all');
+  if (flipAll) flipAll.addEventListener('change', () => {
+    body.querySelectorAll('.reconcile-flip-cb').forEach(cb => { cb.checked = flipAll.checked; });
+  });
+  const deleteAll = document.getElementById('reconcile-delete-all');
+  if (deleteAll) deleteAll.addEventListener('change', () => {
+    body.querySelectorAll('.reconcile-delete-cb').forEach(cb => { cb.checked = deleteAll.checked; });
+  });
+
+  // Apply handler (remove old listeners by replacing the button)
+  const newApply = applyBtn.cloneNode(true);
+  applyBtn.parentNode.replaceChild(newApply, applyBtn);
+  newApply.addEventListener('click', async () => {
+    const flipIds   = [...body.querySelectorAll('.reconcile-flip-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
+    const deleteIds = [...body.querySelectorAll('.reconcile-delete-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
+
+    if (!flipIds.length && !deleteIds.length) { toast('Nothing selected', 'error'); return; }
+
+    const msg = [];
+    if (flipIds.length)   msg.push(`flip ${flipIds.length} sign${flipIds.length !== 1 ? 's' : ''}`);
+    if (deleteIds.length) msg.push(`delete ${deleteIds.length} phantom${deleteIds.length !== 1 ? 's' : ''}`);
+    if (!confirm(`This will ${msg.join(' and ')} in LunchMoney. Proceed?`)) return;
+
+    newApply.disabled    = true;
+    newApply.textContent = 'Applying…';
+
+    const result = await window.electronAPI.applyReconciliation({ apiKey: state.apiKey, flipIds, deleteIds });
+
+    if (result.success) {
+      const d = result.data;
+      const parts = [];
+      if (d.flipped)  parts.push(`${d.flipped} flipped`);
+      if (d.deleted)  parts.push(`${d.deleted} deleted`);
+      if (d.errors.length) parts.push(`${d.errors.length} errors`);
+      toast(parts.join(', ') || 'Done', d.errors.length ? 'error' : 'success');
+      document.getElementById('reconcile-modal').classList.remove('open');
+      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
+    } else {
+      toast(`Error: ${result.error}`, 'error');
+      newApply.disabled    = false;
+      newApply.textContent = 'Apply Selected Fixes';
+    }
+  });
 }
 
 /** Navigate to the account view for a given LunchMoney asset object. */

@@ -414,6 +414,14 @@ async function flipTransactionSigns(apiKey, txIds, onProgress) {
 }
 
 /**
+ * Delete a single transaction by ID.
+ * Calls the LM API endpoint: DELETE /v1/transactions/:id
+ */
+async function deleteTransaction(apiKey, txId) {
+  return lmRequest('DELETE', `/transactions/${txId}`, apiKey);
+}
+
+/**
  * Batch-update payees for an array of { id, payee } objects.
  * Processes sequentially to stay within API rate limits.
  * Returns { updated: number, errors: [] }
@@ -447,5 +455,6 @@ module.exports = {
   getTransaction,
   updateTransaction,
   flipTransactionSigns,
+  deleteTransaction,
   batchUpdatePayees,
 };

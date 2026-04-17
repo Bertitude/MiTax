@@ -157,6 +157,7 @@
             <select id="account-year-select" style="font-size:13px;padding:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);">
             </select>
             <button class="btn btn-secondary btn-sm" id="account-refresh-btn">↻</button>
+            <button class="btn btn-secondary btn-sm" id="account-reconcile-btn" title="Re-parse a statement and fix sign mismatches / phantom balances in LunchMoney">⇄ Reconcile</button>
           </div>
         </div>
 
@@ -693,6 +694,18 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" id="upload-detail-copy" style="display:none;">📋 Copy Errors</button>
       <button class="btn btn-secondary" id="upload-detail-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reconcile modal -->
+<div class="modal-backdrop" id="reconcile-modal">
+  <div class="modal" style="width:680px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;">
+    <div class="modal-title">⇄ Reconcile Statement</div>
+    <div id="reconcile-body" style="flex:1;overflow-y:auto;"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="reconcile-apply-btn" disabled>Apply Selected Fixes</button>
+      <button class="btn btn-secondary" id="reconcile-close-btn">Close</button>
     </div>
   </div>
 </div>
