@@ -44,6 +44,9 @@ const CC_AMT_PAT  = /^\$-?[\d,]+\.\d{2}$/;          // $2,575.11 or $-16,000.00
 // Header / footer lines to skip when building multi-line descriptions
 const SKIP_LINE = /^(Transaction|Description|Amount|Balance|CREDIT|DEBIT|Page\s+\d|of\s+\d|1-888|www\.|Transactions\s*\(|Your\s+ELEC|Account\s+Summary|\*Trademark)/i;
 
+// Balance-sentinel descriptions — these are NOT real transactions
+const BALANCE_LINE = /\b(beginning\s+balance|opening\s+balance|ending\s+balance|closing\s+balance|balance\s+forward|balance\s+brought\s+forward|balance\s+carried\s+forward)\b/i;
+
 // ── Main entry point (async) ──────────────────────────────────────────────────
 
 async function parse(text, filePath) {
@@ -147,6 +150,9 @@ async function extractWithCoords(filePath, fullText) {
         const ddmmm  = dateItems[0].str;
         const date   = parseDdmmm(ddmmm, periodStart, periodEnd);
         const desc   = descItems.map(w => w.str).join(' ').trim();
+
+        if (BALANCE_LINE.test(desc)) continue;
+
         const amount = parseAmount(amountItems);
 
         currentTx = { date, desc, amount, continuation: [] };
@@ -472,6 +478,7 @@ function regexParse(text) {
     const [, dateStr, desc, wStr, dStr] = m;
     const date = normalizeDate(dateStr);
     if (!date) continue;
+    if (BALANCE_LINE.test(desc)) continue;
     const withdrawal = wStr ? parseFloat(wStr.replace(/,/g, '')) : 0;
     const deposit    = dStr ? parseFloat(dStr.replace(/,/g, '')) : 0;
     if (!withdrawal && !deposit) continue;
@@ -490,6 +497,7 @@ function regexParse(text) {
       const dm = line.match(datePat);
       const am = line.match(amtPat);
       if (!dm || !am) continue;
+      if (BALANCE_LINE.test(line)) continue;
       const date   = parseDdmmm(dm[1], periodStart, periodEnd);
       const val    = parseFloat(am[1].replace(/,/g, ''));
       // '+' = credit/deposit (income → negative), '-' = debit/withdrawal (expense → positive)
