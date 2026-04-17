@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Per-transaction sign flip (account view)
   flipSingleTransaction: ({ apiKey, txId }) => ipcRenderer.invoke('flip-single-transaction', { apiKey, txId }),
 
+  // Reconcile — parse statement and compare against LM transactions
+  reconcileStatement: (payload) => ipcRenderer.invoke('reconcile-statement', payload),
+  applyReconciliation: (payload) => ipcRenderer.invoke('apply-reconciliation', payload),
+
   // LunchMoney multi-account management
   lmAccounts: {
     list:      ()              => ipcRenderer.invoke('lm-accounts:list'),

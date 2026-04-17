@@ -223,6 +223,105 @@ ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
   }
 });
 
+// ─── IPC: Reconcile — compare parsed statement against LM transactions ──────
+// Returns { signMismatches: [{lmId, date, payee, lmAmount, parsedAmount}],
+//           phantomBalances: [{lmId, date, payee, amount}] }
+ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath, year }) => {
+  try {
+    const { parseStatement } = require('./src/parsers/index');
+    const { getTransactions } = require('./src/lunchmoney');
+
+    const parsed = await parseStatement(filePath);
+    const results = Array.isArray(parsed) ? parsed : [parsed];
+    const parsedTxs = results.flatMap(r => r.transactions || []);
+
+    const lmTxs = await getTransactions(apiKey, {
+      startDate: `${year}-01-01`,
+      endDate:   `${year}-12-31`,
+      assetId,
+    });
+
+    const BALANCE_RE = /\b(beginning\s+balance|opening\s+balance|ending\s+balance|closing\s+balance|balance\s+forward|balance\s+brought\s+forward|balance\s+carried\s+forward)\b/i;
+
+    // Build lookup from parsed txs: key = date|absAmount
+    const parsedByKey = new Map();
+    for (const tx of parsedTxs) {
+      const key = `${tx.date}|${Math.abs(tx.amount).toFixed(2)}`;
+      if (!parsedByKey.has(key)) parsedByKey.set(key, []);
+      parsedByKey.get(key).push(tx);
+    }
+
+    const signMismatches  = [];
+    const phantomBalances = [];
+
+    for (const lmTx of lmTxs) {
+      const lmAmt = parseFloat(lmTx.amount);
+      const payee = lmTx.payee || lmTx.original_name || '';
+
+      // Check phantom balance entries
+      if (BALANCE_RE.test(payee)) {
+        phantomBalances.push({
+          lmId:   lmTx.id,
+          date:   lmTx.date,
+          payee,
+          amount: lmAmt,
+        });
+        continue;
+      }
+
+      // Check sign mismatch
+      const key = `${lmTx.date}|${Math.abs(lmAmt).toFixed(2)}`;
+      const matches = parsedByKey.get(key);
+      if (matches && matches.length > 0) {
+        const parsedTx = matches[0];
+        if ((lmAmt > 0 && parsedTx.amount < 0) || (lmAmt < 0 && parsedTx.amount > 0)) {
+          signMismatches.push({
+            lmId:         lmTx.id,
+            date:         lmTx.date,
+            payee,
+            lmAmount:     lmAmt,
+            parsedAmount: parsedTx.amount,
+          });
+        }
+        matches.shift();
+        if (!matches.length) parsedByKey.delete(key);
+      }
+    }
+
+    return { success: true, data: { signMismatches, phantomBalances } };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: Apply Reconciliation — flip signs + delete phantoms ───────────────
+ipcMain.handle('apply-reconciliation', async (event, { apiKey, flipIds, deleteIds }) => {
+  try {
+    const { flipTransactionSigns, deleteTransaction } = require('./src/lunchmoney');
+
+    const result = { flipped: 0, deleted: 0, errors: [] };
+
+    if (flipIds && flipIds.length) {
+      const flipResult = await flipTransactionSigns(apiKey, flipIds, () => {});
+      result.flipped = flipResult.ok || 0;
+      if (flipResult.failed) result.errors.push(...flipResult.failed.map(f => f.error));
+    }
+
+    for (const id of (deleteIds || [])) {
+      try {
+        await deleteTransaction(apiKey, id);
+        result.deleted++;
+      } catch (err) {
+        result.errors.push(`Delete ${id}: ${err.message}`);
+      }
+    }
+
+    return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
 ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year }) => {
   try {
