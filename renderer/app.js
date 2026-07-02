@@ -527,43 +527,54 @@ async function parseAll() {
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Parsing…';
 
-  for (const item of pending) {
-    item.status = 'parsing';
-    renderQueue();
-    const result = await window.electronAPI.parsePDF(item.path);
-    if (result.success) {
-      // Some parsers (e.g. UNFCU) return an array when a single PDF contains
-      // multiple accounts. Expand them into separate queue items so each account
-      // can be mapped and imported independently.
-      if (Array.isArray(result.data)) {
-        const idx = state.queue.indexOf(item);
-        const expanded = result.data.map((parsed, i) => ({
-          id:        Date.now() + Math.random() + i,
-          name:      `${item.name} — ${parsed.accountName}`,
-          path:      item.path,
-          status:    'ready',
-          parsed,
-          assetId:   null,
-          assetName: null,
-        }));
-        state.queue.splice(idx, 1, ...expanded);
+  try {
+    for (const item of pending) {
+      item.status = 'parsing';
+      renderQueue();
+      const result = await window.electronAPI.parsePDF(item.path);
+      if (result.success) {
+        // Some parsers (e.g. UNFCU) return an array when a single PDF contains
+        // multiple accounts. Expand them into separate queue items so each account
+        // can be mapped and imported independently.
+        if (Array.isArray(result.data)) {
+          const idx = state.queue.indexOf(item);
+          const expanded = result.data.map((parsed, i) => ({
+            id:        Date.now() + Math.random() + i,
+            name:      `${item.name} — ${parsed.accountName}`,
+            path:      item.path,
+            status:    'ready',
+            parsed,
+            assetId:   null,
+            assetName: null,
+          }));
+          state.queue.splice(idx, 1, ...expanded);
+        } else {
+          item.parsed = result.data;
+          item.status = 'ready';
+        }
+        surfaceParseWarnings(item.name, result.data);
       } else {
-        item.parsed = result.data;
-        item.status = 'ready';
+        item.status = 'error';
+        toast(`Failed to parse ${item.name}: ${result.error}`, 'error');
       }
-    } else {
-      item.status = 'error';
-      toast(`Failed to parse ${item.name}: ${result.error}`, 'error');
+      renderQueue();
     }
-    renderQueue();
+
+    const readyCount = state.queue.filter(q => q.status === 'ready').length;
+    if (readyCount > 0) toast(`${readyCount} statement(s) parsed — click "Review & Validate"`, 'success');
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '⚡ Parse All';
+    updateImportButtons();
   }
+}
 
-  btn.disabled  = false;
-  btn.innerHTML = '⚡ Parse All';
-  updateImportButtons();
-
-  const readyCount = state.queue.filter(q => q.status === 'ready').length;
-  if (readyCount > 0) toast(`${readyCount} statement(s) parsed — click "Review & Validate"`, 'success');
+// Surface parser warnings (unparseable dates dropped, empty statement, missing
+// period header, etc.) as a toast without blocking the import.
+function surfaceParseWarnings(name, data) {
+  const results = Array.isArray(data) ? data : [data];
+  const warnings = results.flatMap(r => (r && r.warnings) || []);
+  if (warnings.length) toast(`${name}: ${warnings.join(' ')}`, 'error');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2925,7 +2936,13 @@ async function startReconcile() {
   body.innerHTML = '<div style="padding:20px;color:var(--text-muted);"><span class="spinner"></span> Parsing statement and comparing with LunchMoney…</div>';
   document.getElementById('reconcile-modal').classList.add('open');
 
-  const res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+  let res;
+  try {
+    res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+  } catch (err) {
+    body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(err.message || String(err))}</div>`;
+    return;
+  }
 
   if (!res.success) {
     body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(res.error)}</div>`;

@@ -20,6 +20,27 @@ function hardenWindow(win) {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 }
 
+// Append an error to userData/error.log (best-effort; never throws).
+function logError(context, err) {
+  const msg = err && err.stack ? err.stack : String(err);
+  console.error(`[${context}]`, msg);
+  try {
+    const line = `[${new Date().toISOString()}] [${context}] ${msg}\n`;
+    fs.appendFileSync(path.join(app.getPath('userData'), 'error.log'), line);
+  } catch (_) { /* logging must not throw */ }
+}
+
+// Last-resort handlers so a stray throw/rejection doesn't take down the main
+// process silently. Do NOT quit — better-sqlite3 writes are synchronous, so
+// there are no torn writes to recover from.
+process.on('uncaughtException', (err) => {
+  logError('uncaughtException', err);
+  try { dialog.showErrorBox('Unexpected error', err && err.message ? err.message : String(err)); } catch (_) {}
+});
+process.on('unhandledRejection', (reason) => {
+  logError('unhandledRejection', reason);
+});
+
 // ─── Auto-updater (only in packaged builds) ──────────────────────────────────
 // initUpdater is called after the window is created so it has a reference to it.
 let initUpdater = null;
@@ -188,30 +209,43 @@ ipcMain.handle('get-asset-coverage', async (event, { apiKey, assetId, year }) =>
 });
 
 // ─── IPC: Local Tracker ─────────────────────────────────────────────────────
+// These handlers return bare data (not a {success} envelope) that the renderer
+// consumes directly. A better-sqlite3 throw (locked/corrupt DB) would otherwise
+// become an unhandled IPC rejection; catch, log, and degrade to a safe default.
 ipcMain.handle('tracker-get-uploads',        async () => {
-  const { getAllUploads } = require('./src/tracker');
-  return getAllUploads();
+  try {
+    const { getAllUploads } = require('./src/tracker');
+    return getAllUploads();
+  } catch (err) { logError('tracker-get-uploads', err); return []; }
 });
 
 ipcMain.handle('tracker-save-upload',        async (event, record) => {
-  const { saveUpload } = require('./src/tracker');
-  return saveUpload(record);
+  try {
+    const { saveUpload } = require('./src/tracker');
+    return saveUpload(record);
+  } catch (err) { logError('tracker-save-upload', err); return { error: err.message }; }
 });
 
 ipcMain.handle('tracker-get-missing-months', async (event, accountId) => {
-  const { getMissingMonths } = require('./src/tracker');
-  return getMissingMonths(accountId);
+  try {
+    const { getMissingMonths } = require('./src/tracker');
+    return getMissingMonths(accountId);
+  } catch (err) { logError('tracker-get-missing-months', err); return []; }
 });
 
 ipcMain.handle('tracker-get-all-accounts',  async () => {
-  const { getAllAccounts } = require('./src/tracker');
-  return getAllAccounts();
+  try {
+    const { getAllAccounts } = require('./src/tracker');
+    return getAllAccounts();
+  } catch (err) { logError('tracker-get-all-accounts', err); return []; }
 });
 
 ipcMain.handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => {
-  const { getDbCoverageForAsset } = require('./src/tracker');
-  // Convert Set → Array so it serialises cleanly over IPC
-  return Array.from(getDbCoverageForAsset(lmAssetId, year));
+  try {
+    const { getDbCoverageForAsset } = require('./src/tracker');
+    // Convert Set → Array so it serialises cleanly over IPC
+    return Array.from(getDbCoverageForAsset(lmAssetId, year));
+  } catch (err) { logError('tracker-get-db-coverage', err); return []; }
 });
 
 ipcMain.handle('get-oldest-upload-year', async () => {
@@ -395,14 +429,18 @@ ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year
 // ─── IPC: LunchMoney Multi-Account Management ────────────────────────────────
 
 ipcMain.handle('lm-accounts:list', async () => {
-  const { getAllAccounts } = require('./src/lm-accounts');
-  return { success: true, data: getAllAccounts() };
+  try {
+    const { getAllAccounts } = require('./src/lm-accounts');
+    return { success: true, data: getAllAccounts() };
+  } catch (err) { logError('lm-accounts:list', err); return { success: false, error: err.message }; }
 });
 
 ipcMain.handle('lm-accounts:get-active', async () => {
-  const { getActiveAccount } = require('./src/lm-accounts');
-  const acc = getActiveAccount();
-  return { success: true, data: acc };
+  try {
+    const { getActiveAccount } = require('./src/lm-accounts');
+    const acc = getActiveAccount();
+    return { success: true, data: acc };
+  } catch (err) { logError('lm-accounts:get-active', err); return { success: false, error: err.message }; }
 });
 
 /**
