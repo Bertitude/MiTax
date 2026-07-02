@@ -188,6 +188,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     await connectAPI(startKey, false);
   }
 
+  // Warn once if the OS has no keychain backend so the API key is stored
+  // unencrypted at rest.
+  if (activeRes?.data?.keyStorageInsecure && !localStorage.getItem('mitax_insecure_key_warned')) {
+    toast('Your OS has no secure keychain available — the LunchMoney API key is stored unencrypted on disk.', 'error');
+    localStorage.setItem('mitax_insecure_key_warned', '1');
+  }
+
   // Render account list in Settings (even if not connected)
   renderLMAccountsList();
 
