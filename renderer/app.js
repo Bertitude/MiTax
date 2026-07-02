@@ -3199,7 +3199,9 @@ function renderAccountSummary(asset, year, txs) {
   const sorted = [...txs].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   txEl.innerHTML = sorted.map(tx => {
     const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
-    const isCredit = amount < 0;
+    // LunchMoney convention: positive = income/credit, negative = expense/debit
+    // (matches the monthly totals above and the S04 tax engine).
+    const isCredit = amount > 0;
     const dispAmt  = Math.abs(amount);
     return `<div class="acct-tx-row" data-tx-id="${tx.id}">
       <div class="acct-tx-date">${escHtml(tx.date || '')}</div>
