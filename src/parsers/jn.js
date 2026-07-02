@@ -72,7 +72,7 @@ async function parse(text, filePath) {
 
 // ── Coordinate-aware extraction ───────────────────────────────────────────────
 
-async function extractWithCoords(filePath, fullText) {
+async function readPageItems(filePath) {
   const buffer       = fs.readFileSync(filePath);
   const allPageItems = [];
 
@@ -91,6 +91,19 @@ async function extractWithCoords(filePath, fullText) {
     },
   });
 
+  return allPageItems;
+}
+
+async function extractWithCoords(filePath, fullText) {
+  const allPageItems = await readPageItems(filePath);
+  return parseFromPageItems(allPageItems, fullText);
+}
+
+/**
+ * Pure JN Bank savings-statement parser. No I/O — unit-testable with synthetic
+ * coordinate fixtures.
+ */
+function parseFromPageItems(allPageItems, fullText) {
   // ── Metadata ─────────────────────────────────────────────────────────────
   // Account number: RSV-002094352472 → use last 4 digits for display
   const accM = fullText.match(/RSV-(\d{9,16})/i);
@@ -228,4 +241,4 @@ function categorize(payee, amount) {
   return 'Uncategorized';
 }
 
-module.exports = { parse };
+module.exports = { parse, parseFromPageItems };

@@ -1,0 +1,5 @@
+First Global Bank
+Account No: 12345678
+Date Description Debit Credit Balance
+01/03/2024 GROCERY STORE  5,000.00  105,000.00
+02/03/2024 CLIENT DEPOSIT  20,000.00 CR  125,000.00

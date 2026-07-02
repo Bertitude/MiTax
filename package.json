@@ -10,6 +10,7 @@
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
     "release": "electron-builder --publish always",
+    "test": "node --test test/*.test.js",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
