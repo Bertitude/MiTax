@@ -88,9 +88,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // File system
-  openFileDialog: ()         => ipcRenderer.invoke('open-file-dialog'),
-  readFile:       (filePath) => ipcRenderer.invoke('read-file', filePath),
-  getAppDataPath: ()         => ipcRenderer.invoke('get-app-data-path'),
+  openFileDialog:        ()         => ipcRenderer.invoke('open-file-dialog'),
+  // Authorize a drag-and-dropped file for parsing (dialog paths are auto-authorized).
+  registerStatementFile: (filePath) => ipcRenderer.invoke('register-statement-file', filePath),
+
+  // Open an allow-listed external URL in the system browser
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   // ─── Auto-updater ────────────────────────────────────────────────────────
   updater: {

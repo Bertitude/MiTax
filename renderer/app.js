@@ -417,14 +417,25 @@ function setupDropZone() {
 
   zone.addEventListener('dragover',  e  => { e.preventDefault(); zone.classList.add('drag-over'); });
   zone.addEventListener('dragleave', ()  => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop',      e  => {
+  zone.addEventListener('drop',      async e  => {
     e.preventDefault();
     zone.classList.remove('drag-over');
-    addFilesToQueue([...e.dataTransfer.files].map(f => ({ name: f.name, path: f.path })));
+    const dropped = [...e.dataTransfer.files].map(f => ({ name: f.name, path: f.path }));
+    // Dropped files bypass the file dialog, so authorize each for parsing.
+    for (const f of dropped) {
+      if (f.path) await window.electronAPI.registerStatementFile(f.path);
+    }
+    addFilesToQueue(dropped);
   });
   browseBtn.addEventListener('click', async () => {
     const paths = await window.electronAPI.openFileDialog();
     if (paths.length) addFilesToQueue(paths.map(p => ({ name: p.split(/[\/\\]/).pop(), path: p })));
+  });
+
+  // Delegated remove-from-queue (CSP-safe; replaces inline onclick)
+  document.getElementById('file-queue').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove-id]');
+    if (btn) removeFromQueue(btn.dataset.removeId);
   });
 }
 
@@ -474,7 +485,7 @@ function renderQueue() {
       </div>
       ${item.assetName ? `<span class="badge badge-blue">→ ${escHtml(item.assetName)}</span>` : ''}
       <span class="file-status ${item.status}">${statusLabel}</span>
-      <span class="file-remove" title="Remove" onclick="removeFromQueue('${item.id}')">✕</span>
+      <span class="file-remove" title="Remove" data-remove-id="${item.id}">✕</span>
       <div class="progress-bar" style="width:${pct}%"></div>
     `;
     container.appendChild(el);
@@ -1666,7 +1677,7 @@ function setupSettings() {
   if (tajBtn) {
     tajBtn.addEventListener('click', e => {
       e.preventDefault();
-      require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
+      window.electronAPI.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
     });
   }
 
@@ -2036,6 +2047,15 @@ function setupP24() {
   // Add button
   document.getElementById('p24-add-btn').addEventListener('click', () => openP24Modal());
 
+  // Delegated Edit/Delete on the entries table (CSP-safe; replaces inline onclick)
+  document.getElementById('p24-tbody').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-p24-action]');
+    if (!btn) return;
+    const id = parseInt(btn.dataset.p24Id, 10);
+    if (btn.dataset.p24Action === 'edit')   openP24Modal(id);
+    if (btn.dataset.p24Action === 'delete') deleteP24Entry(id);
+  });
+
   // Modal cancel / backdrop
   document.getElementById('p24-modal-cancel').addEventListener('click', closeP24Modal);
   document.getElementById('p24-modal').addEventListener('click', e => {
@@ -2081,8 +2101,8 @@ async function loadP24Entries(year) {
       <td style="text-align:right;">${fmt(e.ed_tax_deducted)}</td>
       <td style="text-align:right;">${fmt(e.paye_deducted)}</td>
       <td style="text-align:right;white-space:nowrap;">
-        <button class="btn btn-secondary btn-sm" onclick="openP24Modal(${e.id})" style="padding:2px 8px;font-size:11px;">Edit</button>
-        <button class="btn btn-sm" style="padding:2px 8px;font-size:11px;background:var(--warn);color:#fff;border:none;" onclick="deleteP24Entry(${e.id})">✕</button>
+        <button class="btn btn-secondary btn-sm" data-p24-action="edit" data-p24-id="${e.id}" style="padding:2px 8px;font-size:11px;">Edit</button>
+        <button class="btn btn-sm" style="padding:2px 8px;font-size:11px;background:var(--warn);color:#fff;border:none;" data-p24-action="delete" data-p24-id="${e.id}">✕</button>
       </td>
     </tr>
   `).join('');
@@ -3701,7 +3721,7 @@ function buildFieldMappingCard(report) {
   if (tajLink) {
     tajLink.addEventListener('click', e => {
       e.preventDefault();
-      require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
+      window.electronAPI.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
     });
   }
 

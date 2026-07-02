@@ -1,8 +1,24 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 
 let mainWindow;
+
+// External URLs the renderer is permitted to open in the system browser.
+// openExternal is otherwise a navigation/redirect vector, so keep this tight.
+const ALLOWED_EXTERNAL_PREFIXES = ['https://mytaxes.ads.taj.gov.jm/'];
+
+// Files the renderer is allowed to read/parse. Populated only by paths the user
+// explicitly chose via the open dialog or drag-and-drop (see registerStatementFile).
+// Prevents a compromised renderer from reading arbitrary paths through parse-pdf.
+const allowedFiles = new Set();
+
+// Harden a window against navigation and popups: the app is a single local page,
+// so any navigation away or window.open is unwanted.
+function hardenWindow(win) {
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+}
 
 // ─── Auto-updater (only in packaged builds) ──────────────────────────────────
 // initUpdater is called after the window is created so it has a reference to it.
@@ -24,12 +40,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#0d1117',
     show: false,
   });
 
+  hardenWindow(mainWindow);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
 }
@@ -52,9 +70,43 @@ app.on('window-all-closed', () => {
 // ─── IPC: Parse PDF / CSV ───────────────────────────────────────────────────
 ipcMain.handle('parse-pdf', async (event, filePath) => {
   try {
+    if (!allowedFiles.has(filePath)) {
+      return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
+    }
     const { parseStatement } = require('./src/parsers/index');
     const result = await parseStatement(filePath);
     return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: Open an allow-listed external URL in the system browser ────────────
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    const u = new URL(String(url));
+    const ok = u.protocol === 'https:' &&
+               ALLOWED_EXTERNAL_PREFIXES.some(p => u.href.startsWith(p));
+    if (!ok) return { success: false, error: 'URL not permitted' };
+    await shell.openExternal(u.href);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: Register a drag-and-dropped statement file as read-authorized ──────
+ipcMain.handle('register-statement-file', (event, filePath) => {
+  try {
+    const ext = path.extname(String(filePath)).toLowerCase();
+    if (!['.pdf', '.csv', '.xlsx'].includes(ext)) {
+      return { success: false, error: 'Unsupported file type' };
+    }
+    if (!fs.statSync(filePath).isFile()) {
+      return { success: false, error: 'Not a file' };
+    }
+    allowedFiles.add(filePath);
+    return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -228,6 +280,9 @@ ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
 //           phantomBalances: [{lmId, date, payee, amount}] }
 ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath, year }) => {
   try {
+    if (!allowedFiles.has(filePath)) {
+      return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
+    }
     const { parseStatement } = require('./src/parsers/index');
     const { getTransactions } = require('./src/lunchmoney');
 
@@ -750,33 +805,35 @@ ipcMain.handle('p24:delete', async (event, id) => {
 // hidden BrowserWindow, exports to PDF via Chromium's engine, and offers a
 // save dialog.
 ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
+  const { BrowserWindow: BW } = require('electron');
+  let printWin = null;
+  let tmpDir = null;
   try {
-    const { BrowserWindow: BW } = require('electron');
-
-    // Write the HTML to a temp file so the hidden window can load it as file://
-    const tmpPath = path.join(app.getPath('temp'), 'mitax-s04-print.html');
+    // Unique temp dir avoids the predictable-path clobber/symlink race and
+    // lets us clean up deterministically.
+    tmpDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'mitax-'));
+    const tmpPath = path.join(tmpDir, 's04-print.html');
     fs.writeFileSync(tmpPath, htmlContent, 'utf8');
 
-    const printWin = new BW({
+    printWin = new BW({
       show: false,
       width: 900,
       height: 1200,
-      webPreferences: { javascript: true, nodeIntegration: false, contextIsolation: true },
+      // Static report HTML — no script execution needed, so disable JS.
+      webPreferences: { javascript: false, nodeIntegration: false, contextIsolation: true, sandbox: true },
     });
+    hardenWindow(printWin);
 
-    await printWin.loadURL(`file://${tmpPath.replace(/\\/g, '/')}`);
-    // Give Chromium a moment to finish layout/fonts
-    await new Promise(r => setTimeout(r, 900));
+    // loadFile resolves on did-finish-load; with JS disabled there are no async
+    // scripts to wait on, so the fixed sleep is unnecessary.
+    await printWin.loadFile(tmpPath);
 
     const pdfBuffer = await printWin.webContents.printToPDF({
-      marginsType:     2,       // minimal margins
+      margins:         { marginType: 'none' },
       pageSize:        'Letter',
       printBackground: true,
       landscape:       false,
     });
-
-    printWin.destroy();
-    fs.unlinkSync(tmpPath);
 
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       defaultPath: filename || 's04-tax-return.pdf',
@@ -788,6 +845,9 @@ ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
     return { success: true, filePath };
   } catch (err) {
     return { success: false, error: err.message };
+  } finally {
+    if (printWin && !printWin.isDestroyed()) printWin.destroy();
+    if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
   }
 });
 
@@ -797,12 +857,7 @@ ipcMain.handle('open-file-dialog', async () => {
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Statements', extensions: ['pdf', 'csv', 'xlsx'] }],
   });
+  // Authorize the user-chosen paths for subsequent parse-pdf/reconcile calls.
+  (filePaths || []).forEach(p => allowedFiles.add(p));
   return filePaths || [];
 });
-
-ipcMain.handle('read-file', async (event, filePath) => {
-  const buffer = fs.readFileSync(filePath);
-  return { buffer: buffer.toString('base64'), name: path.basename(filePath) };
-});
-
-ipcMain.handle('get-app-data-path', () => app.getPath('userData'));
