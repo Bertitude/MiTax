@@ -51,6 +51,40 @@ test('generateS04: income below threshold yields zero income tax', async () => {
   assert.equal(r.totalTaxPayable, 68_000);
 });
 
+test('generateS04: P24 employment income with withholding credits (2024)', async () => {
+  const r = await generateS04({
+    year: 2024,
+    apiKey: null,
+    manualData: { businessIncome: 4_000_000 },
+    p24Totals: {
+      grossEmoluments: 3_000_000, nisDeducted: 90_000, nhtDeducted: 60_000,
+      edTaxDeducted: 67_500, payeDeducted: 200_000, entryCount: 12,
+    },
+  });
+
+  assert.equal(r.income.grossIncome, 7_000_000);          // 4M business + 3M employment
+  assert.equal(r.statutoryIncome, 5_600_000);             // 7M - 20% standard
+  assert.equal(r.chargeableIncome, 3_749_912);            // 5.6M - 1,700,088 - 150,000
+  assert.equal(r.tax.incomeTax, 737_478);                 // 937,478 liability - 200,000 PAYE
+  assert.equal(r.contributions.nis, 60_000);              // 150,000 liability - 90,000 withheld
+  assert.equal(r.contributions.nht, 80_000);              // 140,000 - 60,000
+  assert.equal(r.contributions.educationTax, 58_500);     // 126,000 - 67,500
+  assert.equal(r.totalTaxPayable, 935_978);
+  assert.equal(r.p24.totalGrossLiability, 1_353_478);
+});
+
+test('estimateAnnualTax: matches the S04 core on a whole-income case', () => {
+  const { estimateAnnualTax, getTaxParams } = require('../src/tax/s04');
+  const { params } = getTaxParams(2023);
+  const est = estimateAnnualTax(10_000_000, params);
+  // Same params/formula as the generateS04 upper-band test above.
+  assert.equal(est.nis, 150_000);
+  assert.equal(est.nht, 200_000);
+  assert.equal(est.edTax, 180_000);
+  assert.equal(est.incomeTax, 1_604_971.2);
+  assert.equal(est.total, 2_134_971.2);
+});
+
 test('generateS04A: quarterly instalments from a prior filing', () => {
   const r = generateS04A({
     currentYear: 2025,

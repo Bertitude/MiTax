@@ -554,8 +554,8 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
   // ── LunchMoney: assets + YTD income + quarterly tax estimate ────────────
   if (apiKey) {
     try {
-      const { getAssets, getTransactions } = require('./src/lunchmoney');
-      const { TAX_PARAMS }                 = require('./src/tax/s04');
+      const { getAssets, getTransactions }   = require('./src/lunchmoney');
+      const { TAX_PARAMS, estimateAnnualTax } = require('./src/tax/s04');
 
       result.assets = await getAssets(apiKey);
 
@@ -579,30 +579,18 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
         ? (result.ytdIncome / monthsElapsed) * 12
         : result.ytdIncome * 4;
 
-      const standardDed   = annualEst * params.standardDeductionRate;
-      const statutory     = Math.max(0, annualEst - standardDed);
-      const nisAnnual     = Math.min(annualEst, params.nisMaxIncome) * params.nisRate;
-      const nhtAnnual     = annualEst * params.nhtRate;
-      const edTaxAnnual   = statutory * params.edTaxRate;
-      const chargeable    = Math.max(0, statutory - params.personalThreshold - nisAnnual);
-      let   incomeTaxAnnual = 0;
-      if (chargeable > 0) {
-        incomeTaxAnnual = chargeable <= params.incomeTaxBand1Max
-          ? chargeable * params.incomeTaxRate1
-          : params.incomeTaxBand1Max * params.incomeTaxRate1 +
-            (chargeable - params.incomeTaxBand1Max) * params.incomeTaxRate2;
-      }
-      const totalAnnual = nisAnnual + nhtAnnual + edTaxAnnual + incomeTaxAnnual;
+      // Shared with the S04A estimate (integer-cents math in src/tax/s04.js).
+      const est = estimateAnnualTax(annualEst, params);
       const r2 = v => Math.round(v * 100) / 100;
 
       result.quarterlyTaxEstimate = {
         annualEstimate: r2(annualEst),
         monthsElapsed:  Math.round(monthsElapsed * 10) / 10,
-        nis:            r2(nisAnnual     / 4),
-        nht:            r2(nhtAnnual     / 4),
-        edTax:          r2(edTaxAnnual   / 4),
-        incomeTax:      r2(incomeTaxAnnual / 4),
-        total:          r2(totalAnnual   / 4),
+        nis:            r2(est.nis       / 4),
+        nht:            r2(est.nht       / 4),
+        edTax:          r2(est.edTax     / 4),
+        incomeTax:      r2(est.incomeTax / 4),
+        total:          r2(est.total     / 4),
       };
 
       // ── Missing statements: derive from YTD transactions already fetched ──
