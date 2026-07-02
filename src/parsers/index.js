@@ -7,7 +7,7 @@ const pdfParse = require('pdf-parse');
 const fs = require('fs');
 const path = require('path');
 
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions } = require('./utils');
 
 const ncbParser = require('./ncb');
 const scotiabankParser = require('./scotiabank');
@@ -51,7 +51,7 @@ async function parseStatement(filePath) {
   const fileType = detectFileType(filePath);
 
   if (fileType === 'csv') {
-    return parseCSV(filePath);
+    return validateResult(parseCSV(filePath));
   }
 
   // PDF path
@@ -74,7 +74,7 @@ async function parseStatement(filePath) {
     const result = await Promise.resolve(matched.parser.parse(text, filePath));
     result.institution = result.institution || matched.name;
     result.rawText = text;
-    return result;
+    return validateResult(result);
   }
 
   // Fallback: generic parser
@@ -82,6 +82,51 @@ async function parseStatement(filePath) {
   const result = await Promise.resolve(genericParser.parse(text, filePath));
   result.institution = result.institution || 'Unknown';
   result.rawText = text;
+  return validateResult(result);
+}
+
+/** True for a real "YYYY-MM-DD" calendar date. */
+function isValidISODate(str) {
+  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+  const [y, m, d] = str.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * Drop transactions with an unparseable date or non-finite amount before they
+ * reach the upload queue (normalizeDate returns unparsed strings verbatim, which
+ * would otherwise fail opaquely at the LunchMoney API). Records what was dropped
+ * and warns on empty results. Handles single results and arrays (e.g. UNFCU).
+ */
+function validateResult(resultOrArray) {
+  if (Array.isArray(resultOrArray)) return resultOrArray.map(validateResult);
+
+  const result = resultOrArray;
+  if (!result || !Array.isArray(result.transactions)) return result;
+
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const badDates = [];
+  let badAmounts = 0;
+
+  result.transactions = result.transactions.filter(tx => {
+    if (!isValidISODate(tx.date)) { badDates.push(tx.date); return false; }
+    if (!Number.isFinite(tx.amount)) { badAmounts++; return false; }
+    return true;
+  });
+
+  if (badDates.length) {
+    warnings.push(`Dropped ${badDates.length} transaction(s) with unparseable dates (e.g. "${badDates[0]}").`);
+  }
+  if (badAmounts) {
+    warnings.push(`Dropped ${badAmounts} transaction(s) with invalid amounts.`);
+  }
+  if (result.transactions.length === 0) {
+    warnings.push('No transactions extracted — the file may be unsupported or a scanned-image PDF.');
+  }
+
+  result.warnings = warnings;
   return result;
 }
 
@@ -109,8 +154,32 @@ function parseCSV(filePath) {
   const institution = guessInstitutionFromCSV(headers);
   const period = derivePeriodFromTransactions(transactions);
 
-  applySignConvention(transactions);
+  // NB: no applySignConvention here — normalizeCSVRow already returns amounts in
+  // the user-facing convention (positive = income/credit). Negating again would
+  // double-flip a LunchMoney-style signed CSV.
   return { institution, accountType: 'csv-import', accountName: institution, currency: 'JMD', period, transactions };
+}
+
+/**
+ * Parse a monetary string to a signed number. Handles accounting parentheses
+ * "(1,234.00)" = negative, leading/trailing minus, and currency symbols/commas.
+ * Returns NaN on non-numeric input.
+ */
+function parseMoney(str) {
+  if (str == null) return NaN;
+  let s = String(str).trim();
+  if (!s) return NaN;
+
+  let negative = false;
+  const paren = s.match(/^\((.*)\)$/);
+  if (paren) { negative = true; s = paren[1]; }
+  if (/-\s*$/.test(s)) { negative = true; s = s.replace(/-\s*$/, ''); }
+  if (/^\s*-/.test(s))  { negative = true; s = s.replace(/^\s*-/, ''); }
+
+  s = s.replace(/[^0-9.]/g, '');
+  if (s === '' || Number.isNaN(Number(s))) return NaN;
+  const val = Number(s);
+  return negative ? -val : val;
 }
 
 function splitCSVLine(line) {
@@ -127,16 +196,34 @@ function splitCSVLine(line) {
 }
 
 function normalizeCSVRow(row) {
-  const dateStr = row['date'] || row['transaction date'] || row['value date'] || '';
-  const payee = row['payee'] || row['description'] || row['merchant'] || row['narration'] || '';
-  const amountStr = row['amount'] || row['debit'] || row['credit'] || row['value'] || '0';
+  const dateStr  = row['date'] || row['transaction date'] || row['value date'] || '';
+  const payee    = row['payee'] || row['description'] || row['merchant'] || row['narration'] || '';
   const currency = row['currency'] || 'JMD';
-  const notes = row['notes'] || row['memo'] || row['reference'] || '';
+  const notes    = row['notes'] || row['memo'] || row['reference'] || '';
+  if (!dateStr) return null;
 
-  if (!dateStr || !amountStr) return null;
+  const debitStr  = (row['debit']  || '').trim();
+  const creditStr = (row['credit'] || '').trim();
+  const amountStr = (row['amount'] || row['value'] || '').trim();
 
-  const amount = parseFloat(amountStr.replace(/[^0-9.\-]/g, ''));
-  if (isNaN(amount)) return null;
+  // Separate debit/credit columns are sign-bearing; a single amount/value column
+  // is assumed already signed with positive = money in (LunchMoney convention).
+  let amount;
+  if (debitStr) {
+    const v = parseMoney(debitStr);
+    if (Number.isNaN(v)) return null;
+    amount = -Math.abs(v);            // debit → expense (negative)
+  } else if (creditStr) {
+    const v = parseMoney(creditStr);
+    if (Number.isNaN(v)) return null;
+    amount = Math.abs(v);             // credit → income (positive)
+  } else if (amountStr) {
+    const v = parseMoney(amountStr);
+    if (Number.isNaN(v)) return null;
+    amount = v;
+  } else {
+    return null;
+  }
 
   return {
     date: normalizeDate(dateStr),
@@ -145,7 +232,7 @@ function normalizeCSVRow(row) {
     currency,
     notes,
     category: row['category'] || '',
-    type: amount < 0 ? 'credit' : 'debit',
+    type: amount > 0 ? 'credit' : 'debit',
   };
 }
 
