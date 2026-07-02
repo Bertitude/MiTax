@@ -5,6 +5,7 @@
 
 const path = require('path');
 const { app } = require('electron');
+const { yearMonthOf, yearOf, eachMonthInRange } = require('./date-utils');
 
 let db = null;
 
@@ -134,15 +135,9 @@ function saveUpload({ institution, accountName, accountType, currency, lmAssetId
   if (year && month) {
     markMonthCovered(accountId, year, month, uploadId);
   } else if (start && end) {
-    // Cover all months in range
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    let cur = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
-    const last = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
-
-    while (cur <= last) {
-      markMonthCovered(accountId, cur.getFullYear(), cur.getMonth() + 1, uploadId);
-      cur.setMonth(cur.getMonth() + 1);
+    // Cover all months in range (timezone-safe integer month arithmetic)
+    for (const { year: y, month: m } of eachMonthInRange(start, end)) {
+      markMonthCovered(accountId, y, m, uploadId);
     }
   }
 
@@ -212,26 +207,21 @@ function getMissingMonths(accountId) {
 
   const coveredSet = new Set(covered.map(r => `${r.year}-${r.month}`));
 
-  const start = new Date(firstUpload.first_date);
+  // First uploaded month (timezone-safe) through the current local month.
+  const startYM = yearMonthOf(firstUpload.first_date);
+  if (!startYM) return [];
   const now = new Date();
+  const endIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+
   const missing = [];
-
-  let cur = new Date(start.getFullYear(), start.getMonth(), 1);
-
-  while (cur <= now) {
-    const y = cur.getFullYear();
-    const m = cur.getMonth() + 1;
-    const key = `${y}-${m}`;
-
-    if (!coveredSet.has(key)) {
+  for (const { year: y, month: m } of eachMonthInRange(firstUpload.first_date, endIso)) {
+    if (!coveredSet.has(`${y}-${m}`)) {
       missing.push({
         year: y,
         month: m,
         label: `${new Date(y, m - 1, 1).toLocaleString('default', { month: 'long' })} ${y}`,
       });
     }
-
-    cur.setMonth(cur.getMonth() + 1);
   }
 
   return missing;
@@ -265,7 +255,7 @@ function getOldestUploadYear() {
     `SELECT MIN(period_start) as oldest FROM uploads WHERE period_start IS NOT NULL`
   ).get();
   if (!row || !row.oldest) return null;
-  return new Date(row.oldest).getFullYear();
+  return yearOf(row.oldest);
 }
 
 /**
