@@ -19,8 +19,8 @@
 
 'use strict';
 
-const pdfParse = require('pdf-parse');
 const fs       = require('fs');
+const { extractPageItems } = require('../pdf/extract');
 const { derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 // Column boundaries (PDF user units, x from left edge)
@@ -73,25 +73,8 @@ async function parse(text, filePath) {
 // ── Coordinate-aware extraction ───────────────────────────────────────────────
 
 async function readPageItems(filePath) {
-  const buffer       = fs.readFileSync(filePath);
-  const allPageItems = [];
-
-  await pdfParse(buffer, {
-    pagerender: async function (pageData) {
-      const content = await pageData.getTextContent();
-      const items = content.items
-        .filter(item => item.str && item.str.trim())
-        .map(item => ({
-          str: item.str.trim(),
-          x:   item.transform[4],
-          y:   item.transform[5],
-        }));
-      allPageItems.push(items);
-      return content.items.map(i => i.str).join(' ');
-    },
-  });
-
-  return allPageItems;
+  const buffer = fs.readFileSync(filePath);
+  return extractPageItems(buffer);
 }
 
 async function extractWithCoords(filePath, fullText) {

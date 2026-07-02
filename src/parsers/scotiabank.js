@@ -1,20 +1,19 @@
 /**
  * Scotiabank Jamaica Statement Parser
  *
- * Uses pdf-parse's `pagerender` callback to obtain raw pdfjs page objects,
- * then extracts text items with their x/y coordinates. This gives accurate
- * column-aware parsing of Scotiabank's 3-column layout:
+ * Uses src/pdf/extract.js (pdfjs-dist) to obtain per-page text items with their
+ * x/y coordinates. This gives accurate column-aware parsing of Scotiabank's
+ * 3-column layout:
  *
  *   Date (x < 80)  |  Description (80 ≤ x < 390)  |  Amount (x ≥ 390)
  *
- * No external dependencies — pdfjs is already bundled inside pdf-parse.
  * Falls back to a regex parser for older / simpler statement layouts.
  */
 
 'use strict';
 
-const pdfParse = require('pdf-parse');
 const fs       = require('fs');
+const { extractPageItems } = require('../pdf/extract');
 const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 // Month abbreviation → number
@@ -82,26 +81,8 @@ function isCreditCardStatement(text) {
  * be unit-tested with synthetic fixtures (no PDF needed).
  */
 async function readPageItems(filePath) {
-  const buffer       = fs.readFileSync(filePath);
-  const allPageItems = []; // one entry per page: array of { str, x, y }
-
-  await pdfParse(buffer, {
-    pagerender: async function (pageData) {
-      const content = await pageData.getTextContent();
-      const items = content.items
-        .filter(item => item.str && item.str.trim())
-        .map(item => ({
-          str: item.str.trim(),
-          x:   item.transform[4],  // horizontal offset from left
-          y:   item.transform[5],  // vertical offset from BOTTOM of page
-        }));
-      allPageItems.push(items);
-      // Return plain text so pdf-parse can still populate data.text
-      return content.items.map(i => i.str).join(' ');
-    },
-  });
-
-  return allPageItems;
+  const buffer = fs.readFileSync(filePath);
+  return extractPageItems(buffer);
 }
 
 async function extractWithCoords(filePath, fullText) {

@@ -420,7 +420,11 @@ function setupDropZone() {
   zone.addEventListener('drop',      async e  => {
     e.preventDefault();
     zone.classList.remove('drag-over');
-    const dropped = [...e.dataTransfer.files].map(f => ({ name: f.name, path: f.path }));
+    const dropped = [...e.dataTransfer.files].map(f => ({
+      name: f.name,
+      // File.path was removed in Electron 32; resolve via webUtils in preload.
+      path: window.electronAPI.getPathForFile(f),
+    }));
     // Dropped files bypass the file dialog, so authorize each for parsing.
     for (const f of dropped) {
       if (f.path) await window.electronAPI.registerStatementFile(f.path);

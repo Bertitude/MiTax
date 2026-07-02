@@ -3,7 +3,7 @@
  * Detects the institution from the PDF text and routes to the correct parser.
  */
 
-const pdfParse = require('pdf-parse');
+const { extractText } = require('../pdf/extract');
 const fs = require('fs');
 const path = require('path');
 
@@ -56,8 +56,7 @@ async function parseStatement(filePath) {
 
   // PDF path
   const buffer = fs.readFileSync(filePath);
-  const pdfData = await pdfParse(buffer);
-  const text = pdfData.text;
+  const text = await extractText(buffer);
 
   // Detect institution
   let matched = null;
