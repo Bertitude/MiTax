@@ -4,9 +4,37 @@
  */
 
 const path = require('path');
-const { app } = require('electron');
+const { app, safeStorage } = require('electron');
 
 let _db = null;
+
+// ─── API-key encryption at rest (Electron safeStorage / OS keychain) ─────────
+// Keys are stored as `enc:v1:<base64(ciphertext)>`. Legacy plaintext rows are
+// read as-is and lazily re-encrypted on next access. If the OS has no keychain
+// backend available (isEncryptionAvailable() === false), keys are kept in
+// plaintext and callers are warned via the keyStorageInsecure flag.
+const ENC_PREFIX = 'enc:v1:';
+
+function encryptionAvailable() {
+  try { return !!(safeStorage && safeStorage.isEncryptionAvailable()); }
+  catch (_) { return false; }
+}
+
+function isEncrypted(stored) {
+  return typeof stored === 'string' && stored.startsWith(ENC_PREFIX);
+}
+
+function encryptKey(plain) {
+  if (!encryptionAvailable()) return plain;
+  try { return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64'); }
+  catch (_) { return plain; }
+}
+
+function decryptKey(stored) {
+  if (!isEncrypted(stored)) return stored; // legacy plaintext
+  try { return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64')); }
+  catch (_) { return stored; }
+}
 
 function getDB() {
   if (!_db) {
@@ -41,11 +69,28 @@ function getAllAccounts() {
     .all();
 }
 
-/** Returns the full active account row including api_key, or null. */
+/** Returns the full active account row with api_key decrypted, or null. */
 function getActiveAccount() {
-  return getDB()
+  const row = getDB()
     .prepare('SELECT * FROM lm_accounts WHERE is_active = 1 LIMIT 1')
     .get() || null;
+  if (!row) return null;
+
+  const wasEncrypted = isEncrypted(row.api_key);
+  row.api_key = decryptKey(row.api_key);
+
+  // Lazy migration: re-store a legacy plaintext key encrypted (best-effort).
+  if (!wasEncrypted && encryptionAvailable()) {
+    try {
+      const enc = encryptKey(row.api_key);
+      if (isEncrypted(enc)) {
+        getDB().prepare('UPDATE lm_accounts SET api_key = ? WHERE id = ?').run(enc, row.id);
+      }
+    } catch (_) { /* never fail a read */ }
+  }
+
+  row.keyStorageInsecure = !encryptionAvailable();
+  return row;
 }
 
 /** Returns just the active api_key string, or null. */
@@ -61,19 +106,23 @@ function getActiveApiKey() {
  * label/user info.  Returns the row id.
  */
 function addAccount({ label, apiKey, userName, budgetName }) {
-  const db     = getDB();
-  const exists = db.prepare('SELECT id FROM lm_accounts WHERE api_key = ?').get(apiKey);
+  const db = getDB();
 
-  if (exists) {
+  // Encryption makes ciphertext differ per call, so a WHERE api_key = ? lookup
+  // no longer finds an existing key; scan and compare decrypted values instead.
+  const rows     = db.prepare('SELECT id, api_key FROM lm_accounts').all();
+  const existing = rows.find(r => decryptKey(r.api_key) === apiKey);
+
+  if (existing) {
     db.prepare(
-      'UPDATE lm_accounts SET label = ?, user_name = ?, budget_name = ? WHERE api_key = ?'
-    ).run(label || userName || 'Account', userName || null, budgetName || null, apiKey);
-    return exists.id;
+      'UPDATE lm_accounts SET label = ?, user_name = ?, budget_name = ? WHERE id = ?'
+    ).run(label || userName || 'Account', userName || null, budgetName || null, existing.id);
+    return existing.id;
   }
 
   const r = db.prepare(
     'INSERT INTO lm_accounts (label, api_key, user_name, budget_name, is_active) VALUES (?, ?, ?, ?, 0)'
-  ).run(label || userName || 'Account', apiKey, userName || null, budgetName || null);
+  ).run(label || userName || 'Account', encryptKey(apiKey), userName || null, budgetName || null);
   return r.lastInsertRowid;
 }
 

@@ -1,0 +1,14 @@
+{
+  "_comment": "Synthetic Scotiabank savings statement — coordinate items feed parseFromPageItems. Exercises the DEC->JAN year-boundary logic and the +/- amount-suffix sign convention. No real PDF involved.",
+  "fullText": "Scotiabank The Bank of Nova Scotia Jamaica\nAccount Number: 00012345\n05DEC20  to  05JAN21\nSavings Account",
+  "pages": [
+    [
+      { "str": "07DEC",                 "x": 40,  "y": 600 },
+      { "str": "POS PURCHASE HI-LO",    "x": 120, "y": 600 },
+      { "str": "J$ 4,025.00 -",         "x": 430, "y": 600 },
+      { "str": "03JAN",                 "x": 40,  "y": 579 },
+      { "str": "SALARY DIRECT DEPOSIT", "x": 120, "y": 579 },
+      { "str": "J$ 300.00 +",           "x": 430, "y": 579 }
+    ]
+  ]
+}

@@ -1,20 +1,19 @@
 /**
  * Scotiabank Jamaica Statement Parser
  *
- * Uses pdf-parse's `pagerender` callback to obtain raw pdfjs page objects,
- * then extracts text items with their x/y coordinates. This gives accurate
- * column-aware parsing of Scotiabank's 3-column layout:
+ * Uses src/pdf/extract.js (pdfjs-dist) to obtain per-page text items with their
+ * x/y coordinates. This gives accurate column-aware parsing of Scotiabank's
+ * 3-column layout:
  *
  *   Date (x < 80)  |  Description (80 ≤ x < 390)  |  Amount (x ≥ 390)
  *
- * No external dependencies — pdfjs is already bundled inside pdf-parse.
  * Falls back to a regex parser for older / simpler statement layouts.
  */
 
 'use strict';
 
-const pdfParse = require('pdf-parse');
 const fs       = require('fs');
+const { extractPageItems } = require('../pdf/extract');
 const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 // Month abbreviation → number
@@ -76,26 +75,27 @@ function isCreditCardStatement(text) {
 
 // ── Coordinate-aware extraction using pdf-parse pagerender ────────────────────
 
+/**
+ * Read a PDF into an array of per-page coordinate items: [[{ str, x, y }, ...], ...].
+ * I/O only — the pure row-grouping logic lives in parseFromPageItems so it can
+ * be unit-tested with synthetic fixtures (no PDF needed).
+ */
+async function readPageItems(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  return extractPageItems(buffer);
+}
+
 async function extractWithCoords(filePath, fullText) {
-  const buffer       = fs.readFileSync(filePath);
-  const allPageItems = []; // one entry per page: array of { str, x, y }
+  const allPageItems = await readPageItems(filePath);
+  return parseFromPageItems(allPageItems, fullText);
+}
 
-  await pdfParse(buffer, {
-    pagerender: async function (pageData) {
-      const content = await pageData.getTextContent();
-      const items = content.items
-        .filter(item => item.str && item.str.trim())
-        .map(item => ({
-          str: item.str.trim(),
-          x:   item.transform[4],  // horizontal offset from left
-          y:   item.transform[5],  // vertical offset from BOTTOM of page
-        }));
-      allPageItems.push(items);
-      // Return plain text so pdf-parse can still populate data.text
-      return content.items.map(i => i.str).join(' ');
-    },
-  });
-
+/**
+ * Pure debit/savings statement parser. Consumes coordinate items + the reflowed
+ * full text (used only for metadata regexes). No I/O — unit-testable.
+ */
+function parseFromPageItems(allPageItems, fullText) {
+  const warnings = [];
   // ── Metadata ─────────────────────────────────────────────────────────────
   const accM     = fullText.match(/Account\s+Number:\s*(\d+)/i);
   const rawAcc   = accM ? accM[1].replace(/\D/g, '') : '';
@@ -113,8 +113,13 @@ async function extractWithCoords(filePath, fullText) {
   if (/visa|credit\s+card|mastercard/i.test(fullText))        accountType = 'credit_card';
   if (/mortgage|loan/i.test(fullText))                        accountType = 'loan';
 
+  if (!periodStart || !periodEnd) {
+    warnings.push('Statement period header not found — transaction years defaulted to the current year; verify dates before filing.');
+  }
+
   // ── Per-page transaction extraction ──────────────────────────────────────
   const transactions = [];
+  const balanceSentinels = [];
   const datePat = /^\d{2}[A-Z]{3}$/;
 
   for (const pageItems of allPageItems) {
@@ -148,10 +153,17 @@ async function extractWithCoords(filePath, fullText) {
         }
 
         const ddmmm  = dateItems[0].str;
-        const date   = parseDdmmm(ddmmm, periodStart, periodEnd);
+        const date   = parseDdmmm(ddmmm, periodStart, periodEnd, warnings);
         const desc   = descItems.map(w => w.str).join(' ').trim();
 
-        if (BALANCE_LINE.test(desc)) continue;
+        if (BALANCE_LINE.test(desc)) {
+          const bal = parseAmount(amountItems);
+          if (date && bal !== null) balanceSentinels.push({ date, amount: Math.abs(bal) });
+          currentTx = null;
+          continue;
+        }
+
+        if (!date) { currentTx = null; continue; }  // unrecognized month token — skip row
 
         const amount = parseAmount(amountItems);
 
@@ -193,6 +205,8 @@ async function extractWithCoords(filePath, fullText) {
     currency,
     period,
     transactions,
+    balanceSentinels,
+    warnings,
   };
 }
 
@@ -215,24 +229,15 @@ async function extractWithCoords(filePath, fullText) {
  *            "PROTECTION" appears below it.
  */
 async function extractCCWithCoords(filePath, fullText) {
-  const buffer       = fs.readFileSync(filePath);
-  const allPageItems = [];
+  const allPageItems = await readPageItems(filePath);
+  return parseCCFromPageItems(allPageItems, fullText);
+}
 
-  await pdfParse(buffer, {
-    pagerender: async function (pageData) {
-      const content = await pageData.getTextContent();
-      const items = content.items
-        .filter(item => item.str && item.str.trim())
-        .map(item => ({
-          str: item.str.trim(),
-          x:   item.transform[4],
-          y:   item.transform[5],
-        }));
-      allPageItems.push(items);
-      return content.items.map(i => i.str).join(' ');
-    },
-  });
-
+/**
+ * Pure credit-card statement parser. Consumes coordinate items + reflowed text.
+ * No I/O — unit-testable.
+ */
+function parseCCFromPageItems(allPageItems, fullText) {
   // ── Metadata ─────────────────────────────────────────────────────────────
   const accM       = fullText.match(/\*+(\d{4})/);
   const accountNumber = accM ? accM[1] : '';
@@ -368,10 +373,14 @@ async function extractCCWithCoords(filePath, fullText) {
  *   "07DEC" → 2020-12-07
  *   "03JAN" → 2021-01-03
  */
-function parseDdmmm(ddmmm, periodStart, periodEnd) {
+function parseDdmmm(ddmmm, periodStart, periodEnd, warnings) {
   const dd  = parseInt(ddmmm.slice(0, 2), 10);
   const mmm = ddmmm.slice(2, 5).toUpperCase();
-  const mo  = MONTH_MAP[mmm] || 1;
+  const mo  = MONTH_MAP[mmm];
+  if (!mo) {
+    if (warnings) warnings.push(`Unrecognized month token in date "${ddmmm}" — row skipped.`);
+    return null;
+  }
 
   let year = new Date().getFullYear(); // default to current year
 
@@ -499,6 +508,7 @@ function regexParse(text) {
       if (!dm || !am) continue;
       if (BALANCE_LINE.test(line)) continue;
       const date   = parseDdmmm(dm[1], periodStart, periodEnd);
+      if (!date) continue;
       const val    = parseFloat(am[1].replace(/,/g, ''));
       // '+' = credit/deposit (income → negative), '-' = debit/withdrawal (expense → positive)
       const amount = am[2] === '+' ? -val : val;
@@ -549,4 +559,4 @@ function categorize(payee, amount) {
   return 'Uncategorized';
 }
 
-module.exports = { parse };
+module.exports = { parse, parseFromPageItems, parseCCFromPageItems, regexParse, parseDdmmm };

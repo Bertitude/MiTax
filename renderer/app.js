@@ -188,6 +188,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     await connectAPI(startKey, false);
   }
 
+  // Warn once if the OS has no keychain backend so the API key is stored
+  // unencrypted at rest.
+  if (activeRes?.data?.keyStorageInsecure && !localStorage.getItem('mitax_insecure_key_warned')) {
+    toast('Your OS has no secure keychain available — the LunchMoney API key is stored unencrypted on disk.', 'error');
+    localStorage.setItem('mitax_insecure_key_warned', '1');
+  }
+
   // Render account list in Settings (even if not connected)
   renderLMAccountsList();
 
@@ -417,14 +424,29 @@ function setupDropZone() {
 
   zone.addEventListener('dragover',  e  => { e.preventDefault(); zone.classList.add('drag-over'); });
   zone.addEventListener('dragleave', ()  => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop',      e  => {
+  zone.addEventListener('drop',      async e  => {
     e.preventDefault();
     zone.classList.remove('drag-over');
-    addFilesToQueue([...e.dataTransfer.files].map(f => ({ name: f.name, path: f.path })));
+    const dropped = [...e.dataTransfer.files].map(f => ({
+      name: f.name,
+      // File.path was removed in Electron 32; resolve via webUtils in preload.
+      path: window.electronAPI.getPathForFile(f),
+    }));
+    // Dropped files bypass the file dialog, so authorize each for parsing.
+    for (const f of dropped) {
+      if (f.path) await window.electronAPI.registerStatementFile(f.path);
+    }
+    addFilesToQueue(dropped);
   });
   browseBtn.addEventListener('click', async () => {
     const paths = await window.electronAPI.openFileDialog();
     if (paths.length) addFilesToQueue(paths.map(p => ({ name: p.split(/[\/\\]/).pop(), path: p })));
+  });
+
+  // Delegated remove-from-queue (CSP-safe; replaces inline onclick)
+  document.getElementById('file-queue').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove-id]');
+    if (btn) removeFromQueue(btn.dataset.removeId);
   });
 }
 
@@ -474,7 +496,7 @@ function renderQueue() {
       </div>
       ${item.assetName ? `<span class="badge badge-blue">→ ${escHtml(item.assetName)}</span>` : ''}
       <span class="file-status ${item.status}">${statusLabel}</span>
-      <span class="file-remove" title="Remove" onclick="removeFromQueue('${item.id}')">✕</span>
+      <span class="file-remove" title="Remove" data-remove-id="${item.id}">✕</span>
       <div class="progress-bar" style="width:${pct}%"></div>
     `;
     container.appendChild(el);
@@ -516,43 +538,54 @@ async function parseAll() {
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Parsing…';
 
-  for (const item of pending) {
-    item.status = 'parsing';
-    renderQueue();
-    const result = await window.electronAPI.parsePDF(item.path);
-    if (result.success) {
-      // Some parsers (e.g. UNFCU) return an array when a single PDF contains
-      // multiple accounts. Expand them into separate queue items so each account
-      // can be mapped and imported independently.
-      if (Array.isArray(result.data)) {
-        const idx = state.queue.indexOf(item);
-        const expanded = result.data.map((parsed, i) => ({
-          id:        Date.now() + Math.random() + i,
-          name:      `${item.name} — ${parsed.accountName}`,
-          path:      item.path,
-          status:    'ready',
-          parsed,
-          assetId:   null,
-          assetName: null,
-        }));
-        state.queue.splice(idx, 1, ...expanded);
+  try {
+    for (const item of pending) {
+      item.status = 'parsing';
+      renderQueue();
+      const result = await window.electronAPI.parsePDF(item.path);
+      if (result.success) {
+        // Some parsers (e.g. UNFCU) return an array when a single PDF contains
+        // multiple accounts. Expand them into separate queue items so each account
+        // can be mapped and imported independently.
+        if (Array.isArray(result.data)) {
+          const idx = state.queue.indexOf(item);
+          const expanded = result.data.map((parsed, i) => ({
+            id:        Date.now() + Math.random() + i,
+            name:      `${item.name} — ${parsed.accountName}`,
+            path:      item.path,
+            status:    'ready',
+            parsed,
+            assetId:   null,
+            assetName: null,
+          }));
+          state.queue.splice(idx, 1, ...expanded);
+        } else {
+          item.parsed = result.data;
+          item.status = 'ready';
+        }
+        surfaceParseWarnings(item.name, result.data);
       } else {
-        item.parsed = result.data;
-        item.status = 'ready';
+        item.status = 'error';
+        toast(`Failed to parse ${item.name}: ${result.error}`, 'error');
       }
-    } else {
-      item.status = 'error';
-      toast(`Failed to parse ${item.name}: ${result.error}`, 'error');
+      renderQueue();
     }
-    renderQueue();
+
+    const readyCount = state.queue.filter(q => q.status === 'ready').length;
+    if (readyCount > 0) toast(`${readyCount} statement(s) parsed — click "Review & Validate"`, 'success');
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '⚡ Parse All';
+    updateImportButtons();
   }
+}
 
-  btn.disabled  = false;
-  btn.innerHTML = '⚡ Parse All';
-  updateImportButtons();
-
-  const readyCount = state.queue.filter(q => q.status === 'ready').length;
-  if (readyCount > 0) toast(`${readyCount} statement(s) parsed — click "Review & Validate"`, 'success');
+// Surface parser warnings (unparseable dates dropped, empty statement, missing
+// period header, etc.) as a toast without blocking the import.
+function surfaceParseWarnings(name, data) {
+  const results = Array.isArray(data) ? data : [data];
+  const warnings = results.flatMap(r => (r && r.warnings) || []);
+  if (warnings.length) toast(`${name}: ${warnings.join(' ')}`, 'error');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1666,7 +1699,7 @@ function setupSettings() {
   if (tajBtn) {
     tajBtn.addEventListener('click', e => {
       e.preventDefault();
-      require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
+      window.electronAPI.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
     });
   }
 
@@ -2036,6 +2069,15 @@ function setupP24() {
   // Add button
   document.getElementById('p24-add-btn').addEventListener('click', () => openP24Modal());
 
+  // Delegated Edit/Delete on the entries table (CSP-safe; replaces inline onclick)
+  document.getElementById('p24-tbody').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-p24-action]');
+    if (!btn) return;
+    const id = parseInt(btn.dataset.p24Id, 10);
+    if (btn.dataset.p24Action === 'edit')   openP24Modal(id);
+    if (btn.dataset.p24Action === 'delete') deleteP24Entry(id);
+  });
+
   // Modal cancel / backdrop
   document.getElementById('p24-modal-cancel').addEventListener('click', closeP24Modal);
   document.getElementById('p24-modal').addEventListener('click', e => {
@@ -2081,8 +2123,8 @@ async function loadP24Entries(year) {
       <td style="text-align:right;">${fmt(e.ed_tax_deducted)}</td>
       <td style="text-align:right;">${fmt(e.paye_deducted)}</td>
       <td style="text-align:right;white-space:nowrap;">
-        <button class="btn btn-secondary btn-sm" onclick="openP24Modal(${e.id})" style="padding:2px 8px;font-size:11px;">Edit</button>
-        <button class="btn btn-sm" style="padding:2px 8px;font-size:11px;background:var(--warn);color:#fff;border:none;" onclick="deleteP24Entry(${e.id})">✕</button>
+        <button class="btn btn-secondary btn-sm" data-p24-action="edit" data-p24-id="${e.id}" style="padding:2px 8px;font-size:11px;">Edit</button>
+        <button class="btn btn-sm" style="padding:2px 8px;font-size:11px;background:var(--warn);color:#fff;border:none;" data-p24-action="delete" data-p24-id="${e.id}">✕</button>
       </td>
     </tr>
   `).join('');
@@ -2905,16 +2947,22 @@ async function startReconcile() {
   body.innerHTML = '<div style="padding:20px;color:var(--text-muted);"><span class="spinner"></span> Parsing statement and comparing with LunchMoney…</div>';
   document.getElementById('reconcile-modal').classList.add('open');
 
-  const res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+  let res;
+  try {
+    res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+  } catch (err) {
+    body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(err.message || String(err))}</div>`;
+    return;
+  }
 
   if (!res.success) {
     body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(res.error)}</div>`;
     return;
   }
 
-  const { signMismatches, phantomBalances } = res.data;
+  const { signMismatches, phantomBalances, suspectedPhantoms = [] } = res.data;
 
-  if (!signMismatches.length && !phantomBalances.length) {
+  if (!signMismatches.length && !phantomBalances.length && !suspectedPhantoms.length) {
     body.innerHTML = '<div style="padding:20px;color:var(--text-muted);">All transactions match — nothing to fix.</div>';
     return;
   }
@@ -2987,6 +3035,38 @@ async function startReconcile() {
       </div>`;
   }
 
+  if (suspectedPhantoms.length) {
+    html += `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">
+          ⚠ Suspected Phantom Balances <span class="badge badge-yellow">${suspectedPhantoms.length}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+          These match a balance-line payee pattern but were <strong>not</strong> confirmed against the parsed
+          statement. Review each carefully before deleting — real transactions can share this wording.
+          Left unchecked by default.
+        </div>
+        <div style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              <th style="padding:6px;width:30px;"></th>
+              <th style="padding:6px;text-align:left;">Date</th>
+              <th style="padding:6px;text-align:left;">Payee</th>
+              <th style="padding:6px;text-align:right;">Amount</th>
+            </tr></thead>
+            <tbody>${suspectedPhantoms.map(p => `
+              <tr>
+                <td style="padding:4px 6px;"><input type="checkbox" class="reconcile-suspected-cb" data-lm-id="${p.lmId}"></td>
+                <td style="padding:4px 6px;">${escHtml(p.date)}</td>
+                <td style="padding:4px 6px;">${escHtml(p.payee)}</td>
+                <td style="padding:4px 6px;text-align:right;">${cur} ${Number(p.amount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   body.innerHTML = html;
   applyBtn.disabled = false;
 
@@ -3005,7 +3085,7 @@ async function startReconcile() {
   applyBtn.parentNode.replaceChild(newApply, applyBtn);
   newApply.addEventListener('click', async () => {
     const flipIds   = [...body.querySelectorAll('.reconcile-flip-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
-    const deleteIds = [...body.querySelectorAll('.reconcile-delete-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
+    const deleteIds = [...body.querySelectorAll('.reconcile-delete-cb:checked, .reconcile-suspected-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
 
     if (!flipIds.length && !deleteIds.length) { toast('Nothing selected', 'error'); return; }
 
@@ -3199,7 +3279,9 @@ function renderAccountSummary(asset, year, txs) {
   const sorted = [...txs].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   txEl.innerHTML = sorted.map(tx => {
     const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
-    const isCredit = amount < 0;
+    // LunchMoney convention: positive = income/credit, negative = expense/debit
+    // (matches the monthly totals above and the S04 tax engine).
+    const isCredit = amount > 0;
     const dispAmt  = Math.abs(amount);
     return `<div class="acct-tx-row" data-tx-id="${tx.id}">
       <div class="acct-tx-date">${escHtml(tx.date || '')}</div>
@@ -3699,7 +3781,7 @@ function buildFieldMappingCard(report) {
   if (tajLink) {
     tajLink.addEventListener('click', e => {
       e.preventDefault();
-      require('electron').shell.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
+      window.electronAPI.openExternal('https://mytaxes.ads.taj.gov.jm/_/');
     });
   }
 

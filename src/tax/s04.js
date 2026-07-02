@@ -217,49 +217,54 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 
   const grossIncome = income.business + income.foreign + income.investment + income.rental + income.other + income.employment;
 
-  // Allowable deductions
+  // ── All tax math below is in integer cents (converted back to JMD at the end) ──
+  const grossCents  = toCents(grossIncome);
   const actualExpenses = expenses.total;
-  const standardDeduction = grossIncome * params.standardDeductionRate;
-  const allowableExpenses = Math.max(actualExpenses, manualData.useActualExpenses ? actualExpenses : standardDeduction);
+  const actualExpCents = toCents(actualExpenses);
 
-  const statutoryIncome = Math.max(0, grossIncome - allowableExpenses);
+  // Allowable deductions
+  const stdDedCents    = Math.round(grossCents * params.standardDeductionRate);
+  const allowableCents = Math.max(actualExpCents, manualData.useActualExpenses ? actualExpCents : stdDedCents);
+  const statutoryCents = Math.max(0, grossCents - allowableCents);
 
-  // NIS (National Insurance Scheme) — calculated on combined income, capped at nisMaxIncome
-  // P24 already withheld NIS on the employment portion; we credit that and only charge
+  // NIS (National Insurance Scheme) — calculated on combined income, capped at nisMaxIncome.
+  // P24 already withheld NIS on the employment portion; credit that and only charge
   // additional NIS on any self-employment income that remains under the cap.
-  const nisableIncome        = Math.min(grossIncome, params.nisMaxIncome);
-  const totalNisLiability    = nisableIncome * params.nisRate;
-  const additionalNis        = Math.max(0, totalNisLiability - p24.nisDeducted);
-  const nisContribution      = additionalNis;  // what's still owed for S04
+  const nisableCents      = Math.min(grossCents, toCents(params.nisMaxIncome));
+  const totalNisCents     = Math.round(nisableCents * params.nisRate);
+  const additionalNisCents = Math.max(0, totalNisCents - toCents(p24.nisDeducted));
 
   // NHT (National Housing Trust)
-  const totalNhtLiability    = grossIncome * params.nhtRate;
-  const additionalNht        = Math.max(0, totalNhtLiability - p24.nhtDeducted);
-  const nhtContribution      = additionalNht;
+  const totalNhtCents      = Math.round(grossCents * params.nhtRate);
+  const additionalNhtCents = Math.max(0, totalNhtCents - toCents(p24.nhtDeducted));
 
   // Education Tax
-  const totalEdTaxLiability  = statutoryIncome * params.edTaxRate;
-  const additionalEdTax      = Math.max(0, totalEdTaxLiability - p24.edTaxDeducted);
-  const edTaxContribution    = additionalEdTax;
+  const totalEdTaxCents      = Math.round(statutoryCents * params.edTaxRate);
+  const additionalEdTaxCents = Math.max(0, totalEdTaxCents - toCents(p24.edTaxDeducted));
 
   // Chargeable Income (uses total NIS liability for the threshold deduction — per Jamaica IT Act)
-  const chargeableIncome = Math.max(0, statutoryIncome - params.personalThreshold - totalNisLiability);
+  const chargeableCents = Math.max(0, statutoryCents - toCents(params.personalThreshold) - totalNisCents);
 
   // Income Tax
-  let totalIncomeTaxLiability = 0;
-  if (chargeableIncome > 0) {
-    if (chargeableIncome <= params.incomeTaxBand1Max) {
-      totalIncomeTaxLiability = chargeableIncome * params.incomeTaxRate1;
-    } else {
-      totalIncomeTaxLiability = (params.incomeTaxBand1Max * params.incomeTaxRate1) +
-                                ((chargeableIncome - params.incomeTaxBand1Max) * params.incomeTaxRate2);
-    }
-  }
-  const additionalIncomeTax = Math.max(0, totalIncomeTaxLiability - p24.payeDeducted);
-  const incomeTax           = additionalIncomeTax;
+  const totalIncomeTaxCents      = incomeTaxCents(chargeableCents, params);
+  const additionalIncomeTaxCents = Math.max(0, totalIncomeTaxCents - toCents(p24.payeDeducted));
 
-  // Total additional tax payable on S04 (after crediting all P24 withholdings)
-  const totalTaxPayable = incomeTax + nisContribution + nhtContribution + edTaxContribution;
+  const totalTaxPayableCents = additionalIncomeTaxCents + additionalNisCents + additionalNhtCents + additionalEdTaxCents;
+
+  // Convert back to JMD for the report/consumers.
+  const standardDeduction       = fromCents(stdDedCents);
+  const allowableExpenses       = fromCents(allowableCents);
+  const statutoryIncome         = fromCents(statutoryCents);
+  const totalNisLiability       = fromCents(totalNisCents);
+  const nisContribution         = fromCents(additionalNisCents);
+  const totalNhtLiability       = fromCents(totalNhtCents);
+  const nhtContribution         = fromCents(additionalNhtCents);
+  const totalEdTaxLiability      = fromCents(totalEdTaxCents);
+  const edTaxContribution       = fromCents(additionalEdTaxCents);
+  const chargeableIncome        = fromCents(chargeableCents);
+  const totalIncomeTaxLiability = fromCents(totalIncomeTaxCents);
+  const incomeTax               = fromCents(additionalIncomeTaxCents);
+  const totalTaxPayable         = fromCents(totalTaxPayableCents);
 
   // ─── S04 Form Structure ──────────────────────────────────────────────────
 
@@ -386,6 +391,48 @@ function roundJMD(amount) {
   return Math.round((amount || 0) * 100) / 100;
 }
 
+// ─── Integer-cents money helpers ─────────────────────────────────────────────
+// Tax math is done in integer cents so accumulation carries no binary-float
+// drift and band-edge comparisons are exact; values are converted back to JMD
+// (2dp) only at the boundary.
+const toCents   = (v) => Math.round((v || 0) * 100);
+const fromCents = (c) => c / 100;
+
+/** Progressive income tax (in cents) on a chargeable amount (in cents). */
+function incomeTaxCents(chargeableCents, params) {
+  if (chargeableCents <= 0) return 0;
+  const band1MaxCents = toCents(params.incomeTaxBand1Max);
+  if (chargeableCents <= band1MaxCents) {
+    return Math.round(chargeableCents * params.incomeTaxRate1);
+  }
+  return Math.round(band1MaxCents * params.incomeTaxRate1) +
+         Math.round((chargeableCents - band1MaxCents) * params.incomeTaxRate2);
+}
+
+/**
+ * Estimate the full-year tax liability for a given annual income under `params`.
+ * Shared by the S04A provisional estimate and the dashboard quarterly estimate
+ * (previously duplicated in main.js). Returns JMD (2dp) component amounts.
+ */
+function estimateAnnualTax(annualIncome, params) {
+  const incCents       = toCents(annualIncome);
+  const stdDedCents    = Math.round(incCents * params.standardDeductionRate);
+  const statutoryCents = Math.max(0, incCents - stdDedCents);
+  const nisCents       = Math.round(Math.min(incCents, toCents(params.nisMaxIncome)) * params.nisRate);
+  const nhtCents       = Math.round(incCents * params.nhtRate);
+  const edTaxCents     = Math.round(statutoryCents * params.edTaxRate);
+  const chargeableCents = Math.max(0, statutoryCents - toCents(params.personalThreshold) - nisCents);
+  const itaxCents      = incomeTaxCents(chargeableCents, params);
+  const totalCents     = nisCents + nhtCents + edTaxCents + itaxCents;
+  return {
+    nis:       fromCents(nisCents),
+    nht:       fromCents(nhtCents),
+    edTax:     fromCents(edTaxCents),
+    incomeTax: fromCents(itaxCents),
+    total:     fromCents(totalCents),
+  };
+}
+
 function buildMonthlyBreakdown(transactions, year) {
   const months = Array.from({ length: 12 }, (_, i) => ({
     month: i + 1,
@@ -454,20 +501,7 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   let recommendedAnnualTax = priorTaxPayable;
   if (!hasHistory && annualTrend > 0) {
     const { params } = getTaxParams(currentYear - 1);
-    const stdDed     = annualTrend * params.standardDeductionRate;
-    const statutory  = Math.max(0, annualTrend - stdDed);
-    const nis        = Math.min(annualTrend, params.nisMaxIncome) * params.nisRate;
-    const nht        = annualTrend * params.nhtRate;
-    const edTax      = statutory * params.edTaxRate;
-    const chargeable = Math.max(0, statutory - params.personalThreshold - nis);
-    let   itax       = 0;
-    if (chargeable > 0) {
-      itax = chargeable <= params.incomeTaxBand1Max
-        ? chargeable * params.incomeTaxRate1
-        : params.incomeTaxBand1Max * params.incomeTaxRate1
-          + (chargeable - params.incomeTaxBand1Max) * params.incomeTaxRate2;
-    }
-    recommendedAnnualTax = nis + nht + edTax + itax;
+    recommendedAnnualTax = estimateAnnualTax(annualTrend, params).total;
   } else if (useAdjusted) {
     recommendedAnnualTax = priorTaxPayable * trendRatio;
   }
@@ -522,4 +556,4 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   };
 }
 
-module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams };
+module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, estimateAnnualTax };

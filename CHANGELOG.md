@@ -4,6 +4,58 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [1.3.0] — 2026-07-02
+
+Project-audit remediation: security hardening, correctness fixes, and the
+first automated test suite. See `AUDIT.md` for the full findings list.
+
+### Security
+- **API keys encrypted at rest.** LunchMoney API keys are now encrypted with
+  Electron `safeStorage` (OS keychain/DPAPI) instead of stored in plaintext.
+  Legacy plaintext rows are migrated on next access; if no keychain backend is
+  available the key stays plaintext and a one-time warning is shown.
+- **Replaced `pdf-parse` with `pdfjs-dist`.** `pdf-parse` bundled an old pdfjs
+  affected by CVE-2024-4367 (JS execution from a crafted PDF) — reachable since
+  the app parses user-supplied statements. Text/coordinate extraction semantics
+  are preserved.
+- **Upgraded off end-of-life Electron 29 to Electron 41** (plus better-sqlite3
+  12 / electron-builder 26). Dropped-file paths now resolve via
+  `webUtils.getPathForFile` (Electron 32 removed `File.path`).
+- **Renderer hardening:** `sandbox: true`, navigation/`window.open` denied,
+  an IPC file-path allow-list (parse only files the user chose), removal of the
+  unrestricted `read-file` handler, an allow-listed `open-external` handler, and
+  a tightened CSP (`script-src 'self'`, no `'unsafe-inline'`).
+
+### Fixed
+- **Account view sign inversion:** the per-transaction list showed income as a
+  red debit and vice-versa (it disagreed with the monthly totals and the tax
+  engine).
+- **CSV imports:** separate debit/credit columns are now signed correctly,
+  accounting-parentheses negatives are honored, and a pre-signed amount column
+  is no longer double-flipped.
+- **Coverage tracker timezone bug:** statement months/years were misattributed
+  by one in negative-offset timezones (Jamaica); dates are now parsed without a
+  UTC round-trip.
+- **Scotiabank dates:** unrecognized month tokens are skipped (with a warning)
+  instead of coerced to January; a missing statement-period header warns instead
+  of silently defaulting the year.
+- **Parser output validation:** transactions with unparseable dates or invalid
+  amounts are dropped with a warning, and empty results are surfaced instead of
+  failing opaquely at upload.
+- **Reconcile:** same-day equal-amount debit/credit pairs are no longer
+  false-flagged as sign mismatches, and phantom-balance deletion is scoped to
+  balance lines the parser actually saw (others require manual review).
+- **Robustness:** integer-cents tax math (no float drift in filed figures),
+  main-process uncaught-exception logging, and try/finally around renderer busy
+  states (no more stuck spinners).
+
+### Added
+- **Automated test suite** (`node --test`, 27 tests) covering parsers, the sign
+  convention, CSV handling, date utilities, S04 tax math, PDF reflow, and
+  reconciliation — plus a CI workflow running tests on every push and PR.
+
+---
+
 ## [1.2.17] — 2026-03-02
 
 ### Fixed

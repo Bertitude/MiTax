@@ -29,10 +29,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       # ── 3. Install dependencies ───────────────────────────────────────────────
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       # ── 4. Build & publish to GitHub Releases ───────────────────────────────
       - name: Build & Publish

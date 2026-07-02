@@ -1,4 +1,4 @@
-# LunchMoney Importer — Jamaica Edition
+# MiTax — Jamaica Edition
 
 A desktop Electron app to import financial statements into [LunchMoney.app](https://lunchmoney.app), with Jamaica S04 tax return support.
 
@@ -57,7 +57,7 @@ No extra secrets or code-signing certificates are required for basic builds. Cod
 ## Features
 
 - **Drag & Drop** PDF/CSV statement importing
-- **Auto-detects** institution: NCB, Scotiabank JA, JMMB, Wise, PayPal, Stripe, and generic fallback
+- **Auto-detects** institution: NCB, Scotiabank JA, JMMB, JN Bank, UNFCU, Wise, PayPal, Stripe, and generic fallback
 - **Uploads** directly to your LunchMoney account via API
 - **CSV export** in LunchMoney-compatible format
 - **Coverage Tracker** — visual month-by-month grid per account, highlights missing months
@@ -100,6 +100,8 @@ npm start
 | NCB Jamaica | Bank | Chequing, savings, credit card |
 | Scotiabank Jamaica | Bank | Chequing, savings, credit card |
 | JMMB | Bank / Securities | Savings, investments, loans |
+| JN Bank | Bank | Savings (JNLive e-statements) |
+| UNFCU | Credit Union | Multi-account statements |
 | Wise | International | Multi-currency |
 | PayPal | International | USD statements |
 | Stripe | International | Payout statements |
@@ -112,10 +114,10 @@ npm start
 The S04 module calculates estimated Jamaica self-employed income tax for a given year using current TAJ rates:
 
 - **Income Tax**: 25% on chargeable income up to $6M; 30% above
-- **NIS**: 3% of gross income (capped at $1.5M)
+- **NIS**: 3% of gross income (insurable income capped at $5M, since Apr 2022)
 - **NHT**: 2% of gross income
 - **Education Tax**: 2.25% of statutory income
-- **Personal Threshold**: $1,500,096 (2024)
+- **Personal Threshold**: $1,700,088 (2024); per-year values in `src/tax/s04.js`
 
 > ⚠ This is an estimate only. Consult TAJ or a qualified accountant for official filing.
 
@@ -124,26 +126,28 @@ The S04 module calculates estimated Jamaica self-employed income tax for a given
 ## File Structure
 
 ```
-LunchMoneyApp/
-├── main.js              # Electron main process
-├── preload.js           # Secure IPC bridge
+MiTax/
+├── main.js              # Electron main process (IPC handlers)
+├── preload.js           # Secure IPC bridge (contextBridge)
 ├── package.json
 ├── renderer/
 │   ├── index.html       # UI
 │   ├── app.js           # UI logic
 │   └── styles.css       # Dark theme styles
+├── test/                # node:test unit tests + fixtures
 └── src/
     ├── parsers/
-    │   ├── index.js     # Parser dispatcher
-    │   ├── ncb.js
-    │   ├── scotiabank.js
-    │   ├── jmmb.js
-    │   ├── wise.js
-    │   ├── paypal.js
-    │   ├── stripe.js
-    │   └── generic.js
+    │   ├── index.js     # Parser dispatcher + CSV + output validation
+    │   ├── ncb.js  scotiabank.js  jmmb.js  jn.js  unfcu.js
+    │   ├── wise.js  paypal.js  stripe.js  generic.js
+    │   └── utils.js     # Shared date/sign helpers
+    ├── pdf/extract.js   # pdfjs-dist text/coordinate extraction
     ├── lunchmoney.js    # LunchMoney API client
+    ├── lm-accounts.js   # Encrypted multi-account store (safeStorage)
     ├── tracker.js       # SQLite upload tracker
+    ├── date-utils.js    # Timezone-safe date helpers
+    ├── reconcile.js     # Statement ↔ LM reconciliation
+    ├── filings.js  p24.js  payee-detect.js  payee-matcher.js  updater.js
     └── tax/
         └── s04.js       # Jamaica S04 tax calculator
 ```

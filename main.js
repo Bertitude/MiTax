@@ -1,8 +1,45 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 
 let mainWindow;
+
+// External URLs the renderer is permitted to open in the system browser.
+// openExternal is otherwise a navigation/redirect vector, so keep this tight.
+const ALLOWED_EXTERNAL_PREFIXES = ['https://mytaxes.ads.taj.gov.jm/'];
+
+// Files the renderer is allowed to read/parse. Populated only by paths the user
+// explicitly chose via the open dialog or drag-and-drop (see registerStatementFile).
+// Prevents a compromised renderer from reading arbitrary paths through parse-pdf.
+const allowedFiles = new Set();
+
+// Harden a window against navigation and popups: the app is a single local page,
+// so any navigation away or window.open is unwanted.
+function hardenWindow(win) {
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+}
+
+// Append an error to userData/error.log (best-effort; never throws).
+function logError(context, err) {
+  const msg = err && err.stack ? err.stack : String(err);
+  console.error(`[${context}]`, msg);
+  try {
+    const line = `[${new Date().toISOString()}] [${context}] ${msg}\n`;
+    fs.appendFileSync(path.join(app.getPath('userData'), 'error.log'), line);
+  } catch (_) { /* logging must not throw */ }
+}
+
+// Last-resort handlers so a stray throw/rejection doesn't take down the main
+// process silently. Do NOT quit — better-sqlite3 writes are synchronous, so
+// there are no torn writes to recover from.
+process.on('uncaughtException', (err) => {
+  logError('uncaughtException', err);
+  try { dialog.showErrorBox('Unexpected error', err && err.message ? err.message : String(err)); } catch (_) {}
+});
+process.on('unhandledRejection', (reason) => {
+  logError('unhandledRejection', reason);
+});
 
 // ─── Auto-updater (only in packaged builds) ──────────────────────────────────
 // initUpdater is called after the window is created so it has a reference to it.
@@ -24,12 +61,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#0d1117',
     show: false,
   });
 
+  hardenWindow(mainWindow);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
 }
@@ -52,9 +91,43 @@ app.on('window-all-closed', () => {
 // ─── IPC: Parse PDF / CSV ───────────────────────────────────────────────────
 ipcMain.handle('parse-pdf', async (event, filePath) => {
   try {
+    if (!allowedFiles.has(filePath)) {
+      return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
+    }
     const { parseStatement } = require('./src/parsers/index');
     const result = await parseStatement(filePath);
     return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: Open an allow-listed external URL in the system browser ────────────
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    const u = new URL(String(url));
+    const ok = u.protocol === 'https:' &&
+               ALLOWED_EXTERNAL_PREFIXES.some(p => u.href.startsWith(p));
+    if (!ok) return { success: false, error: 'URL not permitted' };
+    await shell.openExternal(u.href);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ─── IPC: Register a drag-and-dropped statement file as read-authorized ──────
+ipcMain.handle('register-statement-file', (event, filePath) => {
+  try {
+    const ext = path.extname(String(filePath)).toLowerCase();
+    if (!['.pdf', '.csv', '.xlsx'].includes(ext)) {
+      return { success: false, error: 'Unsupported file type' };
+    }
+    if (!fs.statSync(filePath).isFile()) {
+      return { success: false, error: 'Not a file' };
+    }
+    allowedFiles.add(filePath);
+    return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -136,30 +209,43 @@ ipcMain.handle('get-asset-coverage', async (event, { apiKey, assetId, year }) =>
 });
 
 // ─── IPC: Local Tracker ─────────────────────────────────────────────────────
+// These handlers return bare data (not a {success} envelope) that the renderer
+// consumes directly. A better-sqlite3 throw (locked/corrupt DB) would otherwise
+// become an unhandled IPC rejection; catch, log, and degrade to a safe default.
 ipcMain.handle('tracker-get-uploads',        async () => {
-  const { getAllUploads } = require('./src/tracker');
-  return getAllUploads();
+  try {
+    const { getAllUploads } = require('./src/tracker');
+    return getAllUploads();
+  } catch (err) { logError('tracker-get-uploads', err); return []; }
 });
 
 ipcMain.handle('tracker-save-upload',        async (event, record) => {
-  const { saveUpload } = require('./src/tracker');
-  return saveUpload(record);
+  try {
+    const { saveUpload } = require('./src/tracker');
+    return saveUpload(record);
+  } catch (err) { logError('tracker-save-upload', err); return { error: err.message }; }
 });
 
 ipcMain.handle('tracker-get-missing-months', async (event, accountId) => {
-  const { getMissingMonths } = require('./src/tracker');
-  return getMissingMonths(accountId);
+  try {
+    const { getMissingMonths } = require('./src/tracker');
+    return getMissingMonths(accountId);
+  } catch (err) { logError('tracker-get-missing-months', err); return []; }
 });
 
 ipcMain.handle('tracker-get-all-accounts',  async () => {
-  const { getAllAccounts } = require('./src/tracker');
-  return getAllAccounts();
+  try {
+    const { getAllAccounts } = require('./src/tracker');
+    return getAllAccounts();
+  } catch (err) { logError('tracker-get-all-accounts', err); return []; }
 });
 
 ipcMain.handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => {
-  const { getDbCoverageForAsset } = require('./src/tracker');
-  // Convert Set → Array so it serialises cleanly over IPC
-  return Array.from(getDbCoverageForAsset(lmAssetId, year));
+  try {
+    const { getDbCoverageForAsset } = require('./src/tracker');
+    // Convert Set → Array so it serialises cleanly over IPC
+    return Array.from(getDbCoverageForAsset(lmAssetId, year));
+  } catch (err) { logError('tracker-get-db-coverage', err); return []; }
 });
 
 ipcMain.handle('get-oldest-upload-year', async () => {
@@ -224,16 +310,24 @@ ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
 });
 
 // ─── IPC: Reconcile — compare parsed statement against LM transactions ──────
-// Returns { signMismatches: [{lmId, date, payee, lmAmount, parsedAmount}],
-//           phantomBalances: [{lmId, date, payee, amount}] }
+// Returns { signMismatches, phantomBalances, suspectedPhantoms } — see
+// src/reconcile.js. Phantom deletion is scoped to balance lines the parser
+// actually saw (balanceSentinels); payee-only matches are merely "suspected".
 ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath, year }) => {
   try {
+    if (!allowedFiles.has(filePath)) {
+      return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
+    }
     const { parseStatement } = require('./src/parsers/index');
     const { getTransactions } = require('./src/lunchmoney');
+
+    const { reconcile } = require('./src/reconcile');
 
     const parsed = await parseStatement(filePath);
     const results = Array.isArray(parsed) ? parsed : [parsed];
     const parsedTxs = results.flatMap(r => r.transactions || []);
+    // Balance-sentinel lines the parsers skipped — used to scope phantom deletion.
+    const balanceSentinels = results.flatMap(r => r.balanceSentinels || []);
 
     const lmTxs = await getTransactions(apiKey, {
       startDate: `${year}-01-01`,
@@ -241,54 +335,8 @@ ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath,
       assetId,
     });
 
-    const BALANCE_RE = /\b(beginning\s+balance|opening\s+balance|ending\s+balance|closing\s+balance|balance\s+forward|balance\s+brought\s+forward|balance\s+carried\s+forward)\b/i;
-
-    // Build lookup from parsed txs: key = date|absAmount
-    const parsedByKey = new Map();
-    for (const tx of parsedTxs) {
-      const key = `${tx.date}|${Math.abs(tx.amount).toFixed(2)}`;
-      if (!parsedByKey.has(key)) parsedByKey.set(key, []);
-      parsedByKey.get(key).push(tx);
-    }
-
-    const signMismatches  = [];
-    const phantomBalances = [];
-
-    for (const lmTx of lmTxs) {
-      const lmAmt = parseFloat(lmTx.amount);
-      const payee = lmTx.payee || lmTx.original_name || '';
-
-      // Check phantom balance entries
-      if (BALANCE_RE.test(payee)) {
-        phantomBalances.push({
-          lmId:   lmTx.id,
-          date:   lmTx.date,
-          payee,
-          amount: lmAmt,
-        });
-        continue;
-      }
-
-      // Check sign mismatch
-      const key = `${lmTx.date}|${Math.abs(lmAmt).toFixed(2)}`;
-      const matches = parsedByKey.get(key);
-      if (matches && matches.length > 0) {
-        const parsedTx = matches[0];
-        if ((lmAmt > 0 && parsedTx.amount < 0) || (lmAmt < 0 && parsedTx.amount > 0)) {
-          signMismatches.push({
-            lmId:         lmTx.id,
-            date:         lmTx.date,
-            payee,
-            lmAmount:     lmAmt,
-            parsedAmount: parsedTx.amount,
-          });
-        }
-        matches.shift();
-        if (!matches.length) parsedByKey.delete(key);
-      }
-    }
-
-    return { success: true, data: { signMismatches, phantomBalances } };
+    const data = reconcile(parsedTxs, lmTxs, balanceSentinels);
+    return { success: true, data };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -340,14 +388,18 @@ ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year
 // ─── IPC: LunchMoney Multi-Account Management ────────────────────────────────
 
 ipcMain.handle('lm-accounts:list', async () => {
-  const { getAllAccounts } = require('./src/lm-accounts');
-  return { success: true, data: getAllAccounts() };
+  try {
+    const { getAllAccounts } = require('./src/lm-accounts');
+    return { success: true, data: getAllAccounts() };
+  } catch (err) { logError('lm-accounts:list', err); return { success: false, error: err.message }; }
 });
 
 ipcMain.handle('lm-accounts:get-active', async () => {
-  const { getActiveAccount } = require('./src/lm-accounts');
-  const acc = getActiveAccount();
-  return { success: true, data: acc };
+  try {
+    const { getActiveAccount } = require('./src/lm-accounts');
+    const acc = getActiveAccount();
+    return { success: true, data: acc };
+  } catch (err) { logError('lm-accounts:get-active', err); return { success: false, error: err.message }; }
 });
 
 /**
@@ -461,8 +513,8 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
   // ── LunchMoney: assets + YTD income + quarterly tax estimate ────────────
   if (apiKey) {
     try {
-      const { getAssets, getTransactions } = require('./src/lunchmoney');
-      const { TAX_PARAMS }                 = require('./src/tax/s04');
+      const { getAssets, getTransactions }   = require('./src/lunchmoney');
+      const { TAX_PARAMS, estimateAnnualTax } = require('./src/tax/s04');
 
       result.assets = await getAssets(apiKey);
 
@@ -486,30 +538,18 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
         ? (result.ytdIncome / monthsElapsed) * 12
         : result.ytdIncome * 4;
 
-      const standardDed   = annualEst * params.standardDeductionRate;
-      const statutory     = Math.max(0, annualEst - standardDed);
-      const nisAnnual     = Math.min(annualEst, params.nisMaxIncome) * params.nisRate;
-      const nhtAnnual     = annualEst * params.nhtRate;
-      const edTaxAnnual   = statutory * params.edTaxRate;
-      const chargeable    = Math.max(0, statutory - params.personalThreshold - nisAnnual);
-      let   incomeTaxAnnual = 0;
-      if (chargeable > 0) {
-        incomeTaxAnnual = chargeable <= params.incomeTaxBand1Max
-          ? chargeable * params.incomeTaxRate1
-          : params.incomeTaxBand1Max * params.incomeTaxRate1 +
-            (chargeable - params.incomeTaxBand1Max) * params.incomeTaxRate2;
-      }
-      const totalAnnual = nisAnnual + nhtAnnual + edTaxAnnual + incomeTaxAnnual;
+      // Shared with the S04A estimate (integer-cents math in src/tax/s04.js).
+      const est = estimateAnnualTax(annualEst, params);
       const r2 = v => Math.round(v * 100) / 100;
 
       result.quarterlyTaxEstimate = {
         annualEstimate: r2(annualEst),
         monthsElapsed:  Math.round(monthsElapsed * 10) / 10,
-        nis:            r2(nisAnnual     / 4),
-        nht:            r2(nhtAnnual     / 4),
-        edTax:          r2(edTaxAnnual   / 4),
-        incomeTax:      r2(incomeTaxAnnual / 4),
-        total:          r2(totalAnnual   / 4),
+        nis:            r2(est.nis       / 4),
+        nht:            r2(est.nht       / 4),
+        edTax:          r2(est.edTax     / 4),
+        incomeTax:      r2(est.incomeTax / 4),
+        total:          r2(est.total     / 4),
       };
 
       // ── Missing statements: derive from YTD transactions already fetched ──
@@ -750,33 +790,35 @@ ipcMain.handle('p24:delete', async (event, id) => {
 // hidden BrowserWindow, exports to PDF via Chromium's engine, and offers a
 // save dialog.
 ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
+  const { BrowserWindow: BW } = require('electron');
+  let printWin = null;
+  let tmpDir = null;
   try {
-    const { BrowserWindow: BW } = require('electron');
-
-    // Write the HTML to a temp file so the hidden window can load it as file://
-    const tmpPath = path.join(app.getPath('temp'), 'mitax-s04-print.html');
+    // Unique temp dir avoids the predictable-path clobber/symlink race and
+    // lets us clean up deterministically.
+    tmpDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'mitax-'));
+    const tmpPath = path.join(tmpDir, 's04-print.html');
     fs.writeFileSync(tmpPath, htmlContent, 'utf8');
 
-    const printWin = new BW({
+    printWin = new BW({
       show: false,
       width: 900,
       height: 1200,
-      webPreferences: { javascript: true, nodeIntegration: false, contextIsolation: true },
+      // Static report HTML — no script execution needed, so disable JS.
+      webPreferences: { javascript: false, nodeIntegration: false, contextIsolation: true, sandbox: true },
     });
+    hardenWindow(printWin);
 
-    await printWin.loadURL(`file://${tmpPath.replace(/\\/g, '/')}`);
-    // Give Chromium a moment to finish layout/fonts
-    await new Promise(r => setTimeout(r, 900));
+    // loadFile resolves on did-finish-load; with JS disabled there are no async
+    // scripts to wait on, so the fixed sleep is unnecessary.
+    await printWin.loadFile(tmpPath);
 
     const pdfBuffer = await printWin.webContents.printToPDF({
-      marginsType:     2,       // minimal margins
+      margins:         { marginType: 'none' },
       pageSize:        'Letter',
       printBackground: true,
       landscape:       false,
     });
-
-    printWin.destroy();
-    fs.unlinkSync(tmpPath);
 
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       defaultPath: filename || 's04-tax-return.pdf',
@@ -788,6 +830,9 @@ ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
     return { success: true, filePath };
   } catch (err) {
     return { success: false, error: err.message };
+  } finally {
+    if (printWin && !printWin.isDestroyed()) printWin.destroy();
+    if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
   }
 });
 
@@ -797,12 +842,7 @@ ipcMain.handle('open-file-dialog', async () => {
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Statements', extensions: ['pdf', 'csv', 'xlsx'] }],
   });
+  // Authorize the user-chosen paths for subsequent parse-pdf/reconcile calls.
+  (filePaths || []).forEach(p => allowedFiles.add(p));
   return filePaths || [];
 });
-
-ipcMain.handle('read-file', async (event, filePath) => {
-  const buffer = fs.readFileSync(filePath);
-  return { buffer: buffer.toString('base64'), name: path.basename(filePath) };
-});
-
-ipcMain.handle('get-app-data-path', () => app.getPath('userData'));
