@@ -2960,9 +2960,9 @@ async function startReconcile() {
     return;
   }
 
-  const { signMismatches, phantomBalances } = res.data;
+  const { signMismatches, phantomBalances, suspectedPhantoms = [] } = res.data;
 
-  if (!signMismatches.length && !phantomBalances.length) {
+  if (!signMismatches.length && !phantomBalances.length && !suspectedPhantoms.length) {
     body.innerHTML = '<div style="padding:20px;color:var(--text-muted);">All transactions match — nothing to fix.</div>';
     return;
   }
@@ -3035,6 +3035,38 @@ async function startReconcile() {
       </div>`;
   }
 
+  if (suspectedPhantoms.length) {
+    html += `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">
+          ⚠ Suspected Phantom Balances <span class="badge badge-yellow">${suspectedPhantoms.length}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+          These match a balance-line payee pattern but were <strong>not</strong> confirmed against the parsed
+          statement. Review each carefully before deleting — real transactions can share this wording.
+          Left unchecked by default.
+        </div>
+        <div style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              <th style="padding:6px;width:30px;"></th>
+              <th style="padding:6px;text-align:left;">Date</th>
+              <th style="padding:6px;text-align:left;">Payee</th>
+              <th style="padding:6px;text-align:right;">Amount</th>
+            </tr></thead>
+            <tbody>${suspectedPhantoms.map(p => `
+              <tr>
+                <td style="padding:4px 6px;"><input type="checkbox" class="reconcile-suspected-cb" data-lm-id="${p.lmId}"></td>
+                <td style="padding:4px 6px;">${escHtml(p.date)}</td>
+                <td style="padding:4px 6px;">${escHtml(p.payee)}</td>
+                <td style="padding:4px 6px;text-align:right;">${cur} ${Number(p.amount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   body.innerHTML = html;
   applyBtn.disabled = false;
 
@@ -3053,7 +3085,7 @@ async function startReconcile() {
   applyBtn.parentNode.replaceChild(newApply, applyBtn);
   newApply.addEventListener('click', async () => {
     const flipIds   = [...body.querySelectorAll('.reconcile-flip-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
-    const deleteIds = [...body.querySelectorAll('.reconcile-delete-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
+    const deleteIds = [...body.querySelectorAll('.reconcile-delete-cb:checked, .reconcile-suspected-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
 
     if (!flipIds.length && !deleteIds.length) { toast('Nothing selected', 'error'); return; }
 
