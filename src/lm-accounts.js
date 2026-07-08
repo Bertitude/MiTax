@@ -32,8 +32,11 @@ function encryptKey(plain) {
 
 function decryptKey(stored) {
   if (!isEncrypted(stored)) return stored; // legacy plaintext
+  // On failure (keychain reset / corrupted blob / different machine) return
+  // null rather than the raw ciphertext — a ciphertext blob used as an API key
+  // silently fails auth; null lets callers surface "re-enter your key".
   try { return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64')); }
-  catch (_) { return stored; }
+  catch (_) { return null; }
 }
 
 function getDB() {

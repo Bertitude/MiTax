@@ -6,6 +6,17 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Security
+- **LunchMoney API key no longer leaves the main process.** The key was
+  encrypted at rest but then decrypted, sent to the renderer, and mirrored in
+  plaintext to `localStorage` in the same profile directory — nullifying the
+  encryption. Now the main process resolves the active account's key internally
+  for every LunchMoney call, the renderer holds only a `connected` flag, and
+  any pre-1.3 plaintext key in `localStorage` is migrated into the encrypted
+  store and deleted. A stored key that can't be decrypted (e.g. after an OS
+  keychain reset) now cleanly reports "not connected" instead of being used as
+  a broken key.
+
 ### Added
 - **S04A falls back to the prior-year base when current-year income data is
   thin.** Previously, sparse year-to-date income (usually because most

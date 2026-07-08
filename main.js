@@ -13,6 +13,31 @@ const ALLOWED_EXTERNAL_PREFIXES = ['https://mytaxes.ads.taj.gov.jm/'];
 // Prevents a compromised renderer from reading arbitrary paths through parse-pdf.
 const allowedFiles = new Set();
 
+// Resolve the active account's decrypted API key inside the main process.
+// The key is NEVER sent to or accepted from the renderer for operations — the
+// renderer only holds a "connected" flag — so every LunchMoney call resolves
+// the key here from the encrypted store.
+function activeApiKey() {
+  return require('./src/lm-accounts').getActiveApiKey();
+}
+
+// Strip the api_key before an account row crosses the IPC boundary. The
+// renderer must never receive the raw key (it would end up in plaintext in
+// Chromium local storage). `connected` tells the renderer a usable key exists.
+function publicAccount(acc) {
+  if (!acc) return null;
+  return {
+    id:                 acc.id,
+    label:              acc.label,
+    user_name:          acc.user_name,
+    budget_name:        acc.budget_name,
+    is_active:          acc.is_active,
+    created_at:         acc.created_at,
+    connected:          !!acc.api_key,
+    keyStorageInsecure: !!acc.keyStorageInsecure,
+  };
+}
+
 // Resolve "today" as YYYY-MM-DD in the user's configured timezone (falls back
 // to the system timezone, then UTC). Used wherever date-only comparisons feed
 // tax logic, where a UTC/local mismatch shifts the day.
@@ -152,20 +177,20 @@ ipcMain.handle('register-statement-file', (event, filePath) => {
 });
 
 // ─── IPC: LunchMoney Assets ─────────────────────────────────────────────────
-ipcMain.handle('get-lm-assets', async (event, apiKey) => {
+ipcMain.handle('get-lm-assets', async () => {
   try {
     const { getAssets } = require('./src/lunchmoney');
-    const assets = await getAssets(apiKey);
+    const assets = await getAssets(activeApiKey());
     return { success: true, data: assets };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('create-lm-asset', async (event, { apiKey, assetData }) => {
+ipcMain.handle('create-lm-asset', async (event, { assetData }) => {
   try {
     const { createAsset } = require('./src/lunchmoney');
-    const asset = await createAsset(apiKey, assetData);
+    const asset = await createAsset(activeApiKey(), assetData);
     return { success: true, data: asset };
   } catch (err) {
     return { success: false, error: err.message };
@@ -173,10 +198,10 @@ ipcMain.handle('create-lm-asset', async (event, { apiKey, assetData }) => {
 });
 
 // ─── IPC: Payees ────────────────────────────────────────────────────────────
-ipcMain.handle('get-lm-payees', async (event, apiKey) => {
+ipcMain.handle('get-lm-payees', async () => {
   try {
     const { getPayees } = require('./src/lunchmoney');
-    const payees = await getPayees(apiKey);
+    const payees = await getPayees(activeApiKey());
     return { success: true, data: payees };
   } catch (err) {
     return { success: false, error: err.message };
@@ -194,10 +219,10 @@ ipcMain.handle('process-payees', async (event, { transactions, existingPayees })
 });
 
 // ─── IPC: Upload Transactions ───────────────────────────────────────────────
-ipcMain.handle('upload-transactions', async (event, { transactions, apiKey, assetId, skipDuplicates, applyRules }) => {
+ipcMain.handle('upload-transactions', async (event, { transactions, assetId, skipDuplicates, applyRules }) => {
   try {
     const { uploadTransactions } = require('./src/lunchmoney');
-    const result = await uploadTransactions(transactions, apiKey, { assetId, skipDuplicates, applyRules });
+    const result = await uploadTransactions(transactions, activeApiKey(), { assetId, skipDuplicates, applyRules });
     return { success: true, data: result };
   } catch (err) {
     return { success: false, error: err.message };
@@ -205,10 +230,10 @@ ipcMain.handle('upload-transactions', async (event, { transactions, apiKey, asse
 });
 
 // ─── IPC: Payee Batch Update ─────────────────────────────────────────────────
-ipcMain.handle('payee-update-batch', async (event, { apiKey, updates }) => {
+ipcMain.handle('payee-update-batch', async (event, { updates }) => {
   try {
     const { batchUpdatePayees } = require('./src/lunchmoney');
-    const result = await batchUpdatePayees(apiKey, updates);
+    const result = await batchUpdatePayees(activeApiKey(), updates);
     return { success: true, data: result };
   } catch (err) {
     return { success: false, error: err.message };
@@ -216,10 +241,10 @@ ipcMain.handle('payee-update-batch', async (event, { apiKey, updates }) => {
 });
 
 // ─── IPC: Coverage (from LunchMoney) ────────────────────────────────────────
-ipcMain.handle('get-asset-coverage', async (event, { apiKey, assetId, year }) => {
+ipcMain.handle('get-asset-coverage', async (event, { assetId, year }) => {
   try {
     const { getAssetMonthCoverage } = require('./src/lunchmoney');
-    const coverage = await getAssetMonthCoverage(apiKey, assetId, year);
+    const coverage = await getAssetMonthCoverage(activeApiKey(), assetId, year);
     return { success: true, data: coverage };
   } catch (err) {
     return { success: false, error: err.message };
@@ -277,7 +302,7 @@ ipcMain.handle('get-oldest-upload-year', async () => {
 // tx id stored in that upload's lm_ids. Sends progress events to the
 // renderer so the UI can draw a progress bar. Marks the upload as fixed
 // on success so it can't be run twice (protects against re-flipping).
-ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
+ipcMain.handle('fix-flipped-signs', async (event, { uploadId }) => {
   try {
     const { getUpload, markSignsFixed } = require('./src/tracker');
     const { flipTransactionSigns }      = require('./src/lunchmoney');
@@ -292,7 +317,7 @@ ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
       return { success: false, error: 'No LunchMoney transaction IDs recorded for this upload' };
     }
 
-    const result = await flipTransactionSigns(apiKey, lmIds, progress => {
+    const result = await flipTransactionSigns(activeApiKey(), lmIds, progress => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('fix-flipped-signs:progress', { uploadId, ...progress });
       }
@@ -311,10 +336,10 @@ ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
 // ─── IPC: Flip Single Transaction (one-off correction from account view) ────
 // Reuses flipTransactionSigns with a single-element array so we get the same
 // retry/backoff and skip-if-deleted behaviour as the per-upload path.
-ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
+ipcMain.handle('flip-single-transaction', async (event, { txId }) => {
   try {
     const { flipTransactionSigns } = require('./src/lunchmoney');
-    const result = await flipTransactionSigns(apiKey, [txId]);
+    const result = await flipTransactionSigns(activeApiKey(), [txId]);
     if (result.failed && result.failed.length) {
       return { success: false, error: result.failed[0].error || 'Flip failed' };
     }
@@ -331,7 +356,7 @@ ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
 // Returns { signMismatches, phantomBalances, suspectedPhantoms } — see
 // src/reconcile.js. Phantom deletion is scoped to balance lines the parser
 // actually saw (balanceSentinels); payee-only matches are merely "suspected".
-ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath, year }) => {
+ipcMain.handle('reconcile-statement', async (event, { assetId, filePath, year }) => {
   try {
     if (!allowedFiles.has(filePath)) {
       return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
@@ -347,7 +372,7 @@ ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath,
     // Balance-sentinel lines the parsers skipped — used to scope phantom deletion.
     const balanceSentinels = results.flatMap(r => r.balanceSentinels || []);
 
-    const lmTxs = await getTransactions(apiKey, {
+    const lmTxs = await getTransactions(activeApiKey(), {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
@@ -361,9 +386,10 @@ ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath,
 });
 
 // ─── IPC: Apply Reconciliation — flip signs + delete phantoms ───────────────
-ipcMain.handle('apply-reconciliation', async (event, { apiKey, flipIds, deleteIds }) => {
+ipcMain.handle('apply-reconciliation', async (event, { flipIds, deleteIds }) => {
   try {
     const { flipTransactionSigns, deleteTransaction } = require('./src/lunchmoney');
+    const apiKey = activeApiKey();
 
     const result = { flipped: 0, deleted: 0, errors: [] };
 
@@ -389,10 +415,10 @@ ipcMain.handle('apply-reconciliation', async (event, { apiKey, flipIds, deleteId
 });
 
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
-ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year }) => {
+ipcMain.handle('get-account-transactions', async (event, { assetId, year }) => {
   try {
     const { getTransactions } = require('./src/lunchmoney');
-    const txs = await getTransactions(apiKey, {
+    const txs = await getTransactions(activeApiKey(), {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
@@ -415,8 +441,7 @@ ipcMain.handle('lm-accounts:list', async () => {
 ipcMain.handle('lm-accounts:get-active', async () => {
   try {
     const { getActiveAccount } = require('./src/lm-accounts');
-    const acc = getActiveAccount();
-    return { success: true, data: acc };
+    return { success: true, data: publicAccount(getActiveAccount()) };
   } catch (err) { logError('lm-accounts:get-active', err); return { success: false, error: err.message }; }
 });
 
@@ -447,8 +472,7 @@ ipcMain.handle('lm-accounts:switch', async (event, id) => {
   try {
     const { setActiveAccount, getActiveAccount } = require('./src/lm-accounts');
     setActiveAccount(id);
-    const acc = getActiveAccount();
-    return { success: true, data: acc };
+    return { success: true, data: publicAccount(getActiveAccount()) };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -458,8 +482,7 @@ ipcMain.handle('lm-accounts:remove', async (event, id) => {
   try {
     const { removeAccount, getActiveAccount } = require('./src/lm-accounts');
     removeAccount(id);
-    const acc = getActiveAccount();
-    return { success: true, data: acc }; // returns new active (if any) so renderer can reconnect
+    return { success: true, data: publicAccount(getActiveAccount()) }; // new active (if any) so renderer can reconnect
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -487,10 +510,10 @@ ipcMain.handle('lm-accounts:migrate', async (event, { apiKey }) => {
 });
 
 // ─── IPC: Categories ────────────────────────────────────────────────────────
-ipcMain.handle('get-lm-categories', async (event, apiKey) => {
+ipcMain.handle('get-lm-categories', async () => {
   try {
     const { getCategories } = require('./src/lunchmoney');
-    const cats = await getCategories(apiKey);
+    const cats = await getCategories(activeApiKey());
     return { success: true, data: cats };
   } catch (err) {
     return { success: false, error: err.message };
@@ -517,9 +540,10 @@ ipcMain.handle('export-csv', async (event, { transactions, filename }) => {
 });
 
 // ─── IPC: Dashboard Data ─────────────────────────────────────────────────────
-ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) => {
+ipcMain.handle('get-dashboard-data', async (event, { year, quarter }) => {
   const qMonthsByQ = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
   const qMonths    = qMonthsByQ[(quarter || 1) - 1];
+  const apiKey     = activeApiKey();
 
   const result = {
     assets:               [],
@@ -615,9 +639,10 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
 // Given an array of { assetId, date, amount } objects, returns a parallel
 // boolean array where true = a matching LunchMoney transaction already exists
 // (same asset, same date, same absolute amount).  Fails open (all false) on error.
-ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
+ipcMain.handle('check-duplicates', async (event, { transactions }) => {
   try {
     const { getTransactions } = require('./src/lunchmoney');
+    const apiKey = activeApiKey();
 
     if (!apiKey || !transactions || !transactions.length) {
       return { success: true, data: new Array(transactions.length).fill(false) };
@@ -672,13 +697,13 @@ ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
 });
 
 // ─── IPC: S04 Tax ────────────────────────────────────────────────────────────
-ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCategoryMappings }) => {
+ipcMain.handle('generate-s04', async (event, { year, manualData, userCategoryMappings }) => {
   try {
     const { generateS04 }          = require('./src/tax/s04');
     const { getP24TotalsForYear }  = require('./src/p24');
     const p24Totals = getP24TotalsForYear(year);
     const report = await generateS04({
-      year, apiKey, manualData,
+      year, apiKey: activeApiKey(), manualData,
       userCategoryMappings: userCategoryMappings || {},
       p24Totals,
     });
@@ -729,12 +754,13 @@ ipcMain.handle('delete-filing', async (event, id) => {
   }
 });
 
-ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone }) => {
+ipcMain.handle('generate-s04a', async (event, { currentYear, timezone }) => {
   try {
     const { getMostRecentS04 }         = require('./src/filings');
     const { generateS04A }             = require('./src/tax/s04');
     const { getTransactions }          = require('./src/lunchmoney');
 
+    const apiKey          = activeApiKey();
     const priorYearFiling = getMostRecentS04(currentYear - 1);
 
     // Resolve "today" in the user's configured timezone

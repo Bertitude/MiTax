@@ -5,7 +5,10 @@
 // ─── State ───────────────────────────────────────────────────────────────────
 
 const state = {
-  apiKey:       localStorage.getItem('lm_api_key') || '',
+  // Connection flag only — the raw API key never lives in the renderer. The
+  // main process resolves the active account's key from the encrypted store
+  // for every LunchMoney call.
+  connected:    false,
   queue:        [],     // { id, name, path, status, parsed, assetId, assetName }
   lmAssets:     [],
   lmPayees:     [],
@@ -166,26 +169,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   restoreProfile();
 
   // ── Multi-account startup ──────────────────────────────────────────────
-  // 1. Try to load the active account from the DB.
-  // 2. If none exists but localStorage has a legacy key, migrate it first.
-  // 3. Connect with the resolved key.
+  // 1. Try to load the active account from the DB (main-process only; the raw
+  //    key never crosses to the renderer — get-active returns a `connected`
+  //    flag, not the key).
+  // 2. If none exists but a pre-1.3 plaintext key sits in localStorage, migrate
+  //    it into the encrypted store, then remove the plaintext copy.
+  // 3. Connect using the stored active key.
 
-  const activeRes = await window.electronAPI.lmAccounts.getActive();
-  let startKey    = activeRes?.data?.api_key || null;
+  let activeRes = await window.electronAPI.lmAccounts.getActive();
 
-  if (!startKey && state.apiKey) {
-    // First run after upgrade: migrate the localStorage key into the DB
-    await window.electronAPI.lmAccounts.migrate({ apiKey: state.apiKey });
-    const migratedRes = await window.electronAPI.lmAccounts.getActive();
-    startKey = migratedRes?.data?.api_key || state.apiKey;
+  const legacyKey = localStorage.getItem('lm_api_key');
+  if (!activeRes?.data?.connected && legacyKey) {
+    // First run after upgrade: migrate the localStorage key into the DB.
+    await window.electronAPI.lmAccounts.migrate({ apiKey: legacyKey });
+    activeRes = await window.electronAPI.lmAccounts.getActive();
   }
+  // The plaintext key must not linger in localStorage — it defeats safeStorage.
+  if (legacyKey) localStorage.removeItem('lm_api_key');
 
-  if (startKey) {
-    state.apiKey = startKey;
-    // Keep legacy input populated for fallback / test-connection button
-    const legacyInput = document.getElementById('api-key-input');
-    if (legacyInput) legacyInput.value = startKey;
-    await connectAPI(startKey, false);
+  if (activeRes?.data?.connected) {
+    await connectAPI(false);
   }
 
   // Warn once if the OS has no keychain backend so the API key is stored
@@ -386,21 +389,23 @@ function navigateTo(view) {
 
 // ─── API Connection ───────────────────────────────────────────────────────────
 
-async function connectAPI(apiKey, showFeedback = true) {
+// Connects using the active account's stored key, resolved in the main process
+// — no key is passed from the renderer. Assumes an active account exists.
+async function connectAPI(showFeedback = true) {
   const dot   = document.getElementById('api-dot');
   const label = document.getElementById('api-label');
   try {
     const [assetsRes, payeesRes, catsRes] = await Promise.all([
-      window.electronAPI.getLMAssets(apiKey),
-      window.electronAPI.getLMPayees(apiKey),
-      window.electronAPI.getLMCategories(apiKey),
+      window.electronAPI.getLMAssets(),
+      window.electronAPI.getLMPayees(),
+      window.electronAPI.getLMCategories(),
     ]);
     if (!assetsRes.success) throw new Error(assetsRes.error);
 
     state.lmAssets     = assetsRes.data || [];
     state.lmPayees     = payeesRes.data || [];
     state.lmCategories = catsRes.data   || [];
-    state.apiKey       = apiKey;
+    state.connected    = true;
 
     dot.className     = 'status-dot connected';
     label.textContent = `Connected · ${state.lmAssets.length} accounts`;
@@ -841,13 +846,13 @@ async function createNewAccount() {
   const errEl         = document.getElementById('create-account-error');
 
   if (!name)          { errEl.textContent = 'Account name is required.'; errEl.style.display = 'block'; return; }
-  if (!state.apiKey)  { errEl.textContent = 'No API key. Connect in Settings first.'; errEl.style.display = 'block'; return; }
+  if (!state.connected)  { errEl.textContent = 'No API key. Connect in Settings first.'; errEl.style.display = 'block'; return; }
 
   const btn     = document.getElementById('create-account-btn');
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Creating…';
 
-  const result = await window.electronAPI.createLMAsset(state.apiKey, {
+  const result = await window.electronAPI.createLMAsset({
     name, displayName, typeName, subtypeName, currency,
     institutionName: institution, balance, balanceAsOf, closedOn,
     excludeTransactions: excludeTx,
@@ -972,7 +977,7 @@ async function openValidateModal() {
   }));
 
   // ── Duplicate check against LunchMoney ───────────────────────────────────
-  if (state.apiKey && state.validateRows.length) {
+  if (state.connected && state.validateRows.length) {
     try {
       toast('Checking for existing transactions…', 'info', 2500);
       const checkPayload = state.validateRows.map(r => ({
@@ -981,7 +986,6 @@ async function openValidateModal() {
         amount:  r.amount,
       }));
       const dupeRes = await window.electronAPI.checkDuplicates({
-        apiKey:       state.apiKey,
         transactions: checkPayload,
       });
       if (dupeRes.success && dupeRes.data) {
@@ -1112,7 +1116,7 @@ function filterRows(type) {
 // ─── Upload validated ─────────────────────────────────────────────────────────
 
 async function uploadValidated() {
-  if (!state.apiKey) { toast('Set your LunchMoney API key in Settings first.', 'error'); return; }
+  if (!state.connected) { toast('Set your LunchMoney API key in Settings first.', 'error'); return; }
 
   const selected = state.validateRows.filter(r => r._include);
   if (!selected.length) { toast('No transactions selected.', 'info'); return; }
@@ -1146,7 +1150,6 @@ async function uploadValidated() {
 
     const result = await window.electronAPI.uploadTransactions({
       transactions:   txs,
-      apiKey:         state.apiKey,
       assetId:        group.assetId || null,
       skipDuplicates: prefs.skipDuplicates,
       applyRules:     prefs.applyRules,
@@ -1315,8 +1318,8 @@ async function refreshTracker() {
 
     let monthData = Array.from({ length: 12 }, (_, i) => ({ month: i+1, year, hasTxns: false, count: 0, earliestDate: null, latestDate: null }));
 
-    if (state.apiKey) {
-      const cov = await window.electronAPI.getAssetCoverage({ apiKey: state.apiKey, assetId: asset.id, year });
+    if (state.connected) {
+      const cov = await window.electronAPI.getAssetCoverage({ assetId: asset.id, year });
       if (cov.success) monthData = cov.data;
     }
 
@@ -1588,7 +1591,7 @@ ${escHtml(u.notes)}</pre>
  * history so the ⚠ chip disappears.
  */
 async function runFixSigns(u) {
-  if (!state.apiKey) {
+  if (!state.connected) {
     toast('Connect a LunchMoney API key in Settings first.', 'error');
     return;
   }
@@ -1614,7 +1617,7 @@ async function runFixSigns(u) {
   });
 
   try {
-    const res = await window.electronAPI.fixFlippedSigns({ uploadId: u.id, apiKey: state.apiKey });
+    const res = await window.electronAPI.fixFlippedSigns({ uploadId: u.id });
     if (!res.success) {
       toast(`Fix failed: ${res.error}`, 'error');
       if (btn) { btn.disabled = false; btn.textContent = '🔧 Fix signs for this upload'; }
@@ -1678,21 +1681,21 @@ function setupSettings() {
   // ── Legacy single-key fallback (hidden once accounts exist) ─────────────
   const saveApiBtn = document.getElementById('save-api-key-btn');
   const testApiBtn = document.getElementById('test-api-btn');
-  if (saveApiBtn) {
-    saveApiBtn.addEventListener('click', async () => {
-      const key = document.getElementById('api-key-input').value.trim();
-      if (!key) { toast('Please enter an API key', 'error'); return; }
-      localStorage.setItem('lm_api_key', key);
-      await connectAPI(key, true);
-    });
-  }
-  if (testApiBtn) {
-    testApiBtn.addEventListener('click', async () => {
-      const key = document.getElementById('api-key-input').value.trim();
-      if (!key) { toast('Enter an API key first', 'error'); return; }
-      await connectAPI(key, true);
-    });
-  }
+  // Both legacy buttons now validate the key against LunchMoney and store it
+  // encrypted (via lm-accounts:add) instead of holding it in the renderer.
+  const connectWithKey = async () => {
+    const input = document.getElementById('api-key-input');
+    const key   = input.value.trim();
+    if (!key) { toast('Please enter an API key', 'error'); return; }
+    const res = await window.electronAPI.lmAccounts.add({ apiKey: key });
+    input.value = '';               // never keep the key in the DOM
+    if (!res.success) { toast(`Failed to connect: ${res.error}`, 'error'); return; }
+    state.connected = true;
+    await connectAPI(true);
+    renderLMAccountsList();
+  };
+  if (saveApiBtn) saveApiBtn.addEventListener('click', connectWithKey);
+  if (testApiBtn) testApiBtn.addEventListener('click', connectWithKey);
 
   document.getElementById('save-prefs-btn').addEventListener('click', savePrefs);
 
@@ -1822,10 +1825,9 @@ async function addLMAccount() {
   if (statusEl)   statusEl.textContent = '✓ Connected';
   setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
 
-  // Switch to the new account
-  state.apiKey = apiKey;
-  localStorage.setItem('lm_api_key', apiKey);
-  await connectAPI(apiKey, false);
+  // The main process stored + activated the account; connect using it.
+  state.connected = true;
+  await connectAPI(false);
   renderLMAccountsList();
   toast(`Account added: ${res.data.userName || res.data.budgetName || label || 'new account'}`, 'success');
 }
@@ -1834,17 +1836,11 @@ async function addLMAccount() {
 async function switchLMAccount(id) {
   const res = await window.electronAPI.lmAccounts.switch(id);
   if (!res.success) { toast(`Switch failed: ${res.error}`, 'error'); return; }
+  if (!res.data?.connected) { toast('Could not activate this account', 'error'); return; }
 
-  const newKey = res.data?.api_key;
-  if (!newKey) { toast('Could not read API key for this account', 'error'); return; }
-
-  state.apiKey = newKey;
-  localStorage.setItem('lm_api_key', newKey);
-
-  const legacyInput = document.getElementById('api-key-input');
-  if (legacyInput) legacyInput.value = newKey;
-
-  await connectAPI(newKey, false);
+  // The account is now active in the encrypted store; connect using it.
+  state.connected = true;
+  await connectAPI(false);
   renderLMAccountsList();
   refreshDashboard();
   refreshTracker();
@@ -1857,15 +1853,13 @@ async function removeLMAccount(id) {
   const res = await window.electronAPI.lmAccounts.remove(id);
   if (!res.success) { toast(`Remove failed: ${res.error}`, 'error'); return; }
 
-  // If a new active account was returned, switch to it; else clear connection
+  // If a new active account was returned, connect to it; else clear connection
   const newActive = res.data;
-  if (newActive?.api_key) {
-    state.apiKey = newActive.api_key;
-    localStorage.setItem('lm_api_key', newActive.api_key);
-    await connectAPI(newActive.api_key, false);
+  if (newActive?.connected) {
+    state.connected = true;
+    await connectAPI(false);
   } else {
-    state.apiKey = null;
-    localStorage.removeItem('lm_api_key');
+    state.connected = false;
     const dot   = document.getElementById('api-dot');
     const label = document.getElementById('api-label');
     if (dot)   dot.className     = 'status-dot';
@@ -2271,7 +2265,7 @@ async function generateTax() {
     userCategoryMappings[catId] = rest;
   }
 
-  const result = await window.electronAPI.generateS04({ year, apiKey: state.apiKey || null, manualData, userCategoryMappings });
+  const result = await window.electronAPI.generateS04({ year, manualData, userCategoryMappings });
   btn.disabled  = false;
   btn.innerHTML = '📊 Generate S04 Report';
   if (!result.success) { toast(`Tax generation failed: ${result.error}`, 'error'); return; }
@@ -2475,7 +2469,6 @@ async function refreshDashboard() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading…'; }
 
   const result = await window.electronAPI.getDashboardData({
-    apiKey:  state.apiKey || null,
     year,
     quarter,
   });
@@ -2611,7 +2604,7 @@ function renderDashboardTaxEstimate(estimate, ytdIncome, year, quarter) {
 
   if (!estimate) {
     el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">
-      ${state.apiKey
+      ${state.connected
         ? 'No income transactions found in LunchMoney for this year yet.'
         : 'Connect to LunchMoney in Settings to see quarterly tax estimates.'}
     </div>`;
@@ -2875,7 +2868,7 @@ function renderPayeeCleanup(txs) {
 }
 
 async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
-  if (!state.apiKey) { toast('Not connected to LunchMoney', 'error'); return; }
+  if (!state.connected) { toast('Not connected to LunchMoney', 'error'); return; }
 
   const candidates = card._candidates || [];
   const updates = [];
@@ -2894,7 +2887,7 @@ async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
   applyBtn.disabled = true;
   applyBtn.innerHTML = `<span class="spinner"></span> Updating ${updates.length}…`;
 
-  const res = await window.electronAPI.updatePayeeBatch({ apiKey: state.apiKey, updates });
+  const res = await window.electronAPI.updatePayeeBatch({ updates });
 
   applyBtn.disabled = false;
   applyBtn.innerHTML = 'Apply Selected';
@@ -2938,7 +2931,7 @@ function setupAccountView() {
 async function startReconcile() {
   const asset = state._accountViewAsset;
   if (!asset)         { toast('No account selected', 'error'); return; }
-  if (!state.apiKey)  { toast('Not connected to LunchMoney', 'error'); return; }
+  if (!state.connected)  { toast('Not connected to LunchMoney', 'error'); return; }
 
   const fileResult = await window.electronAPI.openFileDialog();
   if (!fileResult || !fileResult.length) return;
@@ -2954,7 +2947,7 @@ async function startReconcile() {
 
   let res;
   try {
-    res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+    res = await window.electronAPI.reconcileStatement({ assetId: asset.id, filePath, year });
   } catch (err) {
     body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(err.message || String(err))}</div>`;
     return;
@@ -3102,7 +3095,7 @@ async function startReconcile() {
     newApply.disabled    = true;
     newApply.textContent = 'Applying…';
 
-    const result = await window.electronAPI.applyReconciliation({ apiKey: state.apiKey, flipIds, deleteIds });
+    const result = await window.electronAPI.applyReconciliation({ flipIds, deleteIds });
 
     if (result.success) {
       const d = result.data;
@@ -3158,13 +3151,12 @@ async function loadAccountSummary(asset) {
   statsEl.innerHTML = monthEl.innerHTML = txEl.innerHTML = '';
   monthEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0;"><span class="spinner"></span> Loading ${year} transactions…</div>`;
 
-  if (!state.apiKey) {
+  if (!state.connected) {
     monthEl.innerHTML = `<div class="empty-state"><p>Connect to LunchMoney in Settings to view account data.</p></div>`;
     return;
   }
 
   const res = await window.electronAPI.getAccountTransactions({
-    apiKey:  state.apiKey,
     assetId: asset.id,
     year,
   });
@@ -3307,11 +3299,11 @@ function renderAccountSummary(asset, year, txs) {
       e.stopPropagation();
       const txId = parseInt(btn.dataset.txId, 10);
       if (!txId) return;
-      if (!state.apiKey) { toast('Not connected to LunchMoney', 'error'); return; }
+      if (!state.connected) { toast('Not connected to LunchMoney', 'error'); return; }
       if (!confirm('Flip the sign of this transaction in LunchMoney?')) return;
       btn.disabled    = true;
       btn.textContent = '…';
-      const res = await window.electronAPI.flipSingleTransaction({ apiKey: state.apiKey, txId });
+      const res = await window.electronAPI.flipSingleTransaction({ txId });
       if (res.success) {
         toast('Sign flipped', 'success');
         if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
@@ -3637,7 +3629,7 @@ async function generateS04AEstimate() {
   wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
 
   const tz  = getAppTimezone();
-  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null, timezone: tz === 'system' ? getSystemTimezone() : tz });
+  const res = await window.electronAPI.generateS04A({ currentYear: year, timezone: tz === 'system' ? getSystemTimezone() : tz });
   btn.disabled = false;
   btn.textContent = 'Generate';
 
@@ -3655,6 +3647,8 @@ function renderS04AEstimate(est) {
 
   const adjBadge = est.useAdjusted
     ? `<span class="badge" style="background:rgba(210,153,34,0.18);color:var(--warn2);font-size:10px;margin-left:8px;">Trend-adjusted</span>`
+    : est.insufficientSignal
+    ? `<span class="badge" style="background:rgba(88,166,255,0.16);color:var(--accent);font-size:10px;margin-left:8px;" title="Current-year income data looks incomplete — showing the prior-year base. Upload more statements for a trend-adjusted estimate.">Prior-year base</span>`
     : '';
   const priorInfo = est.hasPriorFiling
     ? `Prior year (${est.priorYear}) S04 on file · Tax: ${fmt(est.priorYearTaxPayable)}`

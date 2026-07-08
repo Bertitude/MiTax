@@ -12,7 +12,7 @@ This is a fresh audit of the codebase after the v1.3.0 remediation release (PR #
 
 | # | Prior finding | Status | Evidence |
 |---|---|---|---|
-| 1 | Plaintext API keys | **Partially fixed** | safeStorage encryption landed (`lm-accounts.js`), but the decrypted key is re-persisted plaintext in renderer localStorage — see **new Critical N1** |
+| 1 | Plaintext API keys | **Fixed** | safeStorage encryption (`lm-accounts.js`); the localStorage plaintext mirror that nullified it (N1) was removed 2026-07-08 — the key now stays main-process-side |
 | 2 | Electron 29 EOL | **Fixed** | electron 41.9.2 |
 | 3 | Vulnerable pdf-parse | **Fixed** | pdfjs-dist 4.10.38 with `isEvalSupported:false` (`src/pdf/extract.js:33`); lifecycle gaps → N13 |
 | 4 | Unrestricted `read-file` IPC | **Fixed** | Handler deleted; `allowedFiles` allow-list enforced in `parse-pdf`/`reconcile-statement` (`main.js:94,318`); minor symlink gap → N20 |
@@ -37,7 +37,7 @@ This is a fresh audit of the codebase after the v1.3.0 remediation release (PR #
 | 23 | Duplicated/contradictory sign logic | **Partially fixed** | One documented `applySignConvention` invariant, applied once per parser — but five pass-through parsers violate it → N2 |
 | 24 | Tooling debt | **Partially fixed** | Tests+CI exist; node-fetch still a dep, no ESLint, `renderer/app.js` still a ~4k-line monolith |
 
-**Bottom line:** the remediation was real — 10 findings fully fixed, and the fixed paths (Scotiabank, CSV happy path, S04 annual math, IPC surface) are solid. But two of the headline fixes are undermined by follow-on bugs: the key-encryption work is currently nullified by a plaintext localStorage mirror (N1), and the sign-convention consolidation exposed that five untested parsers systematically violate the new invariant (N2).
+**Bottom line:** the remediation was real — 10 findings fully fixed, and the fixed paths (Scotiabank, CSV happy path, S04 annual math, IPC surface) are solid. But two of the headline fixes were undermined by follow-on bugs: the key-encryption work was nullified by a plaintext localStorage mirror (N1 — **now resolved**), and the sign-convention consolidation exposed that five untested parsers systematically violate the new invariant (N2).
 
 ---
 
@@ -54,12 +54,12 @@ This is a fresh audit of the codebase after the v1.3.0 remediation release (PR #
 
 ## Critical
 
-### N1. Decrypted API key round-trips to the renderer and is re-persisted in plaintext localStorage
+### N1. Decrypted API key round-trips to the renderer and is re-persisted in plaintext localStorage — **RESOLVED 2026-07-08**
 `renderer/app.js:8,1680,1822,1837,1859`; `main.js:397-448` (`lm-accounts:get-active/add/switch` return the decrypted `api_key`)
 
 The v1.3.0 safeStorage work encrypts keys in SQLite — and then the renderer immediately writes the same key back in plaintext: `localStorage.setItem('lm_api_key', …)` on connect (`:1680`), add (`:1822`), switch (`:1837`), and remove (`:1859`), and reads it into `state.apiKey` at startup (`:8`). The legacy-migration path never calls `removeItem`. The plaintext key therefore sits permanently in Chromium's Local Storage leveldb inside the **same `userData` directory** the encryption was meant to protect — any local process, backup sync, or malware reading the profile recovers it, encryption or not. The prior audit's praise that "keys never cross the IPC boundary" is no longer true.
 
-**Fix:** keep keys main-process-side. Handlers should resolve the active key internally (`getActiveApiKey()`) instead of accepting/returning `apiKey`; at minimum, stop mirroring to localStorage, and delete `lm_api_key` after successful migration.
+**Fixed:** the key is now resolved entirely in the main process. A shared `activeApiKey()` (`main.js`) supplies the decrypted active key to every LunchMoney handler, which no longer accepts an `apiKey` from the renderer; the account handlers (`get-active`/`switch`/`remove`) return a `publicAccount` projection that strips `api_key` and exposes only a `connected` flag. The renderer keeps `state.connected` (boolean) instead of the key, no longer writes `lm_api_key` to localStorage, and deletes any pre-1.3 plaintext key from localStorage after migrating it. Also (companion to N26): `decryptKey` now returns `null` on failure instead of the raw ciphertext, so a keychain reset surfaces as "not connected" rather than a ciphertext blob silently used as a key.
 
 ---
 
@@ -167,7 +167,7 @@ One-directional: statement transactions missing from LM and duplicate LM rows ar
 No request timeout (node-fetch v2 default: none) — a stalled connection hangs uploads forever (`lunchmoney.js:56`); 429 handling ignores `Retry-After`; `getPayees`/`getAssetMonthCoverage` swallow all errors into empty results, making auth failure indistinguishable from no-data (`:154-172,210-219`).
 
 ### N26. Key-storage secondary gaps
-`decryptKey` returns the raw **ciphertext as if it were the key** on decrypt failure (`lm-accounts.js:33-37`) — a keychain reset yields a silent "Not connected" with no re-enter prompt; `keyStorageInsecure` is computed from `encryptionAvailable()` rather than what was actually stored, so a transient `encryptString` throw stores plaintext while reporting secure (`:27-31,92`); lazy migration re-encrypts only the *active* account and never scrubs old plaintext pages (no `secure_delete`/VACUUM) (`:82-90`); `api_key UNIQUE` is vestigial under non-deterministic ciphertext and the decrypt-and-scan dedupe fails open on decrypt failure (`:54,111-114`); the insecure-storage warning is a single 4-second toast, once per install (`app.js:193-196`).
+~~`decryptKey` returns the raw **ciphertext as if it were the key** on decrypt failure~~ **(resolved 2026-07-08: returns `null`, surfacing as "not connected");** `keyStorageInsecure` is still computed from `encryptionAvailable()` rather than what was actually stored, so a transient `encryptString` throw stores plaintext while reporting secure (`:27-31,92`); lazy migration re-encrypts only the *active* account and never scrubs old plaintext pages (no `secure_delete`/VACUUM) (`:82-90`); `api_key UNIQUE` is vestigial under non-deterministic ciphertext and the decrypt-and-scan dedupe fails open on decrypt failure (`:54,111-114`); the insecure-storage warning is a single 4-second toast, once per install (`app.js:193-196`).
 
 ### N27. Parser nits
 Detection order routes a statement mentioning "Scotiabank" in a payee to the Scotiabank parser (`parsers/index.js:31-35`); generic's two-amount fallback and header-mapped path give the same unsigned row opposite signs (`generic.js:173,186-189`); JN drops wrapped description continuation lines and its em-dash payee join leaves double spaces (`jn.js:126-127,207-210`); a Scotia date-row whose amount never arrives is discarded without warning (`scotiabank.js:151,181-183`); `reflowItems` deviates from pdf-parse for `y=0` baselines despite the "replicates exactly" comment (`extract.js:45`).
@@ -191,7 +191,7 @@ README still names `LunchMoney-Importer-Setup-*.exe` artifacts (productName is `
 ## Recommended remediation order
 
 **Phase 1 — stop the bleeding (hours each):**
-1. Delete the localStorage key mirror; resolve keys main-process-side (N1).
+1. ~~Delete the localStorage key mirror; resolve keys main-process-side (N1)~~ — done 2026-07-08.
 2. Fix the five parser sign inversions + JMMB crash + PayPal dates (N2–N4) — each is a one-line-to-small fix, and each needs one golden fixture so it can never silently regress. This is the same lesson as prior finding #10: **every High in this audit lives in untested code.**
 3. ~~S04A due-date format and `monthsElapsed` (N5, N6)~~ — done 2026-07-08 (N5, N6, and the N24 instalment rounding resolved together).
 4. Validate/encode IDs in `apply-reconciliation` (N9); pin `debit_as_negative` on GET (N19).
