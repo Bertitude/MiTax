@@ -6,6 +6,15 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Added
+- **S04A falls back to the prior-year base when current-year income data is
+  thin.** Previously, sparse year-to-date income (usually because most
+  statements weren't uploaded yet) drove the trend adjustment toward $0,
+  under-recommending provisional tax. The estimator now trusts the trend only
+  when YTD income is at least half of what the prior year predicts for the
+  elapsed period; below that it keeps the prior-year base and explains why.
+  Higher-than-expected income still adjusts upward as before.
+
 ### Fixed
 - **S04A provisional-tax estimator corrected.** Quarterly due dates were built
   as malformed strings (`"2026-03 15-15"`), so the "past due" badge never

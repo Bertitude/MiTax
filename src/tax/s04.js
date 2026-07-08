@@ -524,6 +524,10 @@ function splitInstalments(totalCents) {
   return [q, q, q, totalCents - 3 * q];
 }
 
+// Minimum share of the prior-year-predicted YTD income required before the
+// current-year trend is trusted; below it, S04A keeps the prior-year base.
+const INCOME_SIGNAL_FLOOR = 0.5;
+
 function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr }) {
   const r2 = v => Math.round((v || 0) * 100) / 100;
 
@@ -551,12 +555,24 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
 
   const annualTrend    = r2((currentYtdIncome / monthsElapsed) * 12);
 
-  // Adjustment ratio (only meaningful after ≥3 months of data)
+  // Adjustment ratio (only meaningful after ≥3 months AND enough income signal).
+  // Sparse YTD income — usually because most statements aren't uploaded yet —
+  // would otherwise drive trendRatio toward 0 and ratchet the provisional
+  // recommendation down to nothing. Under-recommending provisional tax risks
+  // TAJ penalties (surplus is credited at year-end), so require actual YTD to
+  // be at least INCOME_SIGNAL_FLOOR of what the prior year predicts for the
+  // elapsed fraction before trusting the trend; otherwise keep the prior-year
+  // base. The floor only gates the downward side — higher-than-expected income
+  // (coverage ≥ 1) always passes and still adjusts upward.
   const hasHistory     = priorGrossIncome > 0;
-  const trendRatio     = hasHistory && monthsElapsed >= 3
+  const expectedYtd    = priorGrossIncome * (monthsElapsed / 12);
+  const coverageRatio  = expectedYtd > 0 ? currentYtdIncome / expectedYtd : 0;
+  const enoughSignal   = monthsElapsed >= 3 && coverageRatio >= INCOME_SIGNAL_FLOOR;
+  const trendRatio     = hasHistory && enoughSignal
     ? annualTrend / priorGrossIncome
     : 1;
-  const useAdjusted    = Math.abs(trendRatio - 1) >= 0.10 && monthsElapsed >= 3;
+  const useAdjusted    = Math.abs(trendRatio - 1) >= 0.10 && enoughSignal;
+  const insufficientSignal = hasHistory && monthsElapsed >= 3 && !enoughSignal;
 
   // If no prior filing exists, estimate from current YTD using s04 params
   let recommendedAnnualTax = priorTaxPayable;
@@ -594,9 +610,11 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   } else {
     notes.push(`No prior-year S04 filing found. Estimates derived from current-year LunchMoney trends.`);
   }
-  if (monthsElapsed >= 3) {
+  if (enoughSignal) {
     const pct = Math.round((trendRatio - 1) * 100);
     notes.push(`Current year income (${monthsElapsed.toFixed(1)} months): $${annualTrend.toLocaleString('en-JM', { minimumFractionDigits: 2 })} JMD annualised — ${pct >= 0 ? '+' : ''}${pct}% vs prior year.`);
+  } else if (insufficientSignal) {
+    notes.push(`Current-year income so far ($${r2(currentYtdIncome).toLocaleString('en-JM', { minimumFractionDigits: 2 })} over ${monthsElapsed.toFixed(1)} months) is well below the prior-year pace — likely incomplete statement uploads — so the prior-year base is used. Upload more statements for a trend-adjusted estimate.`);
   }
   if (useAdjusted) {
     notes.push(`Recommended amounts adjusted ${trendRatio > 1 ? 'upward' : 'downward'} to reflect current-year income trend.`);
@@ -614,7 +632,9 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
     annualTrendIncome:     annualTrend,
     monthsElapsed:         r2(monthsElapsed),
     trendRatio:            r2(trendRatio),
+    coverageRatio:         r2(coverageRatio),
     useAdjusted,
+    insufficientSignal,
     baseQuarterly,
     recommendedQuarterly,
     quarters,

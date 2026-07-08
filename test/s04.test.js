@@ -143,6 +143,38 @@ test('generateS04A: past year uses a full 12 months elapsed', () => {
   assert.equal(r.annualTrendIncome, 6_000_000);   // 6M / 12 * 12, not inflated
 });
 
+test('generateS04A: falls back to prior-year base when income signal is thin', () => {
+  // ≥3 months elapsed but YTD income far below the prior-year pace (likely
+  // incomplete uploads) → keep the base, do NOT ratchet toward $0.
+  const r = generateS04A({
+    currentYear: 2025,
+    priorYearFiling: { tax_payable: 800_000, gross_income: 6_000_000 },
+    currentYtdIncome: 500_000,     // ~6 months, expected ≈ 3,000,000 → coverage ≈ 0.17
+    todayStr: '2025-07-08',
+  });
+
+  assert.equal(r.insufficientSignal, true);
+  assert.equal(r.useAdjusted, false);
+  assert.equal(r.recommendedQuarterly, r.baseQuarterly);   // 800k / 4 = 200k
+  assert.equal(r.recommendedQuarterly, 200_000);
+  assert.ok(r.notes.some(n => /prior-year base/.test(n)));
+});
+
+test('generateS04A: trend still applies once income signal is sufficient', () => {
+  // Coverage ≥ 50% and clearly up vs prior year → adjust upward.
+  const r = generateS04A({
+    currentYear: 2025,
+    priorYearFiling: { tax_payable: 800_000, gross_income: 6_000_000 },
+    currentYtdIncome: 6_000_000,   // ~6 months → annualTrend ≈ 12M, +100% vs prior
+    todayStr: '2025-07-08',
+  });
+
+  assert.equal(r.insufficientSignal, false);
+  assert.equal(r.useAdjusted, true);
+  assert.ok(r.trendRatio > 1);
+  assert.ok(r.recommendedQuarterly > r.baseQuarterly);
+});
+
 test('generateS04A: four instalments sum exactly to the annual figure', () => {
   // N24: cents-exact split (Q4 carries the remainder), no float drift.
   const r = generateS04A({
