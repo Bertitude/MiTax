@@ -3,7 +3,7 @@
 const test   = require('node:test');
 const assert = require('node:assert/strict');
 
-const { generateS04, generateS04A, getTaxParams } = require('../src/tax/s04');
+const { generateS04, generateS04A, getTaxParams, taxParamsStatus, TAX_PARAMS } = require('../src/tax/s04');
 
 test('getTaxParams: exact match and fallback selection', () => {
   assert.equal(getTaxParams(2023).fallback, null);
@@ -64,13 +64,13 @@ test('generateS04: P24 employment income with withholding credits (2024)', async
 
   assert.equal(r.income.grossIncome, 7_000_000);          // 4M business + 3M employment
   assert.equal(r.statutoryIncome, 5_600_000);             // 7M - 20% standard
-  assert.equal(r.chargeableIncome, 3_749_912);            // 5.6M - 1,700,088 - 150,000
-  assert.equal(r.tax.incomeTax, 737_478);                 // 937,478 liability - 200,000 PAYE
+  assert.equal(r.chargeableIncome, 3_799_910);            // 5.6M - 1,650,090 - 150,000
+  assert.equal(r.tax.incomeTax, 749_977.5);               // 949,977.50 liability - 200,000 PAYE
   assert.equal(r.contributions.nis, 60_000);              // 150,000 liability - 90,000 withheld
   assert.equal(r.contributions.nht, 80_000);              // 140,000 - 60,000
   assert.equal(r.contributions.educationTax, 58_500);     // 126,000 - 67,500
-  assert.equal(r.totalTaxPayable, 935_978);
-  assert.equal(r.p24.totalGrossLiability, 1_353_478);
+  assert.equal(r.totalTaxPayable, 948_477.5);
+  assert.equal(r.p24.totalGrossLiability, 1_365_977.5);
 });
 
 test('estimateAnnualTax: matches the S04 core on a whole-income case', () => {
@@ -97,4 +97,46 @@ test('generateS04A: quarterly instalments from a prior filing', () => {
   assert.equal(r.hasPriorFiling, true);
   assert.equal(r.baseQuarterly, 200_000);               // 800k / 4
   assert.equal(r.quarters.length, 4);
+});
+
+test('TAX_PARAMS: thresholds are TAJ effective-annual values', () => {
+  // April-1 increases are pro-rated by TAJ into a published effective annual
+  // threshold per year of assessment — these pins guard against regressing to
+  // the raw post-April figures (audit finding N15).
+  assert.equal(TAX_PARAMS[2023].personalThreshold, 1_500_096); // no mid-year change
+  assert.equal(TAX_PARAMS[2024].personalThreshold, 1_650_090); // 1,500,096 Jan–Mar + 1,700,088 Apr–Dec
+  assert.equal(TAX_PARAMS[2025].personalThreshold, 1_774_470); // 1,700,088 Jan–Mar + 1,799,376 Apr–Dec
+  assert.equal(TAX_PARAMS[2026].personalThreshold, 1_876_614); // 1,799,376 Jan–Mar + 1,902,360 Apr–Dec
+});
+
+test('taxParamsStatus: fresh when verified after the latest April 1', () => {
+  // 2026 entries are verified 2026-07-08 ≥ 2026-04-01.
+  assert.deepEqual(taxParamsStatus('2026-07-08'), { stale: false, reason: null });
+  // Exactly on April 1: that day's window applies and the entries satisfy it.
+  assert.equal(taxParamsStatus('2026-04-01').stale, false);
+});
+
+test('taxParamsStatus: stale when the current year has no entry', () => {
+  const r = taxParamsStatus('2099-06-15');
+  assert.equal(r.stale, true);
+  assert.match(r.reason, /2099/);
+});
+
+test('taxParamsStatus: stale when nothing was verified since the latest April 1', () => {
+  // Temporarily age every verifiedAt stamp to isolate the freshness branch
+  // from the missing-year branch.
+  const saved = Object.values(TAX_PARAMS).map(p => p.verifiedAt);
+  try {
+    Object.values(TAX_PARAMS).forEach(p => { p.verifiedAt = '2026-03-01'; });
+
+    const r = taxParamsStatus('2026-06-15');   // window = 2026-04-01 → stale
+    assert.equal(r.stale, true);
+    assert.match(r.reason, /verified/);
+
+    // Jan–Mar measures against the PRIOR year's April 1 (2025-04-01), so the
+    // same stamps count as fresh.
+    assert.equal(taxParamsStatus('2026-03-15').stale, false);
+  } finally {
+    Object.values(TAX_PARAMS).forEach((p, i) => { p.verifiedAt = saved[i]; });
+  }
 });

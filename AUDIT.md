@@ -128,8 +128,8 @@ For a tax app this is worse than a crash: wrong-sign data uploads silently and f
 ### N14. Dashboard quarterly estimate bypasses `getTaxParams`
 `main.js:535` — `TAX_PARAMS[year] || TAX_PARAMS[2025]`: any year without an entry (2027+) silently uses **2025** params instead of nearest-earlier, overstating annual tax by ~J$19.3k above threshold, with no fallback warning. **Fix:** `getTaxParams(year)`.
 
-### N15. TAX_PARAMS threshold convention is internally inconsistent across years *(verify against TAJ)*
-`s04.js:35,48` — the 2026 entry uses TAJ's weighted full-year-effective threshold (1,876,614 — arithmetic checks out), but 2024/2025 use raw post-April-1 values despite those increases also being effective April 1. If the weighted convention applies to those years, 2024 tax is understated by ~J$12.5k and 2025 by ~J$6.2k above threshold. Either the older numbers or the 2026 convention is wrong; confirm against the cited sources before filing season.
+### N15. TAX_PARAMS threshold convention was internally inconsistent across years — **RESOLVED 2026-07-08**
+`s04.js:35,48` — the 2026 entry used TAJ's weighted full-year-effective threshold (1,876,614), but 2024/2025 used raw post-April-1 values despite those increases also being effective April 1. Verified against TAJ's published guidance ([JIS technical advisory](https://jis.gov.jm/taj-develops-technical-advisory-for-revised-income-tax-threshold-and-pension-exemptions/), [Dawgen Global 2024 payroll changes](https://www.dawgen.global/understanding-the-new-changes-to-payroll-taxes-in-jamaica-a-closer-look-at-the-increased-income-tax-threshold-and-exemptions/), [JIS April 2026 increase](https://jis.gov.jm/increase-in-income-tax-threshold-now-in-effect/)): the pro-rated convention is TAJ's official one, so 2024/2025 were understating tax by ~J$12.5k/~J$6.2k for above-threshold filers. **Fixed:** 2024 → 1,650,090 and 2025 → 1,774,470 (TAJ's published figures), pinned by tests; a params-staleness banner now warns when `TAX_PARAMS` haven't been re-verified since the most recent April 1 (`taxParamsStatus` in `s04.js`, surfaced via `tax-params:status`).
 
 ### N16. Two unescaped `innerHTML` sinks interpolate statement-derived strings
 `renderer/app.js:493-495` (`item.parsed.institution/accountName/period` and `item.path` — accountName is extracted verbatim from PDF text, i.e. attacker-influenced via a crafted statement) and `:642` (period strings); `:2350-2356` renders S04 `report.notes` unescaped (app-generated today, an injection point tomorrow). CSP (`script-src 'self'`) blocks script execution, so impact is HTML/UI spoofing — but this is the missed-escape class finding #15 warned about. Of ~70 sinks sampled, all others escape correctly. **Fix:** wrap in `escHtml`.
@@ -201,7 +201,7 @@ README still names `LunchMoney-Importer-Setup-*.exe` artifacts (productName is `
 6. `senderFrame` guard on mutating handlers (N8); realpath in the allow-list (N20).
 7. POST retry idempotency (N11); CSV zero-debit/newline fixes (N12); pdfjs destroy/password handling (N13).
 8. Escape the two missed sinks (N16); try/finally sweep + structured apply-errors (N17).
-9. Dashboard `getTaxParams` (N14); verify 2024/2025 thresholds with TAJ (N15).
+9. Dashboard `getTaxParams` (N14). ~~Verify 2024/2025 thresholds with TAJ (N15)~~ — done 2026-07-08; values corrected.
 
 **Phase 3 — finish the story:**
 10. Code signing + notarization; remove the verification override (N7).

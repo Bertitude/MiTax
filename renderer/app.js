@@ -198,6 +198,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Render account list in Settings (even if not connected)
   renderLMAccountsList();
 
+  // Warn if the bundled tax parameters predate the most recent April 1
+  // threshold change — computed tax figures may be wrong until the app is
+  // updated. Persistent banner (not a toast): this matters at filing time.
+  checkTaxParamsFreshness();
+
   refreshDashboard();
   refreshTracker();
   refreshHistory();
@@ -3317,6 +3322,54 @@ function renderAccountSummary(asset, year, txs) {
       }
     });
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TAX-PARAMS FRESHNESS BANNER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ask the main process whether the bundled TAX_PARAMS have been re-verified
+ * since the most recent April 1 threshold change; if not, show a persistent
+ * warning banner. Dismissable for the session only — it returns on next
+ * launch until the app is updated.
+ */
+async function checkTaxParamsFreshness() {
+  try {
+    const tz  = getAppTimezone();
+    const res = await window.electronAPI.taxParamsStatus({
+      timezone: tz === 'system' ? getSystemTimezone() : tz,
+    });
+    if (!res?.success || !res.data?.stale) return;
+
+    const banner = document.getElementById('tax-params-banner');
+    banner.textContent = '';
+
+    const icon = document.createElement('span');
+    icon.className   = 'update-banner-icon';
+    icon.textContent = '⚠️';
+
+    const text  = document.createElement('div');
+    text.className = 'update-banner-text';
+    const title = document.createElement('div');
+    title.className   = 'update-banner-title';
+    title.textContent = 'Tax parameters may be outdated';
+    const sub = document.createElement('div');
+    sub.className   = 'update-banner-sub';
+    sub.textContent = `${res.data.reason || ''} Update MiTax before generating or filing a return.`.trim();
+    text.append(title, sub);
+
+    const dismiss = document.createElement('button');
+    dismiss.className   = 'banner-dismiss';
+    dismiss.textContent = '✕';
+    dismiss.title       = 'Dismiss for this session';
+    dismiss.addEventListener('click', () => { banner.style.display = 'none'; });
+
+    banner.append(icon, text, dismiss);
+    banner.style.display = 'flex';
+  } catch (_) {
+    // Freshness check is best-effort; never block startup on it.
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

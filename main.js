@@ -13,6 +13,24 @@ const ALLOWED_EXTERNAL_PREFIXES = ['https://mytaxes.ads.taj.gov.jm/'];
 // Prevents a compromised renderer from reading arbitrary paths through parse-pdf.
 const allowedFiles = new Set();
 
+// Resolve "today" as YYYY-MM-DD in the user's configured timezone (falls back
+// to the system timezone, then UTC). Used wherever date-only comparisons feed
+// tax logic, where a UTC/local mismatch shifts the day.
+function resolveTodayStr(timezone) {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year').value;
+    const m = parts.find(p => p.type === 'month').value;
+    const d = parts.find(p => p.type === 'day').value;
+    return `${y}-${m}-${d}`;
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
 // Harden a window against navigation and popups: the app is a single local page,
 // so any navigation away or window.open is unwanted.
 function hardenWindow(win) {
@@ -720,20 +738,7 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone })
     const priorYearFiling = getMostRecentS04(currentYear - 1);
 
     // Resolve "today" in the user's configured timezone
-    const todayStr = (() => {
-      const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-      try {
-        const parts = new Intl.DateTimeFormat('en-CA', {
-          timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
-        }).formatToParts(new Date());
-        const y = parts.find(p => p.type === 'year').value;
-        const m = parts.find(p => p.type === 'month').value;
-        const d = parts.find(p => p.type === 'day').value;
-        return `${y}-${m}-${d}`;
-      } catch {
-        return new Date().toISOString().slice(0, 10);
-      }
-    })();
+    const todayStr = resolveTodayStr(timezone);
 
     let currentYtdIncome = 0;
     if (apiKey) {
@@ -750,6 +755,19 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone })
     const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr });
     return { success: true, data: estimate };
   } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Jamaica's tax threshold changes every April 1; report whether the bundled
+// TAX_PARAMS have been re-verified since the most recent change window so the
+// renderer can warn the user to update the app before filing.
+ipcMain.handle('tax-params:status', async (event, { timezone } = {}) => {
+  try {
+    const { taxParamsStatus } = require('./src/tax/s04');
+    return { success: true, data: taxParamsStatus(resolveTodayStr(timezone)) };
+  } catch (err) {
+    logError('tax-params:status', err);
     return { success: false, error: err.message };
   }
 });

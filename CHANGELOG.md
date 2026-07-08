@@ -4,6 +4,25 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **2024 and 2025 income tax thresholds corrected to TAJ's effective annual
+  values.** TAJ pro-rates April-1 threshold increases into a published
+  effective annual threshold per year of assessment; MiTax was using the raw
+  post-April figures for 2024/2025 (2026 was already correct). 2024:
+  $1,700,088 → **$1,650,090**; 2025: $1,799,376 → **$1,774,470**. Above-threshold
+  filers' computed tax for those years increases by ~$12,499.50 (2024) and
+  ~$6,226.50 (2025). Verified against TAJ/JIS guidance 2026-07-08.
+
+### Added
+- **Tax-parameter staleness warning.** Thresholds change every April 1; the app
+  now shows a persistent banner when its bundled tax parameters haven't been
+  re-verified since the most recent April 1 (or the current year has no
+  parameters), prompting an app update before generating or filing a return.
+
+---
+
 ## [1.3.0] — 2026-07-02
 
 Project-audit remediation: security hardening, correctness fixes, and the

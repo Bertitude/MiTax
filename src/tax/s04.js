@@ -32,7 +32,10 @@ const TAX_PARAMS = {
     verifiedAt: '2026-04-14',
   },
   2024: {
-    personalThreshold: 1700088,    // $1.7M effective for tax year 2024
+    // Threshold bumped from $1,500,096 to $1,700,088 effective Apr 1, 2024.
+    // TAJ publishes the weighted full-year-effective value of $1,650,090 for
+    // tax-year 2024 returns — that's what individuals actually use when filing.
+    personalThreshold: 1650090,
     nisRate: 0.03,
     nisMaxIncome: 5000000,
     nhtRate: 0.02,
@@ -41,11 +44,15 @@ const TAX_PARAMS = {
     incomeTaxRate2: 0.30,
     incomeTaxBand1Max: 6000000,
     standardDeductionRate: 0.20,
-    source: 'https://kpmg.com/us/en/taxnewsflash/news/2025/03/tnf-jamaica-tax-measures-in-2025-2026-budget.html',
-    verifiedAt: '2026-04-14',
+    source: 'https://www.dawgen.global/understanding-the-new-changes-to-payroll-taxes-in-jamaica-a-closer-look-at-the-increased-income-tax-threshold-and-exemptions/',
+    verifiedAt: '2026-07-08',
   },
   2025: {
-    personalThreshold: 1799376,    // First tranche of the 2025/2026 budget's 3-step rise to $2M
+    // First tranche of the 2025/2026 budget's 3-step rise to $2M: $1,700,088
+    // to $1,799,376 effective Apr 1, 2025. TAJ's weighted full-year-effective
+    // value for tax-year 2025 returns is $1,774,470 (published figure — not
+    // the naive 3/12 + 9/12 weighting, which gives 1,774,554).
+    personalThreshold: 1774470,
     nisRate: 0.03,
     nisMaxIncome: 5000000,
     nhtRate: 0.02,
@@ -54,8 +61,8 @@ const TAX_PARAMS = {
     incomeTaxRate2: 0.30,
     incomeTaxBand1Max: 6000000,
     standardDeductionRate: 0.20,
-    source: 'https://kpmg.com/us/en/taxnewsflash/news/2025/03/tnf-jamaica-tax-measures-in-2025-2026-budget.html',
-    verifiedAt: '2026-04-14',
+    source: 'https://jis.gov.jm/taj-develops-technical-advisory-for-revised-income-tax-threshold-and-pension-exemptions/',
+    verifiedAt: '2026-07-08',
   },
   2026: {
     // Threshold bumped from $1,799,376 to $1,902,360 effective Apr 1, 2026.
@@ -93,6 +100,40 @@ function getTaxParams(year) {
     params:   TAX_PARAMS[usedYear],
     fallback: { usedYear, requestedYear: year },
   };
+}
+
+/**
+ * Report whether TAX_PARAMS may be stale. Jamaica's threshold changes take
+ * effect every April 1 (announced in the March budget), so the params are
+ * considered stale when no entry has been re-verified on or after the most
+ * recent April 1, or when the current year has no entry at all.
+ *
+ * Pure: `todayStr` is an ISO date (YYYY-MM-DD) resolved to the user's
+ * timezone by the caller.
+ *
+ * Returns { stale, reason }.
+ */
+function taxParamsStatus(todayStr) {
+  const year  = parseInt(todayStr.slice(0, 4), 10);
+  const monthDay = todayStr.slice(5); // 'MM-DD'
+  const latestAprilFirst = monthDay >= '04-01' ? `${year}-04-01` : `${year - 1}-04-01`;
+
+  if (!TAX_PARAMS[year]) {
+    return { stale: true, reason: `No tax parameters defined for ${year}.` };
+  }
+
+  const newestVerifiedAt = Object.values(TAX_PARAMS)
+    .map(p => p.verifiedAt || '')
+    .sort()
+    .pop();
+  if (!newestVerifiedAt || newestVerifiedAt < latestAprilFirst) {
+    return {
+      stale:  true,
+      reason: `Tax parameters were last verified ${newestVerifiedAt || 'never'}, before the ${latestAprilFirst} threshold change window.`,
+    };
+  }
+
+  return { stale: false, reason: null };
 }
 
 // ─── Category to income-type mapping ───────────────────────────────────────
@@ -556,4 +597,4 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   };
 }
 
-module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, estimateAnnualTax };
+module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, taxParamsStatus, estimateAnnualTax };
