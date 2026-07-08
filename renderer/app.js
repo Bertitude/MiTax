@@ -3653,9 +3653,6 @@ function renderS04AEstimate(est) {
   const wrap = document.getElementById('s04a-wrap');
   if (!wrap) return;
 
-  const now   = new Date();
-  const fmtDt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { year: 'numeric', month: 'short', day: 'numeric' });
-
   const adjBadge = est.useAdjusted
     ? `<span class="badge" style="background:rgba(210,153,34,0.18);color:var(--warn2);font-size:10px;margin-left:8px;">Trend-adjusted</span>`
     : '';
@@ -3664,7 +3661,7 @@ function renderS04AEstimate(est) {
     : `No prior-year S04 filing found — estimated from current-year trends`;
 
   const quartersHtml = est.quarters.map(q => {
-    const isPast    = new Date(q.dueDate) < now;
+    const isPast    = q.isPast;   // server-computed, timezone-correct
     const cls       = isPast ? ' overdue' : '';
     const diffBadge = est.useAdjusted && q.baseAmount !== q.recommendedAmount
       ? `<div class="s04a-quarter-base">Base: ${fmt(q.baseAmount)}</div>`

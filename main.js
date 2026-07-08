@@ -740,11 +740,17 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone })
     // Resolve "today" in the user's configured timezone
     const todayStr = resolveTodayStr(timezone);
 
+    // Clamp the fetch window to the selected year: for a past year, todayStr is
+    // in a later year and would pull a multi-year window while generateS04A
+    // still divides by ≤12 months, inflating the trend.
+    const yearEnd = `${currentYear}-12-31`;
+    const endDate = todayStr < yearEnd ? todayStr : yearEnd;
+
     let currentYtdIncome = 0;
     if (apiKey) {
       const ytdTxs = await getTransactions(apiKey, {
         startDate: `${currentYear}-01-01`,
-        endDate:   todayStr,
+        endDate,
       });
       currentYtdIncome = ytdTxs.reduce((sum, tx) => {
         const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;

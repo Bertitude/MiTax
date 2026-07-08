@@ -7,6 +7,17 @@ All notable changes to MiTax are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **S04A provisional-tax estimator corrected.** Quarterly due dates were built
+  as malformed strings (`"2026-03 15-15"`), so the "past due" badge never
+  appeared and saving a quarter stored an invalid date that filing history
+  rendered as "Invalid Date" — now valid ISO dates with timezone-correct
+  past-due detection. The months-elapsed figure counted the current partial
+  month as a full month (Jan 31 read as 2.0 months, not 1.0), inflating the
+  annualized income trend and mis-recommending instalments; it now counts
+  `(month-1) + day/daysInMonth`, and past-year estimates use a full 12 months
+  with the income window clamped to the selected year. The four instalments are
+  now split in integer cents (Q4 carries the remainder) so they sum exactly to
+  the annual figure.
 - **2024 and 2025 income tax thresholds corrected to TAJ's effective annual
   values.** TAJ pro-rates April-1 threshold increases into a published
   effective annual threshold per year of assessment; MiTax was using the raw

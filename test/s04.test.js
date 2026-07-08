@@ -99,6 +99,65 @@ test('generateS04A: quarterly instalments from a prior filing', () => {
   assert.equal(r.quarters.length, 4);
 });
 
+test('generateS04A: due dates are valid ISO and lexicographically past-checked', () => {
+  const r = generateS04A({
+    currentYear: 2025,
+    priorYearFiling: { tax_payable: 800_000, gross_income: 5_000_000 },
+    currentYtdIncome: 0,
+    todayStr: '2025-07-08',
+  });
+
+  // N5: valid YYYY-MM-DD, not the old "2025-03 15-15" Invalid Date.
+  assert.deepEqual(r.quarters.map(q => q.dueDate),
+    ['2025-03-15', '2025-06-15', '2025-09-15', '2025-12-15']);
+  assert.equal(r.quarters[0].dueDateFormatted, 'Mar 15 2025');
+  assert.ok(!Number.isNaN(new Date(r.quarters[0].dueDate).getTime()));
+
+  // On 2025-07-08, Q1 (Mar) and Q2 (Jun) are past; Q3/Q4 are not.
+  assert.deepEqual(r.quarters.map(q => q.isPast), [true, true, false, false]);
+});
+
+test('generateS04A: monthsElapsed counts the partial current month correctly', () => {
+  // N6: (month-1) + day/daysInMonth, NOT (getMonth()+1) + day/31.
+  const mid = generateS04A({
+    currentYear: 2025, priorYearFiling: null, currentYtdIncome: 0, todayStr: '2025-07-08',
+  });
+  assert.equal(mid.monthsElapsed, 6.26);   // 6 + 8/31
+
+  const early = generateS04A({
+    currentYear: 2025, priorYearFiling: null, currentYtdIncome: 0, todayStr: '2025-02-01',
+  });
+  assert.equal(early.monthsElapsed, 1.04);  // 1 + 1/28
+});
+
+test('generateS04A: past year uses a full 12 months elapsed', () => {
+  // N6 coupled bug: a past-year estimate must not divide a (clamped) YTD window
+  // by a fractional month count. currentYear < today's year → 12 months.
+  const r = generateS04A({
+    currentYear: 2024,
+    priorYearFiling: { tax_payable: 800_000, gross_income: 5_000_000 },
+    currentYtdIncome: 6_000_000,
+    todayStr: '2026-07-08',
+  });
+  assert.equal(r.monthsElapsed, 12);
+  assert.equal(r.annualTrendIncome, 6_000_000);   // 6M / 12 * 12, not inflated
+});
+
+test('generateS04A: four instalments sum exactly to the annual figure', () => {
+  // N24: cents-exact split (Q4 carries the remainder), no float drift.
+  const r = generateS04A({
+    currentYear: 2026,
+    priorYearFiling: { tax_payable: 100_000.10, gross_income: 5_000_000 },
+    currentYtdIncome: 0,
+    todayStr: '2026-02-01',   // <3 months → ratio forced to 1 → recommend = prior
+  });
+  const recSum  = r.quarters.reduce((a, q) => a + q.recommendedAmount, 0);
+  const baseSum = r.quarters.reduce((a, q) => a + q.baseAmount, 0);
+  assert.equal(Math.round(recSum  * 100) / 100, 100_000.10);
+  assert.equal(Math.round(baseSum * 100) / 100, 100_000.10);
+  assert.equal(r.quarters[3].recommendedAmount, 25_000.04);   // remainder on Q4
+});
+
 test('TAX_PARAMS: thresholds are TAJ effective-annual values', () => {
   // April-1 increases are pro-rated by TAJ into a published effective annual
   // threshold per year of assessment — these pins guard against regressing to

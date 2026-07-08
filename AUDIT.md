@@ -88,15 +88,15 @@ For a tax app this is worse than a crash: wrong-sign data uploads silently and f
 
 **Fix:** parse MDY locally in the PayPal parser; delete or parameterize the unreachable branch in `normalizeDate`.
 
-### N5. S04A due dates are malformed; "past due" detection can never fire and corrupt dates are persisted
+### N5. S04A due dates are malformed; "past due" detection can never fire and corrupt dates are persisted — **RESOLVED 2026-07-08**
 `s04.js:511-513`: `due` is `'Mar 15'`, so `` `${year}-${due.replace('Mar','03')…}-15` `` yields `"2026-03 15-15"` — an Invalid Date. Consequently `isPast` is always false, the renderer's overdue badge (`app.js:3614`) can never appear, and saving a quarter persists the malformed string into `tax_filings.due_date`, which filing history then renders as "Invalid Date". The S04A test asserts only `quarters.length === 4`.
 
-**Fix:** store `{month, day}` and build `${year}-03-15`; compare against a timezone-resolved `todayStr` lexicographically. Pin a dueDate value in the test.
+**Fixed:** `S04A_DUE_DATES` now stores `{month, day, dueLabel}`; `dueDate` is built as valid `${year}-MM-DD` and `isPast` is a lexicographic `todayStr > dueDate` compare. Renderer trusts the server `q.isPast`. Pinned by tests.
 
-### N6. S04A `monthsElapsed` overcounts by ~1 month, distorting provisional-tax recommendations
+### N6. S04A `monthsElapsed` overcounts by ~1 month, distorting provisional-tax recommendations — **RESOLVED 2026-07-08**
 `s04.js:490`: `(now.getMonth() + 1) + (now.getDate() / 31)` counts the current partial month as a full month *and* adds its day fraction (Jan 31 → 2.0 months when 1.0 has elapsed). Verified scenario: steady J$1M/month income, generated 2026-07-08 → annualized trend J$10.35M instead of ~J$12M → trend ratio 0.86 trips the ±10% adjustment and recommended quarterly drops from the correct $200,000 to $172,498 — a ~$110k/year provisional-tax underpayment for a filer whose income is flat. The dashboard's own formula (`main.js:536`, `getMonth() + date/30.5`) is the correct shape; the two disagree by ~1 month on the same date. Related: generating S04A for a **past** year (`main.js:740-743`) fetches YTD through *today* (a multi-year window) but still divides by ≤12.26 months, inflating the trend ~2.5× in the verified example.
 
-**Fix:** `monthsElapsed = now.getMonth() + now.getDate()/daysInMonth(now)`; clamp the fetch window to the selected year and use 12 months for fully-past years.
+**Fixed:** `monthsElapsed = (month-1) + day/daysInMonth` (string-sliced `todayStr`, no Date round-trip); fully-past years use 12 months, and the `generate-s04a` handler clamps the LunchMoney fetch window to `min(todayStr, ${currentYear}-12-31)`. Pinned by tests.
 
 ### N7. Auto-update code-signature verification still disabled; builds still unsigned *(carried: prior #6)*
 `src/updater.js:23` (`verifyUpdateCodeSignature = () => null`) + `release.yml:42`. With `autoInstallOnAppQuit:true` and silent NSIS install, anyone who can publish a release to the configured repo ships arbitrary code; the SHA512 in `latest.yml` comes from the same release the attacker controls. macOS auto-update remains silently broken (Squirrel requires a valid signature).
@@ -161,7 +161,7 @@ For a tax app this is worse than a crash: wrong-sign data uploads silently and f
 One-directional: statement transactions missing from LM and duplicate LM rows are silently dropped (`reconcile.js:89`), then the UI declares "All transactions match" — false reassurance for exactly the missed-upload/double-upload cases. LM fetch spans the whole selected year vs a ~1-month statement, so every balance-payee row in the year reappears as a suspected phantom on each run, and a year-mismatch yields "all match" instead of a no-overlap warning (`main.js:316-339`). `balanceSentinels` are only emitted by the Scotiabank coordinate path (`scotiabank.js:122,161`) — "confirmed phantom" structurally doesn't exist for other institutions or the Scotia regex fallback. The final confirm dialog merges confirmed+suspected into one "delete N phantoms" count (`app.js:3088-3095`), and multi-selected files silently reconcile only the first (`app.js:2938`).
 
 ### N24. Tax/date nits
-`generateS04A` still computes in float `r2` — 4× quarterly can differ from the cents-based annual by cents (`s04.js:479,509`); `methodUsed` label ignores `manualData.useActualExpenses` (`:313`); `buildMonthlyBreakdown` ignores `userCategoryMappings` so monthly income can exceed `grossIncome`, and unclassified credits are silently excluded from gross income rather than defaulting to `other` (`:436-459`); renderer still derives "today" from UTC (`app.js:814,2367,2669` — after 7 PM in Jamaica the filed-date defaults to tomorrow); `yearMonthOf` accepts month `00`–`99` (`date-utils.js:16`); `getMostRecentS04` ties on same-second saves (`filings.js:121` — add `, id DESC`).
+~~`generateS04A` still computes in float `r2` — 4× quarterly can differ from the cents-based annual by cents~~ **(resolved 2026-07-08: `splitInstalments` splits the annual in integer cents, Q4 carrying the remainder, so the four instalments sum exactly);** `methodUsed` label ignores `manualData.useActualExpenses` (`:313`); `buildMonthlyBreakdown` ignores `userCategoryMappings` so monthly income can exceed `grossIncome`, and unclassified credits are silently excluded from gross income rather than defaulting to `other` (`:436-459`); renderer still derives "today" from UTC (`app.js:814,2367,2669` — after 7 PM in Jamaica the filed-date defaults to tomorrow); `yearMonthOf` accepts month `00`–`99` (`date-utils.js:16`); `getMostRecentS04` ties on same-second saves (`filings.js:121` — add `, id DESC`).
 
 ### N25. LunchMoney API-layer nits
 No request timeout (node-fetch v2 default: none) — a stalled connection hangs uploads forever (`lunchmoney.js:56`); 429 handling ignores `Retry-After`; `getPayees`/`getAssetMonthCoverage` swallow all errors into empty results, making auth failure indistinguishable from no-data (`:154-172,210-219`).
@@ -193,7 +193,7 @@ README still names `LunchMoney-Importer-Setup-*.exe` artifacts (productName is `
 **Phase 1 — stop the bleeding (hours each):**
 1. Delete the localStorage key mirror; resolve keys main-process-side (N1).
 2. Fix the five parser sign inversions + JMMB crash + PayPal dates (N2–N4) — each is a one-line-to-small fix, and each needs one golden fixture so it can never silently regress. This is the same lesson as prior finding #10: **every High in this audit lives in untested code.**
-3. S04A due-date format and `monthsElapsed` (N5, N6) — small, high-trust-impact fixes.
+3. ~~S04A due-date format and `monthsElapsed` (N5, N6)~~ — done 2026-07-08 (N5, N6, and the N24 instalment rounding resolved together).
 4. Validate/encode IDs in `apply-reconciliation` (N9); pin `debit_as_negative` on GET (N19).
 
 **Phase 2 — harden (days):**

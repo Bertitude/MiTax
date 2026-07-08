@@ -510,11 +510,19 @@ function buildMonthlyBreakdown(transactions, year) {
 // the recommended amounts are adjusted upward/downward proportionally.
 
 const S04A_DUE_DATES = [
-  { q: 1, label: 'Q1 (Jan–Mar)', due: 'Mar 15' },
-  { q: 2, label: 'Q2 (Apr–Jun)', due: 'Jun 15' },
-  { q: 3, label: 'Q3 (Jul–Sep)', due: 'Sep 15' },
-  { q: 4, label: 'Q4 (Oct–Dec)', due: 'Dec 15' },
+  { q: 1, label: 'Q1 (Jan–Mar)', month: '03', day: '15', dueLabel: 'Mar 15' },
+  { q: 2, label: 'Q2 (Apr–Jun)', month: '06', day: '15', dueLabel: 'Jun 15' },
+  { q: 3, label: 'Q3 (Jul–Sep)', month: '09', day: '15', dueLabel: 'Sep 15' },
+  { q: 4, label: 'Q4 (Oct–Dec)', month: '12', day: '15', dueLabel: 'Dec 15' },
 ];
+
+// Split a total (in integer cents) into four instalments that sum EXACTLY to
+// the total: three equal quarters plus the remainder on Q4. Avoids the float
+// drift where 4 × round(total/4) ≠ total.
+function splitInstalments(totalCents) {
+  const q = Math.floor(totalCents / 4);
+  return [q, q, q, totalCents - 3 * q];
+}
 
 function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr }) {
   const r2 = v => Math.round((v || 0) * 100) / 100;
@@ -525,10 +533,22 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   // Base quarterly instalment: 25% of prior year's total tax
   const baseQuarterly = r2(priorTaxPayable / 4);
 
-  // Current-year trend: extrapolate YTD income to full-year estimate
-  // Use todayStr (YYYY-MM-DD, already resolved to user's timezone) when provided
-  const now = todayStr ? new Date(`${todayStr}T12:00:00`) : new Date();
-  const monthsElapsed  = Math.max(0.5, (now.getMonth() + 1) + (now.getDate() / 31));
+  // Current-year trend: extrapolate YTD income to full-year estimate.
+  // todayStr is YYYY-MM-DD already resolved to the user's timezone; parse it by
+  // string-slicing (no Date round-trip, no UTC shift). monthsElapsed counts
+  // fully-elapsed months plus the fraction of the current month:
+  //   getMonth() is 0-based, so completed months = (m - 1); add day/daysInMonth.
+  const today     = todayStr || `${new Date().getFullYear()}-01-01`;
+  const todayYear = parseInt(today.slice(0, 4), 10);
+  const tMonth    = parseInt(today.slice(5, 7), 10);   // 1-based
+  const tDay      = parseInt(today.slice(8, 10), 10);
+  const daysInMonth = new Date(todayYear, tMonth, 0).getDate();
+
+  let monthsElapsed;
+  if (currentYear < todayYear)       monthsElapsed = 12;    // year fully elapsed
+  else if (currentYear > todayYear)  monthsElapsed = 0.5;   // not started (safety)
+  else monthsElapsed = Math.max(0.5, (tMonth - 1) + (tDay / daysInMonth));
+
   const annualTrend    = r2((currentYtdIncome / monthsElapsed) * 12);
 
   // Adjustment ratio (only meaningful after ≥3 months of data)
@@ -549,16 +569,21 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
 
   const recommendedQuarterly = r2(recommendedAnnualTax / 4);
 
-  const quarters = S04A_DUE_DATES.map(({ q, label, due }) => {
-    const dueFullDate = `${currentYear}-${due.replace('Mar','03').replace('Jun','06').replace('Sep','09').replace('Dec','12')}-15`;
-    const isPast      = new Date() > new Date(dueFullDate);
+  // Cents-exact per-quarter instalments (Q1–Q3 equal, Q4 carries the remainder)
+  // so the four amounts sum precisely to the annual figure.
+  const baseInstalments = splitInstalments(Math.round(priorTaxPayable * 100));
+  const recInstalments  = splitInstalments(Math.round(recommendedAnnualTax * 100));
+
+  const quarters = S04A_DUE_DATES.map(({ q, label, month, day, dueLabel }, i) => {
+    const dueDate = `${currentYear}-${month}-${day}`;
+    const isPast  = today > dueDate;   // lexicographic ISO compare, timezone-safe
     return {
       quarter:           q,
       label,
-      dueDate:           dueFullDate,
-      dueDateFormatted:  `${due} ${currentYear}`,
-      baseAmount:        baseQuarterly,
-      recommendedAmount: recommendedQuarterly,
+      dueDate,
+      dueDateFormatted:  `${dueLabel} ${currentYear}`,
+      baseAmount:        baseInstalments[i] / 100,
+      recommendedAmount: recInstalments[i] / 100,
       isPast,
     };
   });
