@@ -31,6 +31,22 @@ test('reconcile: same-day debit+credit of equal magnitude are NOT false-flagged'
   assert.equal(r.signMismatches.length, 0);
 });
 
+test('reconcile: a flipped row is flagged, not masked by a same-sign neighbour (N10)', () => {
+  // SALARY (+50000) and RENT (-50000) on the same day; LM has BOTH sign-flipped.
+  // Payee-exact matching must flag each flip rather than cross-pairing them.
+  const parsed = [
+    { date: '2024-05-01', amount:  50000, payee: 'SALARY' },
+    { date: '2024-05-01', amount: -50000, payee: 'RENT' },
+  ];
+  const lmTxs = [
+    lm(1, '2024-05-01', -50000, 'SALARY'),  // flipped
+    lm(2, '2024-05-01',  50000, 'RENT'),    // flipped
+  ];
+  const r = reconcile(parsed, lmTxs, []);
+  assert.equal(r.signMismatches.length, 2);
+  assert.deepEqual(r.signMismatches.map(m => m.lmId).sort(), [1, 2]);
+});
+
 test('reconcile: phantom only when a statement sentinel confirms it', () => {
   const lmTxs = [
     lm(1, '2024-01-01', 100000, 'Opening Balance'),

@@ -12,6 +12,8 @@ const LM_BASE = 'https://dev.lunchmoney.app/v1';
 // Retry budget for transient errors (network blips, 429, 5xx). Delays: 1s, 2s, 4s.
 const MAX_RETRIES   = 3;
 const RETRY_BASE_MS = 1000;
+// Per-request timeout so a stalled connection can't hang the UI indefinitely.
+const REQUEST_TIMEOUT_MS = 30000;
 
 // Node-level network errors that are worth retrying — DNS blips (common on
 // Windows / flaky Wi-Fi), TCP resets, connection timeouts, etc. We avoid
@@ -42,12 +44,16 @@ function sleep(ms) {
 }
 
 async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
+  const isIdempotent = method === 'GET';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const opts = {
     method,
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
+    signal: controller.signal,
   };
   if (body) opts.body = JSON.stringify(body);
 
@@ -55,19 +61,26 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   try {
     res = await fetch(`${LM_BASE}${endpoint}`, opts);
   } catch (err) {
-    // Retry transient network-layer failures (DNS, reset, timeout) with the
-    // same backoff we use for 429/5xx. Non-retryable errors propagate.
-    if (isRetryableNetworkError(err) && attempt < MAX_RETRIES) {
+    // A timeout abort surfaces as an AbortError — retry it like a transient
+    // network failure (no response was received, so it's safe to re-send).
+    const isTimeout = err && (err.name === 'AbortError' || err.type === 'aborted');
+    if ((isTimeout || isRetryableNetworkError(err)) && attempt < MAX_RETRIES) {
       const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
-      console.warn(`[LunchMoney] ${method} ${endpoint} → ${err.code || err.message}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      console.warn(`[LunchMoney] ${method} ${endpoint} → ${isTimeout ? 'timeout' : (err.code || err.message)}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
       await sleep(delayMs);
       return lmRequest(method, endpoint, apiKey, body, attempt + 1);
     }
+    if (isTimeout) throw new Error(`LunchMoney request timed out after ${REQUEST_TIMEOUT_MS}ms`);
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
 
-  // Retry transient HTTP failures (rate limit, server errors) before parsing body.
-  if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+  // Retry rate limits on any method (the request was not processed). Retry 5xx
+  // only for idempotent GETs — re-sending a POST that the server may have
+  // already committed would duplicate transactions (e.g. an upload batch).
+  const retryable = res.status === 429 || (res.status >= 500 && isIdempotent);
+  if (retryable && attempt < MAX_RETRIES) {
     const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
     console.warn(`[LunchMoney] ${method} ${endpoint} → ${res.status}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
     await sleep(delayMs);
@@ -185,6 +198,9 @@ async function getTransactions(apiKey, { startDate, endDate, assetId } = {}) {
     if (startDate) params.append('start_date', startDate);
     if (endDate)   params.append('end_date',   endDate);
     if (assetId)   params.append('asset_id',   assetId);
+    // Pin the sign convention explicitly so reconcile/flip logic never rides on
+    // LunchMoney's account-level default (negative = expense, positive = income).
+    params.append('debit_as_negative', 'true');
     params.append('limit',  String(PAGE_SIZE));
     params.append('offset', String(page * PAGE_SIZE));
 
@@ -356,7 +372,7 @@ async function getTransactionsByYear(apiKey, year) {
  * GET /v1/transactions/:id
  */
 async function getTransaction(apiKey, txId) {
-  return lmRequest('GET', `/transactions/${txId}`, apiKey);
+  return lmRequest('GET', `/transactions/${encodeURIComponent(txId)}`, apiKey);
 }
 
 /**
@@ -364,7 +380,7 @@ async function getTransaction(apiKey, txId) {
  * amount, etc.)  PUT /v1/transactions/:id
  */
 async function updateTransaction(apiKey, txId, fields) {
-  return lmRequest('PUT', `/transactions/${txId}`, apiKey, { transaction: fields });
+  return lmRequest('PUT', `/transactions/${encodeURIComponent(txId)}`, apiKey, { transaction: fields });
 }
 
 /**
@@ -378,10 +394,10 @@ async function updateTransaction(apiKey, txId, fields) {
  * draw a progress bar. Transactions deleted in LM (404) count as `skipped`
  * rather than failing the batch.
  *
- * Returns { ok, failed: [{id, error}], skipped }.
+ * Returns { ok, failed: [{id, error}], skipped: [id, ...] }.
  */
 async function flipTransactionSigns(apiKey, txIds, onProgress) {
-  const result = { ok: 0, failed: [], skipped: 0 };
+  const result = { ok: 0, failed: [], skipped: [] };
   const total  = txIds.length;
 
   for (let i = 0; i < total; i++) {
@@ -393,14 +409,14 @@ async function flipTransactionSigns(apiKey, txIds, onProgress) {
       const current = tx && (tx.amount != null ? tx : tx.transaction);
       const amt     = current && parseFloat(current.amount);
       if (!Number.isFinite(amt) || amt === 0) {
-        result.skipped++;
+        result.skipped.push(id);
       } else {
         await updateTransaction(apiKey, id, { amount: String(-amt) });
         result.ok++;
       }
     } catch (err) {
       if (/HTTP 404|not found/i.test(err.message || '')) {
-        result.skipped++;
+        result.skipped.push(id);
       } else {
         result.failed.push({ id, error: err.message || String(err) });
       }
@@ -418,7 +434,7 @@ async function flipTransactionSigns(apiKey, txIds, onProgress) {
  * Calls the LM API endpoint: DELETE /v1/transactions/:id
  */
 async function deleteTransaction(apiKey, txId) {
-  return lmRequest('DELETE', `/transactions/${txId}`, apiKey);
+  return lmRequest('DELETE', `/transactions/${encodeURIComponent(txId)}`, apiKey);
 }
 
 /**

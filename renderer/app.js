@@ -1624,8 +1624,9 @@ async function runFixSigns(u) {
       return;
     }
     const { ok, failed, skipped } = res.data;
+    const skippedCount = Array.isArray(skipped) ? skipped.length : (skipped || 0);
     const parts = [`${ok} fixed`];
-    if (skipped) parts.push(`${skipped} skipped`);
+    if (skippedCount) parts.push(`${skippedCount} skipped`);
     if (failed && failed.length) parts.push(`${failed.length} failed`);
     toast(`Flipped signs: ${parts.join(', ')}.`, failed && failed.length ? 'error' : 'success');
     // Close modal + refresh history so the chip disappears.
@@ -2943,6 +2944,8 @@ async function startReconcile() {
   applyBtn.disabled = true;
 
   body.innerHTML = '<div style="padding:20px;color:var(--text-muted);"><span class="spinner"></span> Parsing statement and comparing with LunchMoney…</div>';
+  const errBox = document.getElementById('reconcile-apply-errors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
   document.getElementById('reconcile-modal').classList.add('open');
 
   let res;
@@ -3095,21 +3098,46 @@ async function startReconcile() {
     newApply.disabled    = true;
     newApply.textContent = 'Applying…';
 
-    const result = await window.electronAPI.applyReconciliation({ flipIds, deleteIds });
-
-    if (result.success) {
-      const d = result.data;
-      const parts = [];
-      if (d.flipped)  parts.push(`${d.flipped} flipped`);
-      if (d.deleted)  parts.push(`${d.deleted} deleted`);
-      if (d.errors.length) parts.push(`${d.errors.length} errors`);
-      toast(parts.join(', ') || 'Done', d.errors.length ? 'error' : 'success');
-      document.getElementById('reconcile-modal').classList.remove('open');
-      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
-    } else {
-      toast(`Error: ${result.error}`, 'error');
+    let result;
+    try {
+      result = await window.electronAPI.applyReconciliation({ flipIds, deleteIds });
+    } catch (err) {
+      // The main process may have mutated some rows before failing — tell the
+      // user to re-run reconcile (which safely recomputes) rather than leaving
+      // a stuck "Applying…" button.
+      toast(`Apply failed: ${err.message || err}. Re-run reconcile to see current state.`, 'error');
+      return;
+    } finally {
       newApply.disabled    = false;
       newApply.textContent = 'Apply Selected Fixes';
+    }
+
+    if (!result.success) { toast(`Error: ${result.error}`, 'error'); return; }
+
+    const d = result.data;
+    const parts = [];
+    if (d.flipped)  parts.push(`${d.flipped} flipped`);
+    if (d.deleted)  parts.push(`${d.deleted} deleted`);
+    const errorCount = d.errorCount || 0;
+    if (errorCount) parts.push(`${errorCount} failed`);
+    toast(parts.join(', ') || 'Done', errorCount ? 'error' : 'success');
+
+    if (errorCount) {
+      // Keep the modal open and list exactly which rows failed (esp. deletes).
+      const errBox = document.getElementById('reconcile-apply-errors');
+      if (errBox) {
+        const rows = [
+          ...d.failedDeletes.map(f => `Delete #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
+          ...d.failedFlips.map(f => `Flip #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
+          ...d.skipped.map(id => `Flip #${escHtml(String(id))}: not found in LunchMoney (skipped)`),
+        ];
+        errBox.innerHTML = `<strong>${errorCount} operation(s) failed:</strong><ul>${rows.map(r => `<li>${r}</li>`).join('')}</ul>`;
+        errBox.style.display = 'block';
+      }
+      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
+    } else {
+      document.getElementById('reconcile-modal').classList.remove('open');
+      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
     }
   });
 }
