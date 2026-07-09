@@ -96,7 +96,18 @@ function reconcile(parsedTxs, lmTxs, balanceSentinels = []) {
     flag(bucket[0]); bucket.splice(0, 1);                        // 4 (remaining are opposite sign)
   }
 
-  return { signMismatches, phantomBalances, suspectedPhantoms };
+  // Parsed transactions left unmatched = present on the statement but NOT in
+  // LunchMoney → a likely missed upload. (Bounded by the statement size, so
+  // unlike "extra in LM" this is a clean, low-noise signal.)
+  const missingInLM = [];
+  for (const bucket of buckets.values()) {
+    for (const { tx } of bucket) {
+      missingInLM.push({ date: tx.date, amount: tx.amount, payee: tx.payee || '' });
+    }
+  }
+  missingInLM.sort((a, b) => (a.date || '').localeCompare(b.date || '') || Math.abs(a.amount) - Math.abs(b.amount));
+
+  return { signMismatches, phantomBalances, suspectedPhantoms, missingInLM };
 }
 
 module.exports = { reconcile, normPayee, BALANCE_RE };

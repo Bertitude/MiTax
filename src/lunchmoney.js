@@ -43,6 +43,18 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Parse a Retry-After header into milliseconds. Accepts delta-seconds
+// ("120") or an HTTP-date; returns null when absent/unparseable so the caller
+// falls back to its own backoff. Never returns negative.
+function parseRetryAfter(value) {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const when = Date.parse(value);
+  if (Number.isFinite(when)) return Math.max(0, when - Date.now());
+  return null;
+}
+
 async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   const isIdempotent = method === 'GET';
   const controller = new AbortController();
@@ -81,7 +93,10 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   // already committed would duplicate transactions (e.g. an upload batch).
   const retryable = res.status === 429 || (res.status >= 500 && isIdempotent);
   if (retryable && attempt < MAX_RETRIES) {
-    const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
+    // Honour Retry-After (seconds, or an HTTP-date) on a 429; otherwise use the
+    // exponential backoff. Cap it so a hostile/huge value can't hang the UI.
+    const backoff = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
+    const delayMs = Math.min(parseRetryAfter(res.headers.get('retry-after')) ?? backoff, 60000);
     console.warn(`[LunchMoney] ${method} ${endpoint} → ${res.status}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
     await sleep(delayMs);
     return lmRequest(method, endpoint, apiKey, body, attempt + 1);
@@ -91,9 +106,16 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
 
   if (!res.ok) {
     const msg = data.error || data.message || `HTTP ${res.status}`;
-    throw new Error(`LunchMoney API error: ${msg}`);
+    const err = new Error(`LunchMoney API error: ${msg}`);
+    err.status = res.status;   // let callers distinguish auth (401/403) from other failures
+    throw err;
   }
   return data;
+}
+
+// An auth failure (bad/revoked API key) must not be swallowed as "no data".
+function isAuthError(err) {
+  return err && (err.status === 401 || err.status === 403);
 }
 
 // ─── User / Me ───────────────────────────────────────────────────────────────
@@ -179,8 +201,9 @@ async function getPayees(apiKey) {
       }
     }
     return payees.sort();
-  } catch {
-    return [];
+  } catch (err) {
+    if (isAuthError(err)) throw err;   // don't hide a bad key as "no payees"
+    return [];                         // tolerate transient/empty for this optional feature
   }
 }
 
@@ -230,8 +253,9 @@ async function getAssetMonthCoverage(apiKey, assetId, year) {
   let txs = [];
   try {
     txs = await getTransactions(apiKey, { startDate, endDate, assetId });
-  } catch {
-    // Asset may have no transactions or API error — return empty
+  } catch (err) {
+    if (isAuthError(err)) throw err;   // surface a bad key rather than showing "no coverage"
+    // Otherwise the asset may simply have no transactions — return empty coverage.
   }
 
   // Group by month

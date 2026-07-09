@@ -4,7 +4,9 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.1] — 2026-07-09
+
+Follow-up fix release completing the v1.3.0 audit remediation (see `AUDIT.md`).
 
 ### Documentation
 - **Authoritative sign convention (correcting the 1.2.17 entry, which is
@@ -61,6 +63,14 @@ All notable changes to MiTax are documented here.
   `secure_delete` + `VACUUM` scrubbing old pages.
 - **Statement-derived text is HTML-escaped** in the two remaining innerHTML
   sinks (import queue + account-mapping) and the S04 report notes.
+- **Tax filings and P24 employment income are encrypted at rest.** The money
+  figures, the full serialized S04 report, employer tax-registration numbers,
+  and notes are now encrypted with the OS keychain (`safeStorage`) — the same
+  protection the API key already has. Existing records are migrated in place on
+  first launch; if the OS has no keychain the data stays readable (unencrypted)
+  rather than failing. (Columns needed for filtering/sorting — dates, year,
+  type, institution — remain plaintext; full-database encryption is a possible
+  future step.)
 
 ### Added
 - **S04A falls back to the prior-year base when current-year income data is
@@ -104,6 +114,12 @@ All notable changes to MiTax are documented here.
   an operation fails (try/finally around the busy states).
 - Refreshed README (installer names, Node version, data-storage paths),
   `build.bat` branding, and the copyright year.
+- **Reconcile now flags statement transactions that never made it to
+  LunchMoney** (a likely missed upload) and warns when the statement's dates
+  don't fall in the selected year — instead of misreporting "all match."
+- **API resilience:** a `Retry-After` header is honoured on rate-limit
+  responses, and a bad/expired API key surfaces as a connection error instead
+  of silently appearing as "no payees / no coverage."
 - **Release workflow is signing-ready.** Code-signing variables are now
   sourced from optional, per-OS repo secrets, so signing becomes a drop-in
   change once certificates are available (no unsigned-build behaviour change in

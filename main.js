@@ -415,6 +415,17 @@ handle('reconcile-statement', async (event, { assetId, filePath, year }) => {
     });
 
     const data = reconcile(parsedTxs, lmTxs, balanceSentinels);
+
+    // Warn when the statement's own period doesn't fall in the selected year —
+    // the comparison window then has no overlap and a clean "all match" result
+    // would be misleading.
+    const parsedYears = new Set(
+      parsedTxs.map(t => (typeof t.date === 'string' ? t.date.slice(0, 4) : null)).filter(Boolean)
+    );
+    if (parsedTxs.length && !parsedYears.has(String(year))) {
+      data.warning = `This statement's transactions are dated ${[...parsedYears].sort().join(', ')}, but you're reconciling against ${year}. Select the matching year.`;
+    }
+
     return { success: true, data };
   } catch (err) {
     return { success: false, error: err.message };

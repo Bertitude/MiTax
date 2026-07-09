@@ -2971,15 +2971,48 @@ async function startReconcile() {
     return;
   }
 
-  const { signMismatches, phantomBalances, suspectedPhantoms = [] } = res.data;
+  const { signMismatches, phantomBalances, suspectedPhantoms = [], missingInLM = [], warning } = res.data;
 
-  if (!signMismatches.length && !phantomBalances.length && !suspectedPhantoms.length) {
-    body.innerHTML = '<div style="padding:20px;color:var(--text-muted);">All transactions match — nothing to fix.</div>';
+  const cur = (asset.currency || 'JMD').toUpperCase();
+
+  // Banner shown above results: a period-mismatch warning, or an all-clear only
+  // when there is genuinely nothing outstanding (including nothing missing).
+  const warnHtml = warning
+    ? `<div style="padding:10px 12px;margin-bottom:10px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">⚠ ${escHtml(warning)}</div>`
+    : '';
+
+  if (!signMismatches.length && !phantomBalances.length && !suspectedPhantoms.length && !missingInLM.length) {
+    body.innerHTML = warnHtml + '<div style="padding:20px;color:var(--text-muted);">All statement transactions were found in LunchMoney with matching signs — nothing to fix.</div>';
     return;
   }
 
-  const cur = (asset.currency || 'JMD').toUpperCase();
-  let html = '';
+  let html = warnHtml;
+
+  if (missingInLM.length) {
+    html += `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px;">
+          ⬆ On statement but not in LunchMoney <span class="badge badge-yellow">${missingInLM.length}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Likely not uploaded yet — import this statement to add them.</div>
+        <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              <th style="padding:6px;text-align:left;">Date</th>
+              <th style="padding:6px;text-align:left;">Payee</th>
+              <th style="padding:6px;text-align:right;">Amount</th>
+            </tr></thead>
+            <tbody>${missingInLM.slice(0, 200).map(m => `
+              <tr>
+                <td style="padding:4px 6px;">${escHtml(m.date || '')}</td>
+                <td style="padding:4px 6px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(m.payee || '')}</td>
+                <td style="padding:4px 6px;text-align:right;">${cur} ${Number(m.amount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
 
   if (signMismatches.length) {
     html += `

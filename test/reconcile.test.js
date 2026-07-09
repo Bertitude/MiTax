@@ -47,6 +47,19 @@ test('reconcile: a flipped row is flagged, not masked by a same-sign neighbour (
   assert.deepEqual(r.signMismatches.map(m => m.lmId).sort(), [1, 2]);
 });
 
+test('reconcile: statement transactions absent from LM are reported as missing (N23)', () => {
+  const parsed = [
+    { date: '2024-03-01', amount: -5000, payee: 'GROCERY' },   // in LM
+    { date: '2024-03-02', amount: -1200, payee: 'PHARMACY' },  // NOT in LM
+  ];
+  const lmTxs = [lm(1, '2024-03-01', -5000, 'GROCERY')];
+  const r = reconcile(parsed, lmTxs, []);
+  assert.equal(r.signMismatches.length, 0);
+  assert.equal(r.missingInLM.length, 1);
+  assert.equal(r.missingInLM[0].payee, 'PHARMACY');
+  assert.equal(r.missingInLM[0].amount, -1200);
+});
+
 test('reconcile: phantom only when a statement sentinel confirms it', () => {
   const lmTxs = [
     lm(1, '2024-01-01', 100000, 'Opening Balance'),
