@@ -36,30 +36,29 @@ jobs:
         run: npm ci
 
       # ── 4. Build & publish to GitHub Releases ───────────────────────────────
-      # Code signing is OPT-IN and drop-in: every signing variable below is
-      # sourced from an (optional) repo secret and scoped to the OS that uses it.
-      # With no secrets set they are all empty, so electron-builder skips signing
-      # and the build stays unsigned — identical to before. To enable signing:
-      #   1. Add the secrets (repo → Settings → Secrets and variables → Actions):
-      #      • macOS:   CSC_LINK (base64 of your Developer ID .p12), CSC_KEY_PASSWORD,
-      #                 and for notarization APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
-      #      • Windows: WIN_CSC_LINK (base64 of your .pfx), WIN_CSC_KEY_PASSWORD
-      #   2. Delete the `verifyUpdateCodeSignature` override in src/updater.js
-      #      (it is required only while builds are unsigned).
+      # Builds are UNSIGNED. Do NOT set CSC_LINK / WIN_CSC_LINK to an empty
+      # string here — electron-builder treats an empty-but-defined value as a
+      # certificate path, resolves it to the project root and fails with
+      # "<projectDir> not a file". Leaving them unset makes it skip signing.
+      #
+      # To enable signing later, add the `env:` block shown in the commented
+      # "signing-ready" template below (only uncomment a line once its secret
+      # exists), then delete the `verifyUpdateCodeSignature` override in
+      # src/updater.js (that override is required only while builds are unsigned).
       - name: Build & Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided by GitHub Actions
-          # Don't search the keychain for an identity; explicit CSC_LINK still
-          # signs when present, so this stays safe whether signed or not.
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          # macOS Developer ID + notarization (only exposed on the macOS runner)
-          CSC_LINK:                    ${{ matrix.os == 'macos-latest' && secrets.CSC_LINK || '' }}
-          CSC_KEY_PASSWORD:            ${{ matrix.os == 'macos-latest' && secrets.CSC_KEY_PASSWORD || '' }}
-          APPLE_ID:                    ${{ matrix.os == 'macos-latest' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID:               ${{ matrix.os == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
-          # Windows code-signing cert (only exposed on the Windows runner)
-          WIN_CSC_LINK:                ${{ matrix.os == 'windows-latest' && secrets.WIN_CSC_LINK || '' }}
-          WIN_CSC_KEY_PASSWORD:        ${{ matrix.os == 'windows-latest' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"    # don't search the keychain; unsigned build
+          # ── signing-ready template — uncomment a line only after adding its secret ──
+          # macOS:   CSC_LINK / CSC_KEY_PASSWORD (Developer ID .p12, base64),
+          #          APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID (notarization)
+          # Windows: WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (.pfx, base64)
+          # CSC_LINK:             ${{ secrets.CSC_LINK }}
+          # CSC_KEY_PASSWORD:     ${{ secrets.CSC_KEY_PASSWORD }}
+          # APPLE_ID:             ${{ secrets.APPLE_ID }}
+          # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          # APPLE_TEAM_ID:        ${{ secrets.APPLE_TEAM_ID }}
+          # WIN_CSC_LINK:         ${{ secrets.WIN_CSC_LINK }}
+          # WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npm run release
         shell: bash
