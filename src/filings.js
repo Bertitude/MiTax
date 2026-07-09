@@ -5,6 +5,7 @@
 
 const path = require('path');
 const { app } = require('electron');
+const { encStr, decStr, encNum, decNum, isEncrypted, secureAvailable } = require('./secure-field');
 
 let db = null;
 
@@ -14,7 +15,43 @@ function getDB() {
   const dbPath = path.join(app.getPath('userData'), 'lunchmoney-tracker.db');
   db = new Database(dbPath);
   initSchema(db);
+  migrateEncryption(db);
   return db;
+}
+
+// Sensitive value columns (money figures + free text + full report). These are
+// never used in WHERE/ORDER/GROUP, so encrypting them doesn't affect queries.
+const ENC_NUM_COLS = ['gross_income', 'tax_payable', 'nis', 'nht', 'ed_tax', 'income_tax', 'amount_paid'];
+const ENC_STR_COLS = ['report_json', 'notes'];
+
+// One-time, idempotent, non-destructive migration: encrypt any row whose
+// sensitive columns are still plaintext. Decrypt-then-re-encrypt makes re-runs
+// safe, and each row is wrapped so one bad row can't abort the rest or the app.
+function migrateEncryption(db) {
+  if (!secureAvailable()) return;
+  try {
+    const rows = db.prepare('SELECT * FROM tax_filings').all();
+    const upd = db.prepare(`UPDATE tax_filings SET ${[...ENC_NUM_COLS, ...ENC_STR_COLS].map(c => `${c} = ?`).join(', ')} WHERE id = ?`);
+    for (const r of rows) {
+      const alreadyEnc = ENC_STR_COLS.concat(ENC_NUM_COLS).every(c => r[c] == null || isEncrypted(r[c]));
+      if (alreadyEnc) continue;
+      try {
+        upd.run(
+          ...ENC_NUM_COLS.map(c => encNum(decNum(r[c]))),
+          ...ENC_STR_COLS.map(c => encStr(decStr(r[c]))),
+          r.id,
+        );
+      } catch (_) { /* leave this row plaintext-but-readable */ }
+    }
+  } catch (_) { /* never fail startup on migration */ }
+}
+
+// Decrypt the sensitive columns of a row back to usable values.
+function decodeRow(row) {
+  if (!row) return row;
+  for (const c of ENC_NUM_COLS) if (c in row) row[c] = decNum(row[c]);
+  for (const c of ENC_STR_COLS) if (c in row) row[c] = decStr(row[c]);
+  return row;
 }
 
 function initSchema(db) {
@@ -59,10 +96,10 @@ function saveFiling({
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     type, year, quarter || null, filedDate || null, dueDate || null,
-    grossIncome || 0, taxPayable || 0, nis || 0, nht || 0, edTax || 0, incomeTax || 0,
-    amountPaid || 0, status || 'draft',
-    reportJson ? JSON.stringify(reportJson) : null,
-    notes || null,
+    encNum(grossIncome || 0), encNum(taxPayable || 0), encNum(nis || 0), encNum(nht || 0), encNum(edTax || 0), encNum(incomeTax || 0),
+    encNum(amountPaid || 0), status || 'draft',
+    encStr(reportJson ? JSON.stringify(reportJson) : null),
+    encStr(notes || null),
   );
   return { id: result.lastInsertRowid };
 }
@@ -74,9 +111,9 @@ function updateFiling(id, { filedDate, amountPaid, status, notes }) {
   const params  = [];
 
   if (filedDate  !== undefined) { updates.push('filed_date = ?');  params.push(filedDate); }
-  if (amountPaid !== undefined) { updates.push('amount_paid = ?'); params.push(amountPaid); }
+  if (amountPaid !== undefined) { updates.push('amount_paid = ?'); params.push(encNum(amountPaid)); }
   if (status     !== undefined) { updates.push('status = ?');      params.push(status); }
-  if (notes      !== undefined) { updates.push('notes = ?');       params.push(notes); }
+  if (notes      !== undefined) { updates.push('notes = ?');       params.push(encStr(notes)); }
 
   if (!updates.length) return getFilingById(id);
 
@@ -91,7 +128,7 @@ function updateFiling(id, { filedDate, amountPaid, status, notes }) {
 
 function getFilingById(id) {
   const db  = getDB();
-  const row = db.prepare('SELECT * FROM tax_filings WHERE id = ?').get(id);
+  const row = decodeRow(db.prepare('SELECT * FROM tax_filings WHERE id = ?').get(id));
   if (row && row.report_json) {
     try { row.report = JSON.parse(row.report_json); } catch { /* ignore */ }
     delete row.report_json;
@@ -107,7 +144,7 @@ function getAllFilings() {
            amount_paid, status, notes, created_at, updated_at
     FROM tax_filings
     ORDER BY year DESC, type ASC, COALESCE(quarter, 0) ASC
-  `).all();
+  `).all().map(decodeRow);
 }
 
 /**
@@ -115,11 +152,12 @@ function getAllFilings() {
  */
 function getMostRecentS04(year) {
   const db = getDB();
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT * FROM tax_filings
     WHERE type = 's04' AND year = ?
     ORDER BY created_at DESC, id DESC LIMIT 1
-  `).get(year) || null;
+  `).get(year);
+  return decodeRow(row) || null;
 }
 
 // ─── Delete ──────────────────────────────────────────────────────────────────
