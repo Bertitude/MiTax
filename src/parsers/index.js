@@ -134,29 +134,56 @@ function validateResult(resultOrArray) {
  */
 function parseCSV(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
-  const lines = content.split('\n').filter(l => l.trim());
-  if (lines.length < 2) return { institution: 'CSV Import', transactions: [] };
+  const records = splitCSVRecords(content);   // quote-aware: a quoted field may span newlines
+  if (records.length < 2) return { institution: 'CSV Import', transactions: [], warnings: ['CSV has no data rows.'] };
 
-  const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
+  const headers = splitCSVLine(records[0]).map(h => h.trim().toLowerCase());
   const transactions = [];
+  let dropped = 0;
 
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    if (cols.length < 2) continue;
+  for (let i = 1; i < records.length; i++) {
+    const cols = splitCSVLine(records[i]);
+    if (cols.length < 2) { dropped++; continue; }
     const row = {};
-    headers.forEach((h, idx) => { row[h] = (cols[idx] || '').replace(/"/g, '').trim(); });
+    headers.forEach((h, idx) => { row[h] = (cols[idx] || '').trim(); });
 
     const tx = normalizeCSVRow(row);
-    if (tx) transactions.push(tx);
+    if (tx) transactions.push(tx); else dropped++;
   }
 
   const institution = guessInstitutionFromCSV(headers);
   const period = derivePeriodFromTransactions(transactions);
+  const warnings = dropped ? [`Skipped ${dropped} CSV row(s) with no usable date/amount.`] : [];
 
   // NB: no applySignConvention here — normalizeCSVRow already returns amounts in
   // the user-facing convention (positive = income/credit). Negating again would
   // double-flip a LunchMoney-style signed CSV.
-  return { institution, accountType: 'csv-import', accountName: institution, currency: 'JMD', period, transactions };
+  return { institution, accountType: 'csv-import', accountName: institution, currency: 'JMD', period, transactions, warnings };
+}
+
+/**
+ * Split raw CSV content into record strings, treating newlines inside a quoted
+ * field as part of the field (RFC 4180) rather than a record boundary.
+ */
+function splitCSVRecords(content) {
+  const records = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    if (ch === '"') {
+      if (inQuotes && content[i + 1] === '"') { cur += '""'; i++; }  // keep escaped quote for splitCSVLine
+      else { inQuotes = !inQuotes; cur += ch; }
+    } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+      if (ch === '\r' && content[i + 1] === '\n') i++;
+      if (cur.trim()) records.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) records.push(cur);
+  return records;
 }
 
 /**
@@ -185,10 +212,16 @@ function splitCSVLine(line) {
   const result = [];
   let current = '';
   let inQuotes = false;
-  for (const ch of line) {
-    if (ch === '"') { inQuotes = !inQuotes; }
-    else if (ch === ',' && !inQuotes) { result.push(current); current = ''; }
-    else { current += ch; }
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }  // RFC 4180 escaped quote
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current); current = '';
+    } else {
+      current += ch;
+    }
   }
   result.push(current);
   return result;
@@ -207,21 +240,21 @@ function normalizeCSVRow(row) {
 
   // Separate debit/credit columns are sign-bearing; a single amount/value column
   // is assumed already signed with positive = money in (LunchMoney convention).
+  // Prefer whichever column carries a NON-ZERO value: a "0.00" in the debit
+  // column of a deposit row must not shadow the populated credit column.
+  const debit  = parseMoney(debitStr);   // NaN when empty
+  const credit = parseMoney(creditStr);
   let amount;
-  if (debitStr) {
-    const v = parseMoney(debitStr);
-    if (Number.isNaN(v)) return null;
-    amount = -Math.abs(v);            // debit → expense (negative)
-  } else if (creditStr) {
-    const v = parseMoney(creditStr);
-    if (Number.isNaN(v)) return null;
-    amount = Math.abs(v);             // credit → income (positive)
+  if (Number.isFinite(debit) && debit !== 0) {
+    amount = -Math.abs(debit);            // debit → expense (negative)
+  } else if (Number.isFinite(credit) && credit !== 0) {
+    amount = Math.abs(credit);            // credit → income (positive)
   } else if (amountStr) {
     const v = parseMoney(amountStr);
     if (Number.isNaN(v)) return null;
     amount = v;
   } else {
-    return null;
+    return null;                          // no non-zero debit/credit and no amount column
   }
 
   return {

@@ -32,7 +32,10 @@ const TAX_PARAMS = {
     verifiedAt: '2026-04-14',
   },
   2024: {
-    personalThreshold: 1700088,    // $1.7M effective for tax year 2024
+    // Threshold bumped from $1,500,096 to $1,700,088 effective Apr 1, 2024.
+    // TAJ publishes the weighted full-year-effective value of $1,650,090 for
+    // tax-year 2024 returns — that's what individuals actually use when filing.
+    personalThreshold: 1650090,
     nisRate: 0.03,
     nisMaxIncome: 5000000,
     nhtRate: 0.02,
@@ -41,11 +44,15 @@ const TAX_PARAMS = {
     incomeTaxRate2: 0.30,
     incomeTaxBand1Max: 6000000,
     standardDeductionRate: 0.20,
-    source: 'https://kpmg.com/us/en/taxnewsflash/news/2025/03/tnf-jamaica-tax-measures-in-2025-2026-budget.html',
-    verifiedAt: '2026-04-14',
+    source: 'https://www.dawgen.global/understanding-the-new-changes-to-payroll-taxes-in-jamaica-a-closer-look-at-the-increased-income-tax-threshold-and-exemptions/',
+    verifiedAt: '2026-07-08',
   },
   2025: {
-    personalThreshold: 1799376,    // First tranche of the 2025/2026 budget's 3-step rise to $2M
+    // First tranche of the 2025/2026 budget's 3-step rise to $2M: $1,700,088
+    // to $1,799,376 effective Apr 1, 2025. TAJ's weighted full-year-effective
+    // value for tax-year 2025 returns is $1,774,470 (published figure — not
+    // the naive 3/12 + 9/12 weighting, which gives 1,774,554).
+    personalThreshold: 1774470,
     nisRate: 0.03,
     nisMaxIncome: 5000000,
     nhtRate: 0.02,
@@ -54,8 +61,8 @@ const TAX_PARAMS = {
     incomeTaxRate2: 0.30,
     incomeTaxBand1Max: 6000000,
     standardDeductionRate: 0.20,
-    source: 'https://kpmg.com/us/en/taxnewsflash/news/2025/03/tnf-jamaica-tax-measures-in-2025-2026-budget.html',
-    verifiedAt: '2026-04-14',
+    source: 'https://jis.gov.jm/taj-develops-technical-advisory-for-revised-income-tax-threshold-and-pension-exemptions/',
+    verifiedAt: '2026-07-08',
   },
   2026: {
     // Threshold bumped from $1,799,376 to $1,902,360 effective Apr 1, 2026.
@@ -93,6 +100,40 @@ function getTaxParams(year) {
     params:   TAX_PARAMS[usedYear],
     fallback: { usedYear, requestedYear: year },
   };
+}
+
+/**
+ * Report whether TAX_PARAMS may be stale. Jamaica's threshold changes take
+ * effect every April 1 (announced in the March budget), so the params are
+ * considered stale when no entry has been re-verified on or after the most
+ * recent April 1, or when the current year has no entry at all.
+ *
+ * Pure: `todayStr` is an ISO date (YYYY-MM-DD) resolved to the user's
+ * timezone by the caller.
+ *
+ * Returns { stale, reason }.
+ */
+function taxParamsStatus(todayStr) {
+  const year  = parseInt(todayStr.slice(0, 4), 10);
+  const monthDay = todayStr.slice(5); // 'MM-DD'
+  const latestAprilFirst = monthDay >= '04-01' ? `${year}-04-01` : `${year - 1}-04-01`;
+
+  if (!TAX_PARAMS[year]) {
+    return { stale: true, reason: `No tax parameters defined for ${year}.` };
+  }
+
+  const newestVerifiedAt = Object.values(TAX_PARAMS)
+    .map(p => p.verifiedAt || '')
+    .sort()
+    .pop();
+  if (!newestVerifiedAt || newestVerifiedAt < latestAprilFirst) {
+    return {
+      stale:  true,
+      reason: `Tax parameters were last verified ${newestVerifiedAt || 'never'}, before the ${latestAprilFirst} threshold change window.`,
+    };
+  }
+
+  return { stale: false, reason: null };
 }
 
 // ─── Category to income-type mapping ───────────────────────────────────────
@@ -225,6 +266,9 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   // Allowable deductions
   const stdDedCents    = Math.round(grossCents * params.standardDeductionRate);
   const allowableCents = Math.max(actualExpCents, manualData.useActualExpenses ? actualExpCents : stdDedCents);
+  // Which deduction method was actually applied (for the report label): the
+  // user forcing actual, or actual simply exceeding the 20% standard.
+  const usedActualMethod = !!manualData.useActualExpenses || actualExpCents >= stdDedCents;
   const statutoryCents = Math.max(0, grossCents - allowableCents);
 
   // NIS (National Insurance Scheme) — calculated on combined income, capped at nisMaxIncome.
@@ -310,7 +354,7 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       ),
       standardDeduction: roundJMD(standardDeduction),
       actualExpenses: roundJMD(actualExpenses),
-      methodUsed: actualExpenses >= standardDeduction ? 'Actual' : 'Standard (20%)',
+      methodUsed: usedActualMethod ? 'Actual' : 'Standard (20%)',
     },
 
     // Part C: Statutory Income
@@ -469,11 +513,23 @@ function buildMonthlyBreakdown(transactions, year) {
 // the recommended amounts are adjusted upward/downward proportionally.
 
 const S04A_DUE_DATES = [
-  { q: 1, label: 'Q1 (Jan–Mar)', due: 'Mar 15' },
-  { q: 2, label: 'Q2 (Apr–Jun)', due: 'Jun 15' },
-  { q: 3, label: 'Q3 (Jul–Sep)', due: 'Sep 15' },
-  { q: 4, label: 'Q4 (Oct–Dec)', due: 'Dec 15' },
+  { q: 1, label: 'Q1 (Jan–Mar)', month: '03', day: '15', dueLabel: 'Mar 15' },
+  { q: 2, label: 'Q2 (Apr–Jun)', month: '06', day: '15', dueLabel: 'Jun 15' },
+  { q: 3, label: 'Q3 (Jul–Sep)', month: '09', day: '15', dueLabel: 'Sep 15' },
+  { q: 4, label: 'Q4 (Oct–Dec)', month: '12', day: '15', dueLabel: 'Dec 15' },
 ];
+
+// Split a total (in integer cents) into four instalments that sum EXACTLY to
+// the total: three equal quarters plus the remainder on Q4. Avoids the float
+// drift where 4 × round(total/4) ≠ total.
+function splitInstalments(totalCents) {
+  const q = Math.floor(totalCents / 4);
+  return [q, q, q, totalCents - 3 * q];
+}
+
+// Minimum share of the prior-year-predicted YTD income required before the
+// current-year trend is trusted; below it, S04A keeps the prior-year base.
+const INCOME_SIGNAL_FLOOR = 0.5;
 
 function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr }) {
   const r2 = v => Math.round((v || 0) * 100) / 100;
@@ -484,18 +540,42 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   // Base quarterly instalment: 25% of prior year's total tax
   const baseQuarterly = r2(priorTaxPayable / 4);
 
-  // Current-year trend: extrapolate YTD income to full-year estimate
-  // Use todayStr (YYYY-MM-DD, already resolved to user's timezone) when provided
-  const now = todayStr ? new Date(`${todayStr}T12:00:00`) : new Date();
-  const monthsElapsed  = Math.max(0.5, (now.getMonth() + 1) + (now.getDate() / 31));
+  // Current-year trend: extrapolate YTD income to full-year estimate.
+  // todayStr is YYYY-MM-DD already resolved to the user's timezone; parse it by
+  // string-slicing (no Date round-trip, no UTC shift). monthsElapsed counts
+  // fully-elapsed months plus the fraction of the current month:
+  //   getMonth() is 0-based, so completed months = (m - 1); add day/daysInMonth.
+  const today     = todayStr || `${new Date().getFullYear()}-01-01`;
+  const todayYear = parseInt(today.slice(0, 4), 10);
+  const tMonth    = parseInt(today.slice(5, 7), 10);   // 1-based
+  const tDay      = parseInt(today.slice(8, 10), 10);
+  const daysInMonth = new Date(todayYear, tMonth, 0).getDate();
+
+  let monthsElapsed;
+  if (currentYear < todayYear)       monthsElapsed = 12;    // year fully elapsed
+  else if (currentYear > todayYear)  monthsElapsed = 0.5;   // not started (safety)
+  else monthsElapsed = Math.max(0.5, (tMonth - 1) + (tDay / daysInMonth));
+
   const annualTrend    = r2((currentYtdIncome / monthsElapsed) * 12);
 
-  // Adjustment ratio (only meaningful after ≥3 months of data)
+  // Adjustment ratio (only meaningful after ≥3 months AND enough income signal).
+  // Sparse YTD income — usually because most statements aren't uploaded yet —
+  // would otherwise drive trendRatio toward 0 and ratchet the provisional
+  // recommendation down to nothing. Under-recommending provisional tax risks
+  // TAJ penalties (surplus is credited at year-end), so require actual YTD to
+  // be at least INCOME_SIGNAL_FLOOR of what the prior year predicts for the
+  // elapsed fraction before trusting the trend; otherwise keep the prior-year
+  // base. The floor only gates the downward side — higher-than-expected income
+  // (coverage ≥ 1) always passes and still adjusts upward.
   const hasHistory     = priorGrossIncome > 0;
-  const trendRatio     = hasHistory && monthsElapsed >= 3
+  const expectedYtd    = priorGrossIncome * (monthsElapsed / 12);
+  const coverageRatio  = expectedYtd > 0 ? currentYtdIncome / expectedYtd : 0;
+  const enoughSignal   = monthsElapsed >= 3 && coverageRatio >= INCOME_SIGNAL_FLOOR;
+  const trendRatio     = hasHistory && enoughSignal
     ? annualTrend / priorGrossIncome
     : 1;
-  const useAdjusted    = Math.abs(trendRatio - 1) >= 0.10 && monthsElapsed >= 3;
+  const useAdjusted    = Math.abs(trendRatio - 1) >= 0.10 && enoughSignal;
+  const insufficientSignal = hasHistory && monthsElapsed >= 3 && !enoughSignal;
 
   // If no prior filing exists, estimate from current YTD using s04 params
   let recommendedAnnualTax = priorTaxPayable;
@@ -508,16 +588,21 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
 
   const recommendedQuarterly = r2(recommendedAnnualTax / 4);
 
-  const quarters = S04A_DUE_DATES.map(({ q, label, due }) => {
-    const dueFullDate = `${currentYear}-${due.replace('Mar','03').replace('Jun','06').replace('Sep','09').replace('Dec','12')}-15`;
-    const isPast      = new Date() > new Date(dueFullDate);
+  // Cents-exact per-quarter instalments (Q1–Q3 equal, Q4 carries the remainder)
+  // so the four amounts sum precisely to the annual figure.
+  const baseInstalments = splitInstalments(Math.round(priorTaxPayable * 100));
+  const recInstalments  = splitInstalments(Math.round(recommendedAnnualTax * 100));
+
+  const quarters = S04A_DUE_DATES.map(({ q, label, month, day, dueLabel }, i) => {
+    const dueDate = `${currentYear}-${month}-${day}`;
+    const isPast  = today > dueDate;   // lexicographic ISO compare, timezone-safe
     return {
       quarter:           q,
       label,
-      dueDate:           dueFullDate,
-      dueDateFormatted:  `${due} ${currentYear}`,
-      baseAmount:        baseQuarterly,
-      recommendedAmount: recommendedQuarterly,
+      dueDate,
+      dueDateFormatted:  `${dueLabel} ${currentYear}`,
+      baseAmount:        baseInstalments[i] / 100,
+      recommendedAmount: recInstalments[i] / 100,
       isPast,
     };
   });
@@ -528,9 +613,11 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   } else {
     notes.push(`No prior-year S04 filing found. Estimates derived from current-year LunchMoney trends.`);
   }
-  if (monthsElapsed >= 3) {
+  if (enoughSignal) {
     const pct = Math.round((trendRatio - 1) * 100);
     notes.push(`Current year income (${monthsElapsed.toFixed(1)} months): $${annualTrend.toLocaleString('en-JM', { minimumFractionDigits: 2 })} JMD annualised — ${pct >= 0 ? '+' : ''}${pct}% vs prior year.`);
+  } else if (insufficientSignal) {
+    notes.push(`Current-year income so far ($${r2(currentYtdIncome).toLocaleString('en-JM', { minimumFractionDigits: 2 })} over ${monthsElapsed.toFixed(1)} months) is well below the prior-year pace — likely incomplete statement uploads — so the prior-year base is used. Upload more statements for a trend-adjusted estimate.`);
   }
   if (useAdjusted) {
     notes.push(`Recommended amounts adjusted ${trendRatio > 1 ? 'upward' : 'downward'} to reflect current-year income trend.`);
@@ -548,7 +635,9 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
     annualTrendIncome:     annualTrend,
     monthsElapsed:         r2(monthsElapsed),
     trendRatio:            r2(trendRatio),
+    coverageRatio:         r2(coverageRatio),
     useAdjusted,
+    insufficientSignal,
     baseQuarterly,
     recommendedQuarterly,
     quarters,
@@ -556,4 +645,4 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   };
 }
 
-module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, estimateAnnualTax };
+module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, taxParamsStatus, estimateAnnualTax };

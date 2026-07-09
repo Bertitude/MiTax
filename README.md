@@ -10,11 +10,29 @@ Download the latest installer from the **[Releases](../../releases)** page:
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows | `LunchMoney-Importer-Setup-x.x.x.exe` | Run installer, launch from Start Menu |
-| macOS | `LunchMoney-Importer-x.x.x.dmg` | Drag to Applications |
-| Linux | `LunchMoney-Importer-x.x.x.AppImage` | `chmod +x` then run |
+| Windows | `MiTax-Setup-x.x.x.exe` | Run installer, launch from Start Menu |
+| macOS | `MiTax-x.x.x.dmg` | Drag to Applications |
+| Linux | `MiTax-x.x.x.AppImage` | `chmod +x` then run |
 
 The app **checks for updates automatically** at startup and shows a banner when a new version is available. You can also trigger a manual check from the topbar at any time.
+
+### First-launch security prompts (unsigned builds)
+
+Current releases are **not code-signed**, so the OS shows a one-time warning the first time you run the app. This is expected — bypass it once and it won't ask again:
+
+- **Windows** — Microsoft Defender SmartScreen shows *"Windows protected your PC."* Click **More info → Run anyway**.
+- **macOS** — Gatekeeper says the app *"cannot be opened because the developer cannot be verified."* **Right-click (or Control-click) the app → Open → Open**. (Double-clicking won't offer the bypass.)
+- **Linux** — no prompt; just `chmod +x` the AppImage and run.
+
+### Auto-update support by platform
+
+| Platform | Auto-update | Notes |
+|---|---|---|
+| Windows | ✅ Works | Update integrity is verified by the SHA-512 checksum in `latest.yml` over HTTPS. |
+| Linux (AppImage) | ✅ Works | Same checksum verification. |
+| macOS | ❌ **Not functional on unsigned builds** | Apple's updater (Squirrel.Mac) requires a valid signature, so on macOS you must **download each new release manually** from the Releases page. |
+
+Signing (which removes the prompts above and enables macOS auto-update) requires paid certificates — an **Apple Developer Program** membership (~$99/yr) for macOS and a Windows code-signing certificate. The release workflow is already wired to sign automatically once those certificates are added as repo secrets (see `.github/workflows/release.yml`); until then, builds ship unsigned.
 
 ---
 
@@ -46,9 +64,9 @@ Within 5 seconds of launching the app, existing users see an **update available*
 ## One-time GitHub setup (first release only)
 
 1. Push the code to a **GitHub repository**
-2. In `package.json`, replace `GITHUB_USERNAME_HERE` with your GitHub username
+2. Confirm the `build.publish` owner/repo in `package.json` points at your release repo (currently `Bertitude/MiTax`)
 3. Go to your repo → **Settings → Actions → General** → enable "Read and write permissions" for `GITHUB_TOKEN`
-4. Tag `v1.1.0` and push — the first build will run
+4. Tag a release (e.g. `v1.3.0`) and push — the build workflow will run
 
 No extra secrets or code-signing certificates are required for basic builds. Code signing (to remove Windows "Unknown Publisher" warnings) can be added later via `WIN_CSC_LINK` secrets.
 
@@ -69,11 +87,11 @@ No extra secrets or code-signing certificates are required for basic builds. Cod
 ## Quick Start
 
 ### 1. Install Node.js
-Download from https://nodejs.org (v18 or later recommended)
+Download from https://nodejs.org (v20 or later — required by better-sqlite3 12 / Electron 41)
 
 ### 2. Install dependencies
 ```bash
-cd LunchMoneyApp
+cd MiTax
 npm install
 ```
 
@@ -165,6 +183,6 @@ MiTax/
 ## Data Storage
 
 The app stores its SQLite database in your OS user data folder:
-- **macOS**: `~/Library/Application Support/lunchmoney-importer/`
-- **Windows**: `%APPDATA%\lunchmoney-importer\`
-- **Linux**: `~/.config/lunchmoney-importer/`
+- **macOS**: `~/Library/Application Support/MiTax/` (dev: `.../mitax/`)
+- **Windows**: `%APPDATA%\MiTax\` (dev: `%APPDATA%\mitax\`)
+- **Linux**: `~/.config/MiTax/` (dev: `~/.config/mitax/`)

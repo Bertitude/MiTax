@@ -4,6 +4,136 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [1.3.1] — 2026-07-09
+
+Follow-up fix release completing the v1.3.0 audit remediation (see `AUDIT.md`).
+
+### Documentation
+- **Authoritative sign convention (correcting the 1.2.17 entry, which is
+  ambiguous).** Two conventions exist and must not be confused:
+  - *Parser-internal* (before `applySignConvention`): **positive = debit /
+    money out**, negative = credit / money in. This is what the 1.2.17 entry's
+    "positive = expense/debit" describes.
+  - *LunchMoney upload payload and everything downstream* (tax, UI): uploads use
+    `debit_as_negative: true`, so **negative = expense/debit, positive =
+    income/credit**. `applySignConvention` flips the internal sign exactly once
+    at the parser boundary to get here.
+- Versions **1.2.18–1.2.25** were released without individual changelog entries;
+  see the git history for those commits. This gap is acknowledged rather than
+  reconstructed from memory to avoid inaccurate notes.
+
+### Fixed
+- **Statement parsers no longer invert or fabricate transaction signs.** The
+  Wise, Stripe and PayPal parsers were treating money-in as expenses (and vice
+  versa); NCB and the generic fallback mis-signed deposits when a statement row
+  had a single amount column. They now negate fintech user-convention amounts
+  correctly and infer bank debit/credit from the running-balance delta. The
+  generic parser also stops letting an empty debit cell or a DR/CR marker on the
+  running balance flip a row's sign.
+- **JMMB statements no longer fail to import.** The JMMB parser threw on every
+  file (undefined `accountNumber`) and, behind that, used the running balance as
+  the transaction amount — both fixed.
+- **PayPal dates parse month-first.** PayPal's MM/DD/YYYY dates were read as
+  DD/MM, landing transactions in the wrong month (or dropping them); e.g.
+  `7/4/2024` is now July 4, not April 7.
+- Added golden-file parser tests for JMMB, NCB, Wise, Stripe, PayPal and the
+  generic debit/credit-column and balance-marker cases.
+
+### Security
+- **LunchMoney API key no longer leaves the main process.** The key was
+  encrypted at rest but then decrypted, sent to the renderer, and mirrored in
+  plaintext to `localStorage` in the same profile directory — nullifying the
+  encryption. Now the main process resolves the active account's key internally
+  for every LunchMoney call, the renderer holds only a `connected` flag, and
+  any pre-1.3 plaintext key in `localStorage` is migrated into the encrypted
+  store and deleted. A stored key that can't be decrypted (e.g. after an OS
+  keychain reset) now cleanly reports "not connected" instead of being used as
+  a broken key.
+- **IPC surface hardened.** Every IPC handler now rejects calls whose sender
+  isn't the app's own top-level window; reconcile transaction IDs are validated
+  to integers and URL-encoded before hitting the API; the statement-file
+  allow-list resolves symlinks (canonical paths) and rejects non-regular files;
+  the S04 print window is given a strict CSP so a crafted report can't fetch
+  remote resources during PDF export.
+- **Fewer ways to leak/duplicate data over the API.** 5xx responses are retried
+  only for idempotent GETs (a POST the server may have committed is no longer
+  blindly re-sent); `GET /transactions` pins `debit_as_negative=true` so
+  reconcile never rides on the account default; requests time out after 30s;
+  all remaining plaintext keys are migrated to encrypted at startup with
+  `secure_delete` + `VACUUM` scrubbing old pages.
+- **Statement-derived text is HTML-escaped** in the two remaining innerHTML
+  sinks (import queue + account-mapping) and the S04 report notes.
+- **Tax filings and P24 employment income are encrypted at rest.** The money
+  figures, the full serialized S04 report, employer tax-registration numbers,
+  and notes are now encrypted with the OS keychain (`safeStorage`) — the same
+  protection the API key already has. Existing records are migrated in place on
+  first launch; if the OS has no keychain the data stays readable (unencrypted)
+  rather than failing. (Columns needed for filtering/sorting — dates, year,
+  type, institution — remain plaintext; full-database encryption is a possible
+  future step.)
+
+### Added
+- **S04A falls back to the prior-year base when current-year income data is
+  thin.** Previously, sparse year-to-date income (usually because most
+  statements weren't uploaded yet) drove the trend adjustment toward $0,
+  under-recommending provisional tax. The estimator now trusts the trend only
+  when YTD income is at least half of what the prior year predicts for the
+  elapsed period; below that it keeps the prior-year base and explains why.
+  Higher-than-expected income still adjusts upward as before.
+
+### Fixed
+- **S04A provisional-tax estimator corrected.** Quarterly due dates were built
+  as malformed strings (`"2026-03 15-15"`), so the "past due" badge never
+  appeared and saving a quarter stored an invalid date that filing history
+  rendered as "Invalid Date" — now valid ISO dates with timezone-correct
+  past-due detection. The months-elapsed figure counted the current partial
+  month as a full month (Jan 31 read as 2.0 months, not 1.0), inflating the
+  annualized income trend and mis-recommending instalments; it now counts
+  `(month-1) + day/daysInMonth`, and past-year estimates use a full 12 months
+  with the income window clamped to the selected year. The four instalments are
+  now split in integer cents (Q4 carries the remainder) so they sum exactly to
+  the annual figure.
+- **2024 and 2025 income tax thresholds corrected to TAJ's effective annual
+  values.** TAJ pro-rates April-1 threshold increases into a published
+  effective annual threshold per year of assessment; MiTax was using the raw
+  post-April figures for 2024/2025 (2026 was already correct). 2024:
+  $1,700,088 → **$1,650,090**; 2025: $1,799,376 → **$1,774,470**. Above-threshold
+  filers' computed tax for those years increases by ~$12,499.50 (2024) and
+  ~$6,226.50 (2025). Verified against TAJ/JIS guidance 2026-07-08.
+- **Reconcile no longer masks a flipped transaction** when a same-day,
+  equal-amount, same-sign transaction exists — an exact payee match now
+  outranks sign, and the apply step lists exactly which flips/deletes failed.
+- **CSV import edge cases.** A `0.00` in the debit column no longer shadows a
+  populated credit column, and a newline inside a quoted field no longer splits
+  (and drops) the record.
+- **Dashboard quarterly estimate** uses the nearest-earlier defined tax year
+  instead of hard-coding 2025 params for unknown years.
+- **PDF documents are released after parsing** (no more per-import memory growth
+  in the long-running process); password-protected PDFs show a clear message.
+- Buttons no longer get stuck on "Uploading…/Saving…/Updating…/Applying…" when
+  an operation fails (try/finally around the busy states).
+- Refreshed README (installer names, Node version, data-storage paths),
+  `build.bat` branding, and the copyright year.
+- **Reconcile now flags statement transactions that never made it to
+  LunchMoney** (a likely missed upload) and warns when the statement's dates
+  don't fall in the selected year — instead of misreporting "all match."
+- **API resilience:** a `Retry-After` header is honoured on rate-limit
+  responses, and a bad/expired API key surfaces as a connection error instead
+  of silently appearing as "no payees / no coverage."
+- **Release workflow is signing-ready.** Code-signing variables are now
+  sourced from optional, per-OS repo secrets, so signing becomes a drop-in
+  change once certificates are available (no unsigned-build behaviour change in
+  the meantime). README documents the first-launch SmartScreen/Gatekeeper
+  bypass and that macOS auto-update needs a signed build.
+
+### Added
+- **Tax-parameter staleness warning.** Thresholds change every April 1; the app
+  now shows a persistent banner when its bundled tax parameters haven't been
+  re-verified since the most recent April 1 (or the current year has no
+  parameters), prompting an app update before generating or filing a return.
+
+---
+
 ## [1.3.0] — 2026-07-02
 
 Project-audit remediation: security hardening, correctness fixes, and the

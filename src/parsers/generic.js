@@ -6,7 +6,7 @@
  *   amount > 0 → debit  (money out / expense)
  *   amount < 0 → credit (money in / income)
  */
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta } = require('./utils');
 
 // Amount regex with optional trailing DR/CR indicator (common on Caribbean/UK
 // statements). Captures: group 1 = signed number, group 2 = DR|CR (if present).
@@ -32,6 +32,10 @@ function parse(text, filePath) {
 
   // Detect column layout from the statement header row, if present.
   const columnMap = detectColumns(lines);
+  const hasBalanceCol = !!(columnMap && columnMap.balance !== undefined);
+
+  const openingMatch = text.match(/(?:opening|previous|brought\s+forward|b\/f)\s+balance[:\s]*([\d,]+\.\d{2})/i);
+  let prevBalance = openingMatch ? parseFloat(openingMatch[1].replace(/,/g, '')) : null;
 
   for (const line of lines) {
     let dateStr = null;
@@ -44,13 +48,32 @@ function parse(text, filePath) {
     const amountsWithSuffix = extractAmounts(line);
     if (!amountsWithSuffix.length) continue;
 
+    // Strip the amount/balance numbers (and any DR/CR marker) so the payee
+    // doesn't absorb them when columns are single-spaced.
+    const rest = line.replace(dateStr, '')
+      .replace(/[\d,]+\.\d{2}\s*(?:DR|CR|Dr|Cr|dr|cr)?/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const payee = rest || 'Transaction';
+
+    // A running balance is conventionally the last number on the row.
+    const balance = (hasBalanceCol || amountsWithSuffix.length >= 2)
+      ? amountsWithSuffix[amountsWithSuffix.length - 1].value
+      : null;
+
     const resolved = resolveAmount(amountsWithSuffix, columnMap);
-    if (!resolved.reliable) continue; // Skip rather than emit a guessed sign
-
-    const amount = resolved.amount;
-
-    const rest = line.replace(dateStr, '').trim();
-    const payee = rest.split(/\s{2,}/)[0] || 'Transaction';
+    let amount;
+    if (resolved.reliable) {
+      amount = resolved.amount;
+    } else {
+      // Ambiguous columns and no DR/CR suffix: infer the sign from the balance
+      // delta; fall back to a payee keyword guess for the first row (no prior
+      // balance). Positive = debit/money-out (internal convention).
+      const txAmount = amountsWithSuffix[0].value;
+      amount = signedByBalanceDelta(txAmount, prevBalance, balance);
+      if (amount == null) amount = looksLikeCredit(payee) ? -Math.abs(txAmount) : Math.abs(txAmount);
+    }
+    if (balance != null) prevBalance = balance;
 
     transactions.push({
       date: normalizeDate(dateStr),
@@ -144,14 +167,22 @@ function detectColumns(lines) {
  * skip the line rather than emit a guessed sign.
  */
 function resolveAmount(amountsWithSuffix, columnMap) {
-  // 1. DR/CR suffix wins.
-  for (const a of amountsWithSuffix) {
+  // 1. DR/CR suffix wins — but only on a transaction amount, never the running
+  //    balance (conventionally the last number). A "…105,000.00 CR" balance
+  //    marker must not flip the whole row to a credit.
+  const suffixCandidates = amountsWithSuffix.length >= 2
+    ? amountsWithSuffix.slice(0, -1)
+    : amountsWithSuffix;
+  for (const a of suffixCandidates) {
     if (a.suffix === 'DR') return { amount: Math.abs(a.value), reliable: true };
     if (a.suffix === 'CR') return { amount: -Math.abs(a.value), reliable: true };
   }
 
-  // 2. Header-detected columns.
-  if (columnMap) {
+  // 2. Header-detected columns — only trustworthy when every mapped column is
+  //    populated in this row (amount count === column count). Otherwise an
+  //    empty cell shifts the positions and a credit lands in the debit slot, so
+  //    fall through to the caller's balance-delta / keyword inference.
+  if (columnMap && amountsWithSuffix.length === Object.keys(columnMap).length) {
     const debitIdx   = columnMap.debit;
     const creditIdx  = columnMap.credit;
     const amountIdx  = columnMap.amount;
@@ -172,22 +203,16 @@ function resolveAmount(amountsWithSuffix, columnMap) {
       // the LunchMoney convention, so negate.
       return { amount: -amountVal.value, reliable: true };
     }
-    // Column map matched but all expected columns are zero/missing — fall
-    // through to the heuristic fallback.
   }
 
-  // 3. Heuristic fallback (no reliable column info).
-  const amounts = amountsWithSuffix.map(a => a.value);
-  if (amounts.length >= 3) {
-    // Likely [debit, credit, balance] or [credit, debit, balance] — we can't
-    // tell without a header or DR/CR suffix, so refuse to guess.
-    return { amount: 0, reliable: false };
-  }
-  if (amounts.length === 2) {
-    // Assume [amount, balance]; pass the amount through as-written.
-    return { amount: amounts[0], reliable: true };
-  }
-  return { amount: amounts[0], reliable: true };
+  // 3. Ambiguous — caller resolves via balance delta / payee keyword.
+  return { amount: 0, reliable: false };
+}
+
+// Payee keywords indicating money IN (credit) — used only when neither a DR/CR
+// suffix, a full column row, nor a balance delta can determine the sign.
+function looksLikeCredit(payee) {
+  return /salary|payroll|wage|deposit|refund|credit|interest|dividend|received|reversal|transfer\s*in/i.test(payee || '');
 }
 
 function detectCurrency(text) {

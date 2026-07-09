@@ -1,0 +1,5 @@
+Some Bank Ltd
+Account No: 12345678
+Date Description Debit Credit Balance
+01/03/2024 SALARY DEPOSIT 500.00 10,500.00
+02/03/2024 ATM WITHDRAWAL 200.00 10,300.00

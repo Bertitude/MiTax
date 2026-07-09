@@ -13,11 +13,93 @@ const ALLOWED_EXTERNAL_PREFIXES = ['https://mytaxes.ads.taj.gov.jm/'];
 // Prevents a compromised renderer from reading arbitrary paths through parse-pdf.
 const allowedFiles = new Set();
 
+// Authorize a file for reading/parsing. Stores the canonical (symlink-resolved)
+// path so the allow-list can't be bypassed by a symlink to a sensitive file and
+// so the later check matches regardless of how the renderer spells the path.
+function authorizeFile(filePath) {
+  const real = fs.realpathSync(filePath);
+  if (!fs.lstatSync(real).isFile()) throw new Error('Not a regular file');
+  allowedFiles.add(real);
+  return real;
+}
+function isFileAuthorized(filePath) {
+  try { return allowedFiles.has(fs.realpathSync(filePath)); }
+  catch { return false; }
+}
+
+// Resolve the active account's decrypted API key inside the main process.
+// The key is NEVER sent to or accepted from the renderer for operations — the
+// renderer only holds a "connected" flag — so every LunchMoney call resolves
+// the key here from the encrypted store.
+function activeApiKey() {
+  return require('./src/lm-accounts').getActiveApiKey();
+}
+
+// Strip the api_key before an account row crosses the IPC boundary. The
+// renderer must never receive the raw key (it would end up in plaintext in
+// Chromium local storage). `connected` tells the renderer a usable key exists.
+function publicAccount(acc) {
+  if (!acc) return null;
+  return {
+    id:                 acc.id,
+    label:              acc.label,
+    user_name:          acc.user_name,
+    budget_name:        acc.budget_name,
+    is_active:          acc.is_active,
+    created_at:         acc.created_at,
+    connected:          !!acc.api_key,
+    keyStorageInsecure: !!acc.keyStorageInsecure,
+  };
+}
+
+// Resolve "today" as YYYY-MM-DD in the user's configured timezone (falls back
+// to the system timezone, then UTC). Used wherever date-only comparisons feed
+// tax logic, where a UTC/local mismatch shifts the day.
+function resolveTodayStr(timezone) {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year').value;
+    const m = parts.find(p => p.type === 'month').value;
+    const d = parts.find(p => p.type === 'day').value;
+    return `${y}-${m}-${d}`;
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
 // Harden a window against navigation and popups: the app is a single local page,
 // so any navigation away or window.open is unwanted.
 function hardenWindow(win) {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+}
+
+// The only legitimate IPC caller is the top frame of our local index.html.
+// Reject anything else (injected sub-frames, a navigated origin) so a renderer
+// compromise can't reach privileged handlers (irreversible deletes, file reads).
+const { pathToFileURL } = require('url');
+const RENDERER_URL = pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).href;
+
+function isTrustedSender(event) {
+  const frame = event.senderFrame;
+  if (!frame || frame.parent) return false;            // top frame only
+  const url = frame.url || '';
+  return url === RENDERER_URL || url.startsWith(RENDERER_URL + '#') || url.startsWith(RENDERER_URL + '?');
+}
+
+// Wrapper around ipcMain.handle that enforces isTrustedSender on every channel.
+const _ipcHandle = ipcMain.handle.bind(ipcMain);
+function handle(channel, fn) {
+  _ipcHandle(channel, async (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      logError('ipc-sender', new Error(`Rejected '${channel}' from untrusted sender ${event.senderFrame && event.senderFrame.url}`));
+      return { success: false, error: 'Untrusted sender' };
+    }
+    return fn(event, ...args);
+  });
 }
 
 // Append an error to userData/error.log (best-effort; never throws).
@@ -89,9 +171,9 @@ app.on('window-all-closed', () => {
 });
 
 // ─── IPC: Parse PDF / CSV ───────────────────────────────────────────────────
-ipcMain.handle('parse-pdf', async (event, filePath) => {
+handle('parse-pdf', async (event, filePath) => {
   try {
-    if (!allowedFiles.has(filePath)) {
+    if (!isFileAuthorized(filePath)) {
       return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
     }
     const { parseStatement } = require('./src/parsers/index');
@@ -103,7 +185,7 @@ ipcMain.handle('parse-pdf', async (event, filePath) => {
 });
 
 // ─── IPC: Open an allow-listed external URL in the system browser ────────────
-ipcMain.handle('open-external', async (event, url) => {
+handle('open-external', async (event, url) => {
   try {
     const u = new URL(String(url));
     const ok = u.protocol === 'https:' &&
@@ -117,16 +199,13 @@ ipcMain.handle('open-external', async (event, url) => {
 });
 
 // ─── IPC: Register a drag-and-dropped statement file as read-authorized ──────
-ipcMain.handle('register-statement-file', (event, filePath) => {
+handle('register-statement-file', (event, filePath) => {
   try {
     const ext = path.extname(String(filePath)).toLowerCase();
     if (!['.pdf', '.csv', '.xlsx'].includes(ext)) {
       return { success: false, error: 'Unsupported file type' };
     }
-    if (!fs.statSync(filePath).isFile()) {
-      return { success: false, error: 'Not a file' };
-    }
-    allowedFiles.add(filePath);
+    authorizeFile(filePath);   // realpath + must be a regular file
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -134,20 +213,20 @@ ipcMain.handle('register-statement-file', (event, filePath) => {
 });
 
 // ─── IPC: LunchMoney Assets ─────────────────────────────────────────────────
-ipcMain.handle('get-lm-assets', async (event, apiKey) => {
+handle('get-lm-assets', async () => {
   try {
     const { getAssets } = require('./src/lunchmoney');
-    const assets = await getAssets(apiKey);
+    const assets = await getAssets(activeApiKey());
     return { success: true, data: assets };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('create-lm-asset', async (event, { apiKey, assetData }) => {
+handle('create-lm-asset', async (event, { assetData }) => {
   try {
     const { createAsset } = require('./src/lunchmoney');
-    const asset = await createAsset(apiKey, assetData);
+    const asset = await createAsset(activeApiKey(), assetData);
     return { success: true, data: asset };
   } catch (err) {
     return { success: false, error: err.message };
@@ -155,17 +234,17 @@ ipcMain.handle('create-lm-asset', async (event, { apiKey, assetData }) => {
 });
 
 // ─── IPC: Payees ────────────────────────────────────────────────────────────
-ipcMain.handle('get-lm-payees', async (event, apiKey) => {
+handle('get-lm-payees', async () => {
   try {
     const { getPayees } = require('./src/lunchmoney');
-    const payees = await getPayees(apiKey);
+    const payees = await getPayees(activeApiKey());
     return { success: true, data: payees };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('process-payees', async (event, { transactions, existingPayees }) => {
+handle('process-payees', async (event, { transactions, existingPayees }) => {
   try {
     const { processTransactions } = require('./src/payee-matcher');
     const result = processTransactions(transactions, existingPayees);
@@ -176,10 +255,10 @@ ipcMain.handle('process-payees', async (event, { transactions, existingPayees })
 });
 
 // ─── IPC: Upload Transactions ───────────────────────────────────────────────
-ipcMain.handle('upload-transactions', async (event, { transactions, apiKey, assetId, skipDuplicates, applyRules }) => {
+handle('upload-transactions', async (event, { transactions, assetId, skipDuplicates, applyRules }) => {
   try {
     const { uploadTransactions } = require('./src/lunchmoney');
-    const result = await uploadTransactions(transactions, apiKey, { assetId, skipDuplicates, applyRules });
+    const result = await uploadTransactions(transactions, activeApiKey(), { assetId, skipDuplicates, applyRules });
     return { success: true, data: result };
   } catch (err) {
     return { success: false, error: err.message };
@@ -187,10 +266,10 @@ ipcMain.handle('upload-transactions', async (event, { transactions, apiKey, asse
 });
 
 // ─── IPC: Payee Batch Update ─────────────────────────────────────────────────
-ipcMain.handle('payee-update-batch', async (event, { apiKey, updates }) => {
+handle('payee-update-batch', async (event, { updates }) => {
   try {
     const { batchUpdatePayees } = require('./src/lunchmoney');
-    const result = await batchUpdatePayees(apiKey, updates);
+    const result = await batchUpdatePayees(activeApiKey(), updates);
     return { success: true, data: result };
   } catch (err) {
     return { success: false, error: err.message };
@@ -198,10 +277,10 @@ ipcMain.handle('payee-update-batch', async (event, { apiKey, updates }) => {
 });
 
 // ─── IPC: Coverage (from LunchMoney) ────────────────────────────────────────
-ipcMain.handle('get-asset-coverage', async (event, { apiKey, assetId, year }) => {
+handle('get-asset-coverage', async (event, { assetId, year }) => {
   try {
     const { getAssetMonthCoverage } = require('./src/lunchmoney');
-    const coverage = await getAssetMonthCoverage(apiKey, assetId, year);
+    const coverage = await getAssetMonthCoverage(activeApiKey(), assetId, year);
     return { success: true, data: coverage };
   } catch (err) {
     return { success: false, error: err.message };
@@ -212,35 +291,35 @@ ipcMain.handle('get-asset-coverage', async (event, { apiKey, assetId, year }) =>
 // These handlers return bare data (not a {success} envelope) that the renderer
 // consumes directly. A better-sqlite3 throw (locked/corrupt DB) would otherwise
 // become an unhandled IPC rejection; catch, log, and degrade to a safe default.
-ipcMain.handle('tracker-get-uploads',        async () => {
+handle('tracker-get-uploads',        async () => {
   try {
     const { getAllUploads } = require('./src/tracker');
     return getAllUploads();
   } catch (err) { logError('tracker-get-uploads', err); return []; }
 });
 
-ipcMain.handle('tracker-save-upload',        async (event, record) => {
+handle('tracker-save-upload',        async (event, record) => {
   try {
     const { saveUpload } = require('./src/tracker');
     return saveUpload(record);
   } catch (err) { logError('tracker-save-upload', err); return { error: err.message }; }
 });
 
-ipcMain.handle('tracker-get-missing-months', async (event, accountId) => {
+handle('tracker-get-missing-months', async (event, accountId) => {
   try {
     const { getMissingMonths } = require('./src/tracker');
     return getMissingMonths(accountId);
   } catch (err) { logError('tracker-get-missing-months', err); return []; }
 });
 
-ipcMain.handle('tracker-get-all-accounts',  async () => {
+handle('tracker-get-all-accounts',  async () => {
   try {
     const { getAllAccounts } = require('./src/tracker');
     return getAllAccounts();
   } catch (err) { logError('tracker-get-all-accounts', err); return []; }
 });
 
-ipcMain.handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => {
+handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => {
   try {
     const { getDbCoverageForAsset } = require('./src/tracker');
     // Convert Set → Array so it serialises cleanly over IPC
@@ -248,7 +327,7 @@ ipcMain.handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => 
   } catch (err) { logError('tracker-get-db-coverage', err); return []; }
 });
 
-ipcMain.handle('get-oldest-upload-year', async () => {
+handle('get-oldest-upload-year', async () => {
   const { getOldestUploadYear } = require('./src/tracker');
   const year = getOldestUploadYear();
   return { success: true, data: year };
@@ -259,7 +338,7 @@ ipcMain.handle('get-oldest-upload-year', async () => {
 // tx id stored in that upload's lm_ids. Sends progress events to the
 // renderer so the UI can draw a progress bar. Marks the upload as fixed
 // on success so it can't be run twice (protects against re-flipping).
-ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
+handle('fix-flipped-signs', async (event, { uploadId }) => {
   try {
     const { getUpload, markSignsFixed } = require('./src/tracker');
     const { flipTransactionSigns }      = require('./src/lunchmoney');
@@ -274,7 +353,7 @@ ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
       return { success: false, error: 'No LunchMoney transaction IDs recorded for this upload' };
     }
 
-    const result = await flipTransactionSigns(apiKey, lmIds, progress => {
+    const result = await flipTransactionSigns(activeApiKey(), lmIds, progress => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('fix-flipped-signs:progress', { uploadId, ...progress });
       }
@@ -293,10 +372,10 @@ ipcMain.handle('fix-flipped-signs', async (event, { uploadId, apiKey }) => {
 // ─── IPC: Flip Single Transaction (one-off correction from account view) ────
 // Reuses flipTransactionSigns with a single-element array so we get the same
 // retry/backoff and skip-if-deleted behaviour as the per-upload path.
-ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
+handle('flip-single-transaction', async (event, { txId }) => {
   try {
     const { flipTransactionSigns } = require('./src/lunchmoney');
-    const result = await flipTransactionSigns(apiKey, [txId]);
+    const result = await flipTransactionSigns(activeApiKey(), [txId]);
     if (result.failed && result.failed.length) {
       return { success: false, error: result.failed[0].error || 'Flip failed' };
     }
@@ -313,9 +392,9 @@ ipcMain.handle('flip-single-transaction', async (event, { apiKey, txId }) => {
 // Returns { signMismatches, phantomBalances, suspectedPhantoms } — see
 // src/reconcile.js. Phantom deletion is scoped to balance lines the parser
 // actually saw (balanceSentinels); payee-only matches are merely "suspected".
-ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath, year }) => {
+handle('reconcile-statement', async (event, { assetId, filePath, year }) => {
   try {
-    if (!allowedFiles.has(filePath)) {
+    if (!isFileAuthorized(filePath)) {
       return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
     }
     const { parseStatement } = require('./src/parsers/index');
@@ -329,13 +408,24 @@ ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath,
     // Balance-sentinel lines the parsers skipped — used to scope phantom deletion.
     const balanceSentinels = results.flatMap(r => r.balanceSentinels || []);
 
-    const lmTxs = await getTransactions(apiKey, {
+    const lmTxs = await getTransactions(activeApiKey(), {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
     });
 
     const data = reconcile(parsedTxs, lmTxs, balanceSentinels);
+
+    // Warn when the statement's own period doesn't fall in the selected year —
+    // the comparison window then has no overlap and a clean "all match" result
+    // would be misleading.
+    const parsedYears = new Set(
+      parsedTxs.map(t => (typeof t.date === 'string' ? t.date.slice(0, 4) : null)).filter(Boolean)
+    );
+    if (parsedTxs.length && !parsedYears.has(String(year))) {
+      data.warning = `This statement's transactions are dated ${[...parsedYears].sort().join(', ')}, but you're reconciling against ${year}. Select the matching year.`;
+    }
+
     return { success: true, data };
   } catch (err) {
     return { success: false, error: err.message };
@@ -343,27 +433,40 @@ ipcMain.handle('reconcile-statement', async (event, { apiKey, assetId, filePath,
 });
 
 // ─── IPC: Apply Reconciliation — flip signs + delete phantoms ───────────────
-ipcMain.handle('apply-reconciliation', async (event, { apiKey, flipIds, deleteIds }) => {
+handle('apply-reconciliation', async (event, { flipIds, deleteIds }) => {
   try {
     const { flipTransactionSigns, deleteTransaction } = require('./src/lunchmoney');
+    const apiKey = activeApiKey();
 
-    const result = { flipped: 0, deleted: 0, errors: [] };
+    // Only accept integer LunchMoney transaction IDs. This prevents a crafted
+    // renderer payload from injecting path fragments into the API URL (e.g.
+    // "group/123" hitting DELETE /transactions/group/123). Cap the batch size.
+    const cleanIds = (arr) => (Array.isArray(arr) ? arr : [])
+      .map(Number).filter(Number.isInteger).slice(0, 1000);
+    const flips   = cleanIds(flipIds);
+    const deletes = cleanIds(deleteIds);
 
-    if (flipIds && flipIds.length) {
-      const flipResult = await flipTransactionSigns(apiKey, flipIds, () => {});
+    // Structured result so the renderer can report exactly which rows failed
+    // (irreversible deletes especially) rather than a bare count.
+    const result = { flipped: 0, deleted: 0, failedFlips: [], skipped: [], failedDeletes: [] };
+
+    if (flips.length) {
+      const flipResult = await flipTransactionSigns(apiKey, flips, () => {});
       result.flipped = flipResult.ok || 0;
-      if (flipResult.failed) result.errors.push(...flipResult.failed.map(f => f.error));
+      if (flipResult.failed)  result.failedFlips = flipResult.failed;         // [{id, error}]
+      if (flipResult.skipped) result.skipped     = flipResult.skipped;        // 404 in LM
     }
 
-    for (const id of (deleteIds || [])) {
+    for (const id of deletes) {
       try {
         await deleteTransaction(apiKey, id);
         result.deleted++;
       } catch (err) {
-        result.errors.push(`Delete ${id}: ${err.message}`);
+        result.failedDeletes.push({ id, error: err.message });
       }
     }
 
+    result.errorCount = result.failedFlips.length + result.failedDeletes.length;
     return { success: true, data: result };
   } catch (err) {
     return { success: false, error: err.message };
@@ -371,10 +474,10 @@ ipcMain.handle('apply-reconciliation', async (event, { apiKey, flipIds, deleteId
 });
 
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
-ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year }) => {
+handle('get-account-transactions', async (event, { assetId, year }) => {
   try {
     const { getTransactions } = require('./src/lunchmoney');
-    const txs = await getTransactions(apiKey, {
+    const txs = await getTransactions(activeApiKey(), {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
@@ -387,18 +490,17 @@ ipcMain.handle('get-account-transactions', async (event, { apiKey, assetId, year
 
 // ─── IPC: LunchMoney Multi-Account Management ────────────────────────────────
 
-ipcMain.handle('lm-accounts:list', async () => {
+handle('lm-accounts:list', async () => {
   try {
     const { getAllAccounts } = require('./src/lm-accounts');
     return { success: true, data: getAllAccounts() };
   } catch (err) { logError('lm-accounts:list', err); return { success: false, error: err.message }; }
 });
 
-ipcMain.handle('lm-accounts:get-active', async () => {
+handle('lm-accounts:get-active', async () => {
   try {
     const { getActiveAccount } = require('./src/lm-accounts');
-    const acc = getActiveAccount();
-    return { success: true, data: acc };
+    return { success: true, data: publicAccount(getActiveAccount()) };
   } catch (err) { logError('lm-accounts:get-active', err); return { success: false, error: err.message }; }
 });
 
@@ -406,7 +508,7 @@ ipcMain.handle('lm-accounts:get-active', async () => {
  * Validate an API key against LunchMoney /me, then save & activate the account.
  * Returns { success, data: { id, userName, budgetName } } or { success: false, error }.
  */
-ipcMain.handle('lm-accounts:add', async (event, { label, apiKey }) => {
+handle('lm-accounts:add', async (event, { label, apiKey }) => {
   try {
     const { getMe }       = require('./src/lunchmoney');
     const { addAccount, setActiveAccount } = require('./src/lm-accounts');
@@ -425,23 +527,21 @@ ipcMain.handle('lm-accounts:add', async (event, { label, apiKey }) => {
   }
 });
 
-ipcMain.handle('lm-accounts:switch', async (event, id) => {
+handle('lm-accounts:switch', async (event, id) => {
   try {
     const { setActiveAccount, getActiveAccount } = require('./src/lm-accounts');
     setActiveAccount(id);
-    const acc = getActiveAccount();
-    return { success: true, data: acc };
+    return { success: true, data: publicAccount(getActiveAccount()) };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('lm-accounts:remove', async (event, id) => {
+handle('lm-accounts:remove', async (event, id) => {
   try {
     const { removeAccount, getActiveAccount } = require('./src/lm-accounts');
     removeAccount(id);
-    const acc = getActiveAccount();
-    return { success: true, data: acc }; // returns new active (if any) so renderer can reconnect
+    return { success: true, data: publicAccount(getActiveAccount()) }; // new active (if any) so renderer can reconnect
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -451,7 +551,7 @@ ipcMain.handle('lm-accounts:remove', async (event, id) => {
  * One-time migration: if renderer has a legacy localStorage key and no DB
  * accounts exist yet, persist it as the first account.
  */
-ipcMain.handle('lm-accounts:migrate', async (event, { apiKey }) => {
+handle('lm-accounts:migrate', async (event, { apiKey }) => {
   try {
     const { getMe } = require('./src/lunchmoney');
     const { migrateFromLegacyKey } = require('./src/lm-accounts');
@@ -469,10 +569,10 @@ ipcMain.handle('lm-accounts:migrate', async (event, { apiKey }) => {
 });
 
 // ─── IPC: Categories ────────────────────────────────────────────────────────
-ipcMain.handle('get-lm-categories', async (event, apiKey) => {
+handle('get-lm-categories', async () => {
   try {
     const { getCategories } = require('./src/lunchmoney');
-    const cats = await getCategories(apiKey);
+    const cats = await getCategories(activeApiKey());
     return { success: true, data: cats };
   } catch (err) {
     return { success: false, error: err.message };
@@ -480,7 +580,7 @@ ipcMain.handle('get-lm-categories', async (event, apiKey) => {
 });
 
 // ─── IPC: CSV Export ────────────────────────────────────────────────────────
-ipcMain.handle('export-csv', async (event, { transactions, filename }) => {
+handle('export-csv', async (event, { transactions, filename }) => {
   try {
     const { formatAsCSV } = require('./src/lunchmoney');
     const csv = formatAsCSV(transactions);
@@ -499,9 +599,10 @@ ipcMain.handle('export-csv', async (event, { transactions, filename }) => {
 });
 
 // ─── IPC: Dashboard Data ─────────────────────────────────────────────────────
-ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) => {
+handle('get-dashboard-data', async (event, { year, quarter }) => {
   const qMonthsByQ = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
   const qMonths    = qMonthsByQ[(quarter || 1) - 1];
+  const apiKey     = activeApiKey();
 
   const result = {
     assets:               [],
@@ -514,7 +615,7 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
   if (apiKey) {
     try {
       const { getAssets, getTransactions }   = require('./src/lunchmoney');
-      const { TAX_PARAMS, estimateAnnualTax } = require('./src/tax/s04');
+      const { getTaxParams, estimateAnnualTax } = require('./src/tax/s04');
 
       result.assets = await getAssets(apiKey);
 
@@ -531,8 +632,10 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
         return amount > 0 ? sum + amount : sum;
       }, 0);
 
-      // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates
-      const params        = TAX_PARAMS[year] || TAX_PARAMS[2025];
+      // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates.
+      // getTaxParams falls back to the nearest-earlier defined year (not a hard-
+      // coded 2025), matching the S04/S04A path.
+      const { params }    = getTaxParams(year);
       const monthsElapsed = now.getMonth() + now.getDate() / 30.5; // approximate
       const annualEst     = monthsElapsed > 0
         ? (result.ytdIncome / monthsElapsed) * 12
@@ -597,9 +700,10 @@ ipcMain.handle('get-dashboard-data', async (event, { apiKey, year, quarter }) =>
 // Given an array of { assetId, date, amount } objects, returns a parallel
 // boolean array where true = a matching LunchMoney transaction already exists
 // (same asset, same date, same absolute amount).  Fails open (all false) on error.
-ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
+handle('check-duplicates', async (event, { transactions }) => {
   try {
     const { getTransactions } = require('./src/lunchmoney');
+    const apiKey = activeApiKey();
 
     if (!apiKey || !transactions || !transactions.length) {
       return { success: true, data: new Array(transactions.length).fill(false) };
@@ -654,13 +758,13 @@ ipcMain.handle('check-duplicates', async (event, { apiKey, transactions }) => {
 });
 
 // ─── IPC: S04 Tax ────────────────────────────────────────────────────────────
-ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCategoryMappings }) => {
+handle('generate-s04', async (event, { year, manualData, userCategoryMappings }) => {
   try {
     const { generateS04 }          = require('./src/tax/s04');
     const { getP24TotalsForYear }  = require('./src/p24');
     const p24Totals = getP24TotalsForYear(year);
     const report = await generateS04({
-      year, apiKey, manualData,
+      year, apiKey: activeApiKey(), manualData,
       userCategoryMappings: userCategoryMappings || {},
       p24Totals,
     });
@@ -672,7 +776,7 @@ ipcMain.handle('generate-s04', async (event, { year, apiKey, manualData, userCat
 
 // ─── IPC: Tax Filings (history + S04A) ──────────────────────────────────────
 
-ipcMain.handle('save-filing', async (event, payload) => {
+handle('save-filing', async (event, payload) => {
   try {
     const { saveFiling } = require('./src/filings');
     const result = saveFiling(payload);
@@ -682,7 +786,7 @@ ipcMain.handle('save-filing', async (event, payload) => {
   }
 });
 
-ipcMain.handle('get-filings', async () => {
+handle('get-filings', async () => {
   try {
     const { getAllFilings } = require('./src/filings');
     return { success: true, data: getAllFilings() };
@@ -691,7 +795,7 @@ ipcMain.handle('get-filings', async () => {
   }
 });
 
-ipcMain.handle('update-filing', async (event, { id, ...fields }) => {
+handle('update-filing', async (event, { id, ...fields }) => {
   try {
     const { updateFiling } = require('./src/filings');
     const updated = updateFiling(id, fields);
@@ -701,7 +805,7 @@ ipcMain.handle('update-filing', async (event, { id, ...fields }) => {
   }
 });
 
-ipcMain.handle('delete-filing', async (event, id) => {
+handle('delete-filing', async (event, id) => {
   try {
     const { deleteFiling } = require('./src/filings');
     deleteFiling(id);
@@ -711,35 +815,29 @@ ipcMain.handle('delete-filing', async (event, id) => {
   }
 });
 
-ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone }) => {
+handle('generate-s04a', async (event, { currentYear, timezone }) => {
   try {
     const { getMostRecentS04 }         = require('./src/filings');
     const { generateS04A }             = require('./src/tax/s04');
     const { getTransactions }          = require('./src/lunchmoney');
 
+    const apiKey          = activeApiKey();
     const priorYearFiling = getMostRecentS04(currentYear - 1);
 
     // Resolve "today" in the user's configured timezone
-    const todayStr = (() => {
-      const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-      try {
-        const parts = new Intl.DateTimeFormat('en-CA', {
-          timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
-        }).formatToParts(new Date());
-        const y = parts.find(p => p.type === 'year').value;
-        const m = parts.find(p => p.type === 'month').value;
-        const d = parts.find(p => p.type === 'day').value;
-        return `${y}-${m}-${d}`;
-      } catch {
-        return new Date().toISOString().slice(0, 10);
-      }
-    })();
+    const todayStr = resolveTodayStr(timezone);
+
+    // Clamp the fetch window to the selected year: for a past year, todayStr is
+    // in a later year and would pull a multi-year window while generateS04A
+    // still divides by ≤12 months, inflating the trend.
+    const yearEnd = `${currentYear}-12-31`;
+    const endDate = todayStr < yearEnd ? todayStr : yearEnd;
 
     let currentYtdIncome = 0;
     if (apiKey) {
       const ytdTxs = await getTransactions(apiKey, {
         startDate: `${currentYear}-01-01`,
-        endDate:   todayStr,
+        endDate,
       });
       currentYtdIncome = ytdTxs.reduce((sum, tx) => {
         const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
@@ -754,9 +852,22 @@ ipcMain.handle('generate-s04a', async (event, { currentYear, apiKey, timezone })
   }
 });
 
+// Jamaica's tax threshold changes every April 1; report whether the bundled
+// TAX_PARAMS have been re-verified since the most recent change window so the
+// renderer can warn the user to update the app before filing.
+handle('tax-params:status', async (event, { timezone } = {}) => {
+  try {
+    const { taxParamsStatus } = require('./src/tax/s04');
+    return { success: true, data: taxParamsStatus(resolveTodayStr(timezone)) };
+  } catch (err) {
+    logError('tax-params:status', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: P24 Employment Income Entries ──────────────────────────────────────
 
-ipcMain.handle('p24:save', async (event, payload) => {
+handle('p24:save', async (event, payload) => {
   try {
     const { saveEntry } = require('./src/p24');
     const result = saveEntry(payload);
@@ -766,7 +877,7 @@ ipcMain.handle('p24:save', async (event, payload) => {
   }
 });
 
-ipcMain.handle('p24:get-for-year', async (event, year) => {
+handle('p24:get-for-year', async (event, year) => {
   try {
     const { getEntriesForYear } = require('./src/p24');
     return { success: true, data: getEntriesForYear(year) };
@@ -775,7 +886,7 @@ ipcMain.handle('p24:get-for-year', async (event, year) => {
   }
 });
 
-ipcMain.handle('p24:delete', async (event, id) => {
+handle('p24:delete', async (event, id) => {
   try {
     const { deleteEntry } = require('./src/p24');
     deleteEntry(id);
@@ -789,7 +900,7 @@ ipcMain.handle('p24:delete', async (event, id) => {
 // Receives a self-contained HTML string from the renderer, renders it in a
 // hidden BrowserWindow, exports to PDF via Chromium's engine, and offers a
 // save dialog.
-ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
+handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
   const { BrowserWindow: BW } = require('electron');
   let printWin = null;
   let tmpDir = null;
@@ -798,7 +909,14 @@ ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
     // lets us clean up deterministically.
     tmpDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'mitax-'));
     const tmpPath = path.join(tmpDir, 's04-print.html');
-    fs.writeFileSync(tmpPath, htmlContent, 'utf8');
+    // Inject a strict CSP so the report can't fetch remote sub-resources (a
+    // crafted <img src="http://…"> would otherwise beacon out during printToPDF).
+    // Allow only inline styles and data: images, which is all a report needs.
+    const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
+    const html = /<head[\s>]/i.test(htmlContent)
+      ? htmlContent.replace(/<head([\s>])/i, `<head$1${csp}`)
+      : `<!doctype html><head>${csp}</head>${htmlContent}`;
+    fs.writeFileSync(tmpPath, html, 'utf8');
 
     printWin = new BW({
       show: false,
@@ -837,12 +955,12 @@ ipcMain.handle('export-s04-pdf', async (event, { htmlContent, filename }) => {
 });
 
 // ─── IPC: File dialogs ───────────────────────────────────────────────────────
-ipcMain.handle('open-file-dialog', async () => {
+handle('open-file-dialog', async () => {
   const { filePaths } = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: 'Statements', extensions: ['pdf', 'csv', 'xlsx'] }],
   });
   // Authorize the user-chosen paths for subsequent parse-pdf/reconcile calls.
-  (filePaths || []).forEach(p => allowedFiles.add(p));
+  (filePaths || []).forEach(p => { try { authorizeFile(p); } catch (_) { /* skip unreadable */ } });
   return filePaths || [];
 });

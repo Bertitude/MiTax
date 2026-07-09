@@ -1,7 +1,7 @@
 /**
  * JMMB Bank/Securities Statement Parser
  */
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -9,6 +9,13 @@ function parse(text, filePath) {
 
   const accountMatch = text.match(/Account\s*(?:Number|No\.?|#)?\s*:?\s*([0-9\-\s]+)/i);
   const accountName = accountMatch ? `JMMB ${accountMatch[1].trim()}` : 'JMMB Account';
+  const rawAccNum   = accountMatch ? accountMatch[1].replace(/\D/g, '') : '';
+  const accountNumber = rawAccNum.length >= 4 ? rawAccNum.slice(-4) : rawAccNum;
+
+  // Seed the running balance from an opening/brought-forward balance line so the
+  // first transaction's sign can be inferred from the balance delta too.
+  const openingMatch = text.match(/(?:opening|previous|brought\s+forward|b\/f)\s+balance[:\s]*([\d,]+\.\d{2})/i);
+  let prevBalance = openingMatch ? parseFloat(openingMatch[1].replace(/,/g, '')) : null;
 
   const currency = text.match(/USD|US\$|United\s+States/i) ? 'USD' : 'JMD';
 
@@ -28,15 +35,17 @@ function parse(text, filePath) {
 
     const val1 = col1 ? parseFloat(col1.replace(/,/g, '')) : 0;
     const val2 = col2 ? parseFloat(col2.replace(/,/g, '')) : 0;
-
-    // Heuristic: if two amounts, first col = debit, second col = credit.
-    // LunchMoney convention: positive = expense/debit, negative = income/credit.
-    let amount = 0;
-    if (val1 > 0 && val2 === 0) amount = val1;                     // single amount → assume debit
-    else if (val1 > 0 && val2 > 0) amount = val2 > val1 ? -val2 : val1; // larger in col2 → credit (negative)
-    else amount = val1;
-
     const payee = (description || 'JMMB Transaction').trim();
+
+    // The transaction amount is always the FIRST number; a second number is the
+    // running balance (never the transaction amount). Internal convention:
+    // positive = debit/money-out. Prefer the balance-delta sign; fall back to a
+    // keyword guess (income-like → credit) only when no balance is available.
+    const txAmount = val1;
+    const balance  = val2 > 0 ? val2 : null;
+    let amount = signedByBalanceDelta(txAmount, prevBalance, balance);
+    if (amount == null) amount = looksLikeCredit(payee) ? -Math.abs(txAmount) : Math.abs(txAmount);
+    if (balance != null) prevBalance = balance;
 
     transactions.push({
       date,
@@ -46,6 +55,7 @@ function parse(text, filePath) {
       notes: '',
       category: categorize(payee, amount),
       type: amount < 0 ? 'credit' : 'debit',
+      balance,
     });
   }
 
@@ -55,6 +65,12 @@ function parse(text, filePath) {
 
   applySignConvention(transactions);
   return { institution: 'JMMB', accountType, accountName, accountNumber, currency, period, transactions };
+}
+
+// Payee keywords that indicate money IN (credit) — used only to sign the first
+// row when there is no opening balance to delta against.
+function looksLikeCredit(payee) {
+  return /salary|payroll|interest|dividend|deposit|refund|credit|received|transfer\s*in/i.test(payee || '');
 }
 
 function fallbackParse(lines, transactions, currency) {

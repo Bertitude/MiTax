@@ -1,0 +1,4 @@
+PayPal Activity Statement
+customer@example.com
+7/4/2024 12:01:05 EST Acme Client Payment Completed 100.00 -3.20 96.80
+8/15/2024 09:30:00 EST Supplier Co Withdrawal Completed 50.00 0.00 -50.00

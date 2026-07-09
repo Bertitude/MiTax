@@ -5,7 +5,10 @@
 // ─── State ───────────────────────────────────────────────────────────────────
 
 const state = {
-  apiKey:       localStorage.getItem('lm_api_key') || '',
+  // Connection flag only — the raw API key never lives in the renderer. The
+  // main process resolves the active account's key from the encrypted store
+  // for every LunchMoney call.
+  connected:    false,
   queue:        [],     // { id, name, path, status, parsed, assetId, assetName }
   lmAssets:     [],
   lmPayees:     [],
@@ -166,26 +169,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   restoreProfile();
 
   // ── Multi-account startup ──────────────────────────────────────────────
-  // 1. Try to load the active account from the DB.
-  // 2. If none exists but localStorage has a legacy key, migrate it first.
-  // 3. Connect with the resolved key.
+  // 1. Try to load the active account from the DB (main-process only; the raw
+  //    key never crosses to the renderer — get-active returns a `connected`
+  //    flag, not the key).
+  // 2. If none exists but a pre-1.3 plaintext key sits in localStorage, migrate
+  //    it into the encrypted store, then remove the plaintext copy.
+  // 3. Connect using the stored active key.
 
-  const activeRes = await window.electronAPI.lmAccounts.getActive();
-  let startKey    = activeRes?.data?.api_key || null;
+  let activeRes = await window.electronAPI.lmAccounts.getActive();
 
-  if (!startKey && state.apiKey) {
-    // First run after upgrade: migrate the localStorage key into the DB
-    await window.electronAPI.lmAccounts.migrate({ apiKey: state.apiKey });
-    const migratedRes = await window.electronAPI.lmAccounts.getActive();
-    startKey = migratedRes?.data?.api_key || state.apiKey;
+  const legacyKey = localStorage.getItem('lm_api_key');
+  if (!activeRes?.data?.connected && legacyKey) {
+    // First run after upgrade: migrate the localStorage key into the DB.
+    await window.electronAPI.lmAccounts.migrate({ apiKey: legacyKey });
+    activeRes = await window.electronAPI.lmAccounts.getActive();
   }
+  // The plaintext key must not linger in localStorage — it defeats safeStorage.
+  if (legacyKey) localStorage.removeItem('lm_api_key');
 
-  if (startKey) {
-    state.apiKey = startKey;
-    // Keep legacy input populated for fallback / test-connection button
-    const legacyInput = document.getElementById('api-key-input');
-    if (legacyInput) legacyInput.value = startKey;
-    await connectAPI(startKey, false);
+  if (activeRes?.data?.connected) {
+    await connectAPI(false);
   }
 
   // Warn once if the OS has no keychain backend so the API key is stored
@@ -197,6 +200,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Render account list in Settings (even if not connected)
   renderLMAccountsList();
+
+  // Warn if the bundled tax parameters predate the most recent April 1
+  // threshold change — computed tax figures may be wrong until the app is
+  // updated. Persistent banner (not a toast): this matters at filing time.
+  checkTaxParamsFreshness();
 
   refreshDashboard();
   refreshTracker();
@@ -381,21 +389,23 @@ function navigateTo(view) {
 
 // ─── API Connection ───────────────────────────────────────────────────────────
 
-async function connectAPI(apiKey, showFeedback = true) {
+// Connects using the active account's stored key, resolved in the main process
+// — no key is passed from the renderer. Assumes an active account exists.
+async function connectAPI(showFeedback = true) {
   const dot   = document.getElementById('api-dot');
   const label = document.getElementById('api-label');
   try {
     const [assetsRes, payeesRes, catsRes] = await Promise.all([
-      window.electronAPI.getLMAssets(apiKey),
-      window.electronAPI.getLMPayees(apiKey),
-      window.electronAPI.getLMCategories(apiKey),
+      window.electronAPI.getLMAssets(),
+      window.electronAPI.getLMPayees(),
+      window.electronAPI.getLMCategories(),
     ]);
     if (!assetsRes.success) throw new Error(assetsRes.error);
 
     state.lmAssets     = assetsRes.data || [];
     state.lmPayees     = payeesRes.data || [];
     state.lmCategories = catsRes.data   || [];
-    state.apiKey       = apiKey;
+    state.connected    = true;
 
     dot.className     = 'status-dot connected';
     label.textContent = `Connected · ${state.lmAssets.length} accounts`;
@@ -491,8 +501,8 @@ function renderQueue() {
       <div class="file-info">
         <div class="file-name">${escHtml(item.name)}</div>
         <div class="file-meta">${item.parsed
-          ? `${item.parsed.institution} · ${item.parsed.accountName} · ${item.parsed.currency} · ${item.parsed.period?.start || '?'} → ${item.parsed.period?.end || '?'}`
-          : item.path}</div>
+          ? `${escHtml(item.parsed.institution)} · ${escHtml(item.parsed.accountName)} · ${escHtml(item.parsed.currency)} · ${escHtml(item.parsed.period?.start || '?')} → ${escHtml(item.parsed.period?.end || '?')}`
+          : escHtml(item.path)}</div>
       </div>
       ${item.assetName ? `<span class="badge badge-blue">→ ${escHtml(item.assetName)}</span>` : ''}
       <span class="file-status ${item.status}">${statusLabel}</span>
@@ -639,7 +649,7 @@ function openAccountModal() {
           <span class="badge badge-yellow" style="margin-left:4px;">${escHtml(item.parsed.currency)}</span>
         </div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
-          ${item.parsed.transactions?.length || 0} transactions · ${item.parsed.period?.start || '?'} → ${item.parsed.period?.end || '?'}
+          ${item.parsed.transactions?.length || 0} transactions · ${escHtml(item.parsed.period?.start || '?')} → ${escHtml(item.parsed.period?.end || '?')}
         </div>
       </div>
       <div style="flex:1;min-width:0;">
@@ -811,7 +821,7 @@ function openCreateForm(item) {
                                                             : item.parsed.accountType === 'investment' ? 'brokerage' : '';
   document.getElementById('new-account-currency').value     = item.parsed.currency || 'JMD';
   document.getElementById('new-account-balance').value      = '0';
-  document.getElementById('new-account-balance-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('new-account-balance-date').value = getAppNow();
   document.getElementById('new-account-closed-on').value    = '';
   document.getElementById('new-account-exclude-tx').checked = false;
 
@@ -836,13 +846,13 @@ async function createNewAccount() {
   const errEl         = document.getElementById('create-account-error');
 
   if (!name)          { errEl.textContent = 'Account name is required.'; errEl.style.display = 'block'; return; }
-  if (!state.apiKey)  { errEl.textContent = 'No API key. Connect in Settings first.'; errEl.style.display = 'block'; return; }
+  if (!state.connected)  { errEl.textContent = 'No API key. Connect in Settings first.'; errEl.style.display = 'block'; return; }
 
   const btn     = document.getElementById('create-account-btn');
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Creating…';
 
-  const result = await window.electronAPI.createLMAsset(state.apiKey, {
+  const result = await window.electronAPI.createLMAsset({
     name, displayName, typeName, subtypeName, currency,
     institutionName: institution, balance, balanceAsOf, closedOn,
     excludeTransactions: excludeTx,
@@ -967,7 +977,7 @@ async function openValidateModal() {
   }));
 
   // ── Duplicate check against LunchMoney ───────────────────────────────────
-  if (state.apiKey && state.validateRows.length) {
+  if (state.connected && state.validateRows.length) {
     try {
       toast('Checking for existing transactions…', 'info', 2500);
       const checkPayload = state.validateRows.map(r => ({
@@ -976,7 +986,6 @@ async function openValidateModal() {
         amount:  r.amount,
       }));
       const dupeRes = await window.electronAPI.checkDuplicates({
-        apiKey:       state.apiKey,
         transactions: checkPayload,
       });
       if (dupeRes.success && dupeRes.data) {
@@ -1107,7 +1116,7 @@ function filterRows(type) {
 // ─── Upload validated ─────────────────────────────────────────────────────────
 
 async function uploadValidated() {
-  if (!state.apiKey) { toast('Set your LunchMoney API key in Settings first.', 'error'); return; }
+  if (!state.connected) { toast('Set your LunchMoney API key in Settings first.', 'error'); return; }
 
   const selected = state.validateRows.filter(r => r._include);
   if (!selected.length) { toast('No transactions selected.', 'info'); return; }
@@ -1116,6 +1125,7 @@ async function uploadValidated() {
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Uploading…';
 
+  try {
   // Group by assetId
   const byAsset = {};
   for (const row of selected) {
@@ -1141,7 +1151,6 @@ async function uploadValidated() {
 
     const result = await window.electronAPI.uploadTransactions({
       transactions:   txs,
-      apiKey:         state.apiKey,
       assetId:        group.assetId || null,
       skipDuplicates: prefs.skipDuplicates,
       applyRules:     prefs.applyRules,
@@ -1224,9 +1233,6 @@ async function uploadValidated() {
     }
   }
 
-  btn.disabled  = false;
-  btn.innerHTML = '☁️ Upload Selected to LunchMoney';
-
   // Always close the modal and remove processed files from the queue
   document.getElementById('validate-modal').classList.remove('open');
   state.queue = state.queue.filter(q => !processedFiles.has(q.name));
@@ -1241,6 +1247,12 @@ async function uploadValidated() {
     toast('No new transactions were uploaded.', 'info');
   }
   if (allErrors.length) toast(`Upload issues: ${allErrors.join('; ')}`, 'error', 8000);
+  } catch (err) {
+    toast(`Upload failed: ${err.message || err}`, 'error');
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '☁️ Upload Selected to LunchMoney';
+  }
 }
 
 // ─── CSV Export ───────────────────────────────────────────────────────────────
@@ -1310,8 +1322,8 @@ async function refreshTracker() {
 
     let monthData = Array.from({ length: 12 }, (_, i) => ({ month: i+1, year, hasTxns: false, count: 0, earliestDate: null, latestDate: null }));
 
-    if (state.apiKey) {
-      const cov = await window.electronAPI.getAssetCoverage({ apiKey: state.apiKey, assetId: asset.id, year });
+    if (state.connected) {
+      const cov = await window.electronAPI.getAssetCoverage({ assetId: asset.id, year });
       if (cov.success) monthData = cov.data;
     }
 
@@ -1583,7 +1595,7 @@ ${escHtml(u.notes)}</pre>
  * history so the ⚠ chip disappears.
  */
 async function runFixSigns(u) {
-  if (!state.apiKey) {
+  if (!state.connected) {
     toast('Connect a LunchMoney API key in Settings first.', 'error');
     return;
   }
@@ -1609,15 +1621,16 @@ async function runFixSigns(u) {
   });
 
   try {
-    const res = await window.electronAPI.fixFlippedSigns({ uploadId: u.id, apiKey: state.apiKey });
+    const res = await window.electronAPI.fixFlippedSigns({ uploadId: u.id });
     if (!res.success) {
       toast(`Fix failed: ${res.error}`, 'error');
       if (btn) { btn.disabled = false; btn.textContent = '🔧 Fix signs for this upload'; }
       return;
     }
     const { ok, failed, skipped } = res.data;
+    const skippedCount = Array.isArray(skipped) ? skipped.length : (skipped || 0);
     const parts = [`${ok} fixed`];
-    if (skipped) parts.push(`${skipped} skipped`);
+    if (skippedCount) parts.push(`${skippedCount} skipped`);
     if (failed && failed.length) parts.push(`${failed.length} failed`);
     toast(`Flipped signs: ${parts.join(', ')}.`, failed && failed.length ? 'error' : 'success');
     // Close modal + refresh history so the chip disappears.
@@ -1673,21 +1686,21 @@ function setupSettings() {
   // ── Legacy single-key fallback (hidden once accounts exist) ─────────────
   const saveApiBtn = document.getElementById('save-api-key-btn');
   const testApiBtn = document.getElementById('test-api-btn');
-  if (saveApiBtn) {
-    saveApiBtn.addEventListener('click', async () => {
-      const key = document.getElementById('api-key-input').value.trim();
-      if (!key) { toast('Please enter an API key', 'error'); return; }
-      localStorage.setItem('lm_api_key', key);
-      await connectAPI(key, true);
-    });
-  }
-  if (testApiBtn) {
-    testApiBtn.addEventListener('click', async () => {
-      const key = document.getElementById('api-key-input').value.trim();
-      if (!key) { toast('Enter an API key first', 'error'); return; }
-      await connectAPI(key, true);
-    });
-  }
+  // Both legacy buttons now validate the key against LunchMoney and store it
+  // encrypted (via lm-accounts:add) instead of holding it in the renderer.
+  const connectWithKey = async () => {
+    const input = document.getElementById('api-key-input');
+    const key   = input.value.trim();
+    if (!key) { toast('Please enter an API key', 'error'); return; }
+    const res = await window.electronAPI.lmAccounts.add({ apiKey: key });
+    input.value = '';               // never keep the key in the DOM
+    if (!res.success) { toast(`Failed to connect: ${res.error}`, 'error'); return; }
+    state.connected = true;
+    await connectAPI(true);
+    renderLMAccountsList();
+  };
+  if (saveApiBtn) saveApiBtn.addEventListener('click', connectWithKey);
+  if (testApiBtn) testApiBtn.addEventListener('click', connectWithKey);
 
   document.getElementById('save-prefs-btn').addEventListener('click', savePrefs);
 
@@ -1817,10 +1830,9 @@ async function addLMAccount() {
   if (statusEl)   statusEl.textContent = '✓ Connected';
   setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
 
-  // Switch to the new account
-  state.apiKey = apiKey;
-  localStorage.setItem('lm_api_key', apiKey);
-  await connectAPI(apiKey, false);
+  // The main process stored + activated the account; connect using it.
+  state.connected = true;
+  await connectAPI(false);
   renderLMAccountsList();
   toast(`Account added: ${res.data.userName || res.data.budgetName || label || 'new account'}`, 'success');
 }
@@ -1829,17 +1841,11 @@ async function addLMAccount() {
 async function switchLMAccount(id) {
   const res = await window.electronAPI.lmAccounts.switch(id);
   if (!res.success) { toast(`Switch failed: ${res.error}`, 'error'); return; }
+  if (!res.data?.connected) { toast('Could not activate this account', 'error'); return; }
 
-  const newKey = res.data?.api_key;
-  if (!newKey) { toast('Could not read API key for this account', 'error'); return; }
-
-  state.apiKey = newKey;
-  localStorage.setItem('lm_api_key', newKey);
-
-  const legacyInput = document.getElementById('api-key-input');
-  if (legacyInput) legacyInput.value = newKey;
-
-  await connectAPI(newKey, false);
+  // The account is now active in the encrypted store; connect using it.
+  state.connected = true;
+  await connectAPI(false);
   renderLMAccountsList();
   refreshDashboard();
   refreshTracker();
@@ -1852,15 +1858,13 @@ async function removeLMAccount(id) {
   const res = await window.electronAPI.lmAccounts.remove(id);
   if (!res.success) { toast(`Remove failed: ${res.error}`, 'error'); return; }
 
-  // If a new active account was returned, switch to it; else clear connection
+  // If a new active account was returned, connect to it; else clear connection
   const newActive = res.data;
-  if (newActive?.api_key) {
-    state.apiKey = newActive.api_key;
-    localStorage.setItem('lm_api_key', newActive.api_key);
-    await connectAPI(newActive.api_key, false);
+  if (newActive?.connected) {
+    state.connected = true;
+    await connectAPI(false);
   } else {
-    state.apiKey = null;
-    localStorage.removeItem('lm_api_key');
+    state.connected = false;
     const dot   = document.getElementById('api-dot');
     const label = document.getElementById('api-label');
     if (dot)   dot.className     = 'status-dot';
@@ -2266,7 +2270,7 @@ async function generateTax() {
     userCategoryMappings[catId] = rest;
   }
 
-  const result = await window.electronAPI.generateS04({ year, apiKey: state.apiKey || null, manualData, userCategoryMappings });
+  const result = await window.electronAPI.generateS04({ year, manualData, userCategoryMappings });
   btn.disabled  = false;
   btn.innerHTML = '📊 Generate S04 Report';
   if (!result.success) { toast(`Tax generation failed: ${result.error}`, 'error'); return; }
@@ -2353,7 +2357,7 @@ function renderTaxReport(report) {
         const style  = isWarn
           ? 'background:#fff3cd;border-left:3px solid #f0ad4e;padding:8px 10px;margin:6px 0;color:#8a6d3b;border-radius:4px;font-weight:600;'
           : '';
-        return `<div class="${cls}"${style ? ` style="${style}"` : ''}>${isWarn ? '' : '• '}${n}</div>`;
+        return `<div class="${cls}"${style ? ` style="${style}"` : ''}>${isWarn ? '' : '• '}${escHtml(String(n))}</div>`;
       }).join('')}</div>
 
       <!-- Save as Filed form (collapsed by default) -->
@@ -2364,7 +2368,7 @@ function renderTaxReport(report) {
           <div class="grid-3">
             <div class="form-group">
               <label style="font-size:12px;">Filed Date</label>
-              <input type="date" id="filing-date" value="${new Date().toISOString().slice(0,10)}" style="font-size:12px;" />
+              <input type="date" id="filing-date" value="${getAppNow()}" style="font-size:12px;" />
             </div>
             <div class="form-group">
               <label style="font-size:12px;">Amount Paid (JMD)</label>
@@ -2470,7 +2474,6 @@ async function refreshDashboard() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading…'; }
 
   const result = await window.electronAPI.getDashboardData({
-    apiKey:  state.apiKey || null,
     year,
     quarter,
   });
@@ -2606,7 +2609,7 @@ function renderDashboardTaxEstimate(estimate, ytdIncome, year, quarter) {
 
   if (!estimate) {
     el.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:4px 0;">
-      ${state.apiKey
+      ${state.connected
         ? 'No income transactions found in LunchMoney for this year yet.'
         : 'Connect to LunchMoney in Settings to see quarterly tax estimates.'}
     </div>`;
@@ -2666,7 +2669,7 @@ function fmtAmount(v) {
 }
 function escHtml(s)  { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s)  { return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-function today()     { return new Date().toISOString().slice(0,10); }
+function today()     { return getAppNow(); }   // timezone-aware (not UTC)
 
 /**
  * Formats a SQLite-stored UTC timestamp (e.g. "2024-01-15 14:30:00" or
@@ -2870,7 +2873,7 @@ function renderPayeeCleanup(txs) {
 }
 
 async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
-  if (!state.apiKey) { toast('Not connected to LunchMoney', 'error'); return; }
+  if (!state.connected) { toast('Not connected to LunchMoney', 'error'); return; }
 
   const candidates = card._candidates || [];
   const updates = [];
@@ -2889,10 +2892,16 @@ async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
   applyBtn.disabled = true;
   applyBtn.innerHTML = `<span class="spinner"></span> Updating ${updates.length}…`;
 
-  const res = await window.electronAPI.updatePayeeBatch({ apiKey: state.apiKey, updates });
-
-  applyBtn.disabled = false;
-  applyBtn.innerHTML = 'Apply Selected';
+  let res;
+  try {
+    res = await window.electronAPI.updatePayeeBatch({ updates });
+  } catch (err) {
+    toast(`Update failed: ${err.message || err}`, 'error');
+    return;
+  } finally {
+    applyBtn.disabled = false;
+    applyBtn.innerHTML = 'Apply Selected';
+  }
 
   if (!res.success) { toast(`Update failed: ${res.error}`, 'error'); return; }
 
@@ -2933,7 +2942,7 @@ function setupAccountView() {
 async function startReconcile() {
   const asset = state._accountViewAsset;
   if (!asset)         { toast('No account selected', 'error'); return; }
-  if (!state.apiKey)  { toast('Not connected to LunchMoney', 'error'); return; }
+  if (!state.connected)  { toast('Not connected to LunchMoney', 'error'); return; }
 
   const fileResult = await window.electronAPI.openFileDialog();
   if (!fileResult || !fileResult.length) return;
@@ -2945,11 +2954,13 @@ async function startReconcile() {
   applyBtn.disabled = true;
 
   body.innerHTML = '<div style="padding:20px;color:var(--text-muted);"><span class="spinner"></span> Parsing statement and comparing with LunchMoney…</div>';
+  const errBox = document.getElementById('reconcile-apply-errors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
   document.getElementById('reconcile-modal').classList.add('open');
 
   let res;
   try {
-    res = await window.electronAPI.reconcileStatement({ apiKey: state.apiKey, assetId: asset.id, filePath, year });
+    res = await window.electronAPI.reconcileStatement({ assetId: asset.id, filePath, year });
   } catch (err) {
     body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(err.message || String(err))}</div>`;
     return;
@@ -2960,15 +2971,48 @@ async function startReconcile() {
     return;
   }
 
-  const { signMismatches, phantomBalances, suspectedPhantoms = [] } = res.data;
+  const { signMismatches, phantomBalances, suspectedPhantoms = [], missingInLM = [], warning } = res.data;
 
-  if (!signMismatches.length && !phantomBalances.length && !suspectedPhantoms.length) {
-    body.innerHTML = '<div style="padding:20px;color:var(--text-muted);">All transactions match — nothing to fix.</div>';
+  const cur = (asset.currency || 'JMD').toUpperCase();
+
+  // Banner shown above results: a period-mismatch warning, or an all-clear only
+  // when there is genuinely nothing outstanding (including nothing missing).
+  const warnHtml = warning
+    ? `<div style="padding:10px 12px;margin-bottom:10px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">⚠ ${escHtml(warning)}</div>`
+    : '';
+
+  if (!signMismatches.length && !phantomBalances.length && !suspectedPhantoms.length && !missingInLM.length) {
+    body.innerHTML = warnHtml + '<div style="padding:20px;color:var(--text-muted);">All statement transactions were found in LunchMoney with matching signs — nothing to fix.</div>';
     return;
   }
 
-  const cur = (asset.currency || 'JMD').toUpperCase();
-  let html = '';
+  let html = warnHtml;
+
+  if (missingInLM.length) {
+    html += `
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px;">
+          ⬆ On statement but not in LunchMoney <span class="badge badge-yellow">${missingInLM.length}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Likely not uploaded yet — import this statement to add them.</div>
+        <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              <th style="padding:6px;text-align:left;">Date</th>
+              <th style="padding:6px;text-align:left;">Payee</th>
+              <th style="padding:6px;text-align:right;">Amount</th>
+            </tr></thead>
+            <tbody>${missingInLM.slice(0, 200).map(m => `
+              <tr>
+                <td style="padding:4px 6px;">${escHtml(m.date || '')}</td>
+                <td style="padding:4px 6px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(m.payee || '')}</td>
+                <td style="padding:4px 6px;text-align:right;">${cur} ${Number(m.amount).toLocaleString('en', {minimumFractionDigits:2})}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
 
   if (signMismatches.length) {
     html += `
@@ -3097,21 +3141,46 @@ async function startReconcile() {
     newApply.disabled    = true;
     newApply.textContent = 'Applying…';
 
-    const result = await window.electronAPI.applyReconciliation({ apiKey: state.apiKey, flipIds, deleteIds });
-
-    if (result.success) {
-      const d = result.data;
-      const parts = [];
-      if (d.flipped)  parts.push(`${d.flipped} flipped`);
-      if (d.deleted)  parts.push(`${d.deleted} deleted`);
-      if (d.errors.length) parts.push(`${d.errors.length} errors`);
-      toast(parts.join(', ') || 'Done', d.errors.length ? 'error' : 'success');
-      document.getElementById('reconcile-modal').classList.remove('open');
-      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
-    } else {
-      toast(`Error: ${result.error}`, 'error');
+    let result;
+    try {
+      result = await window.electronAPI.applyReconciliation({ flipIds, deleteIds });
+    } catch (err) {
+      // The main process may have mutated some rows before failing — tell the
+      // user to re-run reconcile (which safely recomputes) rather than leaving
+      // a stuck "Applying…" button.
+      toast(`Apply failed: ${err.message || err}. Re-run reconcile to see current state.`, 'error');
+      return;
+    } finally {
       newApply.disabled    = false;
       newApply.textContent = 'Apply Selected Fixes';
+    }
+
+    if (!result.success) { toast(`Error: ${result.error}`, 'error'); return; }
+
+    const d = result.data;
+    const parts = [];
+    if (d.flipped)  parts.push(`${d.flipped} flipped`);
+    if (d.deleted)  parts.push(`${d.deleted} deleted`);
+    const errorCount = d.errorCount || 0;
+    if (errorCount) parts.push(`${errorCount} failed`);
+    toast(parts.join(', ') || 'Done', errorCount ? 'error' : 'success');
+
+    if (errorCount) {
+      // Keep the modal open and list exactly which rows failed (esp. deletes).
+      const errBox = document.getElementById('reconcile-apply-errors');
+      if (errBox) {
+        const rows = [
+          ...d.failedDeletes.map(f => `Delete #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
+          ...d.failedFlips.map(f => `Flip #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
+          ...d.skipped.map(id => `Flip #${escHtml(String(id))}: not found in LunchMoney (skipped)`),
+        ];
+        errBox.innerHTML = `<strong>${errorCount} operation(s) failed:</strong><ul>${rows.map(r => `<li>${r}</li>`).join('')}</ul>`;
+        errBox.style.display = 'block';
+      }
+      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
+    } else {
+      document.getElementById('reconcile-modal').classList.remove('open');
+      if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
     }
   });
 }
@@ -3153,13 +3222,12 @@ async function loadAccountSummary(asset) {
   statsEl.innerHTML = monthEl.innerHTML = txEl.innerHTML = '';
   monthEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:12px 0;"><span class="spinner"></span> Loading ${year} transactions…</div>`;
 
-  if (!state.apiKey) {
+  if (!state.connected) {
     monthEl.innerHTML = `<div class="empty-state"><p>Connect to LunchMoney in Settings to view account data.</p></div>`;
     return;
   }
 
   const res = await window.electronAPI.getAccountTransactions({
-    apiKey:  state.apiKey,
     assetId: asset.id,
     year,
   });
@@ -3302,11 +3370,11 @@ function renderAccountSummary(asset, year, txs) {
       e.stopPropagation();
       const txId = parseInt(btn.dataset.txId, 10);
       if (!txId) return;
-      if (!state.apiKey) { toast('Not connected to LunchMoney', 'error'); return; }
+      if (!state.connected) { toast('Not connected to LunchMoney', 'error'); return; }
       if (!confirm('Flip the sign of this transaction in LunchMoney?')) return;
       btn.disabled    = true;
       btn.textContent = '…';
-      const res = await window.electronAPI.flipSingleTransaction({ apiKey: state.apiKey, txId });
+      const res = await window.electronAPI.flipSingleTransaction({ txId });
       if (res.success) {
         toast('Sign flipped', 'success');
         if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
@@ -3317,6 +3385,54 @@ function renderAccountSummary(asset, year, txs) {
       }
     });
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TAX-PARAMS FRESHNESS BANNER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ask the main process whether the bundled TAX_PARAMS have been re-verified
+ * since the most recent April 1 threshold change; if not, show a persistent
+ * warning banner. Dismissable for the session only — it returns on next
+ * launch until the app is updated.
+ */
+async function checkTaxParamsFreshness() {
+  try {
+    const tz  = getAppTimezone();
+    const res = await window.electronAPI.taxParamsStatus({
+      timezone: tz === 'system' ? getSystemTimezone() : tz,
+    });
+    if (!res?.success || !res.data?.stale) return;
+
+    const banner = document.getElementById('tax-params-banner');
+    banner.textContent = '';
+
+    const icon = document.createElement('span');
+    icon.className   = 'update-banner-icon';
+    icon.textContent = '⚠️';
+
+    const text  = document.createElement('div');
+    text.className = 'update-banner-text';
+    const title = document.createElement('div');
+    title.className   = 'update-banner-title';
+    title.textContent = 'Tax parameters may be outdated';
+    const sub = document.createElement('div');
+    sub.className   = 'update-banner-sub';
+    sub.textContent = `${res.data.reason || ''} Update MiTax before generating or filing a return.`.trim();
+    text.append(title, sub);
+
+    const dismiss = document.createElement('button');
+    dismiss.className   = 'banner-dismiss';
+    dismiss.textContent = '✕';
+    dismiss.title       = 'Dismiss for this session';
+    dismiss.addEventListener('click', () => { banner.style.display = 'none'; });
+
+    banner.append(icon, text, dismiss);
+    banner.style.display = 'flex';
+  } catch (_) {
+    // Freshness check is best-effort; never block startup on it.
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3495,8 +3611,15 @@ async function saveS04Filing(report) {
     notes,
   };
 
-  const res = await window.electronAPI.saveFilingRecord(payload);
-  if (btn) { btn.disabled = false; btn.textContent = '✓ Save Filing'; }
+  let res;
+  try {
+    res = await window.electronAPI.saveFilingRecord(payload);
+  } catch (err) {
+    toast(`Failed to save filing: ${err.message || err}`, 'error');
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Save Filing'; }
+  }
 
   if (!res.success) {
     toast(`Failed to save filing: ${res.error}`, 'error');
@@ -3584,7 +3707,7 @@ async function generateS04AEstimate() {
   wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
 
   const tz  = getAppTimezone();
-  const res = await window.electronAPI.generateS04A({ currentYear: year, apiKey: state.apiKey || null, timezone: tz === 'system' ? getSystemTimezone() : tz });
+  const res = await window.electronAPI.generateS04A({ currentYear: year, timezone: tz === 'system' ? getSystemTimezone() : tz });
   btn.disabled = false;
   btn.textContent = 'Generate';
 
@@ -3600,18 +3723,17 @@ function renderS04AEstimate(est) {
   const wrap = document.getElementById('s04a-wrap');
   if (!wrap) return;
 
-  const now   = new Date();
-  const fmtDt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { year: 'numeric', month: 'short', day: 'numeric' });
-
   const adjBadge = est.useAdjusted
     ? `<span class="badge" style="background:rgba(210,153,34,0.18);color:var(--warn2);font-size:10px;margin-left:8px;">Trend-adjusted</span>`
+    : est.insufficientSignal
+    ? `<span class="badge" style="background:rgba(88,166,255,0.16);color:var(--accent);font-size:10px;margin-left:8px;" title="Current-year income data looks incomplete — showing the prior-year base. Upload more statements for a trend-adjusted estimate.">Prior-year base</span>`
     : '';
   const priorInfo = est.hasPriorFiling
     ? `Prior year (${est.priorYear}) S04 on file · Tax: ${fmt(est.priorYearTaxPayable)}`
     : `No prior-year S04 filing found — estimated from current-year trends`;
 
   const quartersHtml = est.quarters.map(q => {
-    const isPast    = new Date(q.dueDate) < now;
+    const isPast    = q.isPast;   // server-computed, timezone-correct
     const cls       = isPast ? ' overdue' : '';
     const diffBadge = est.useAdjusted && q.baseAmount !== q.recommendedAmount
       ? `<div class="s04a-quarter-base">Base: ${fmt(q.baseAmount)}</div>`
@@ -4035,7 +4157,7 @@ function buildPrintHTML(report, profile = {}) {
 
   <!-- Notes -->
   <div class="notes">
-    ${report.notes.map(n => `<p>${n}</p>`).join('')}
+    ${report.notes.map(n => `<p>${escHtml(String(n))}</p>`).join('')}
   </div>
 
   <!-- Signature block -->

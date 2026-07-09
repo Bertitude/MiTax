@@ -1,11 +1,11 @@
 @echo off
 REM ─────────────────────────────────────────────────────────────────────────
-REM  LunchMoney Importer — Windows build script
+REM  MiTax — Windows build script
 REM  Run this to produce a Windows installer in the dist/ folder.
 REM ─────────────────────────────────────────────────────────────────────────
 
 echo.
-echo  LunchMoney Importer — Build
+echo  MiTax — Build
 echo  ================================
 echo.
 

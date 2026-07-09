@@ -5,15 +5,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   parsePDF: (filePath) => ipcRenderer.invoke('parse-pdf', filePath),
 
   // LunchMoney Assets
-  getLMAssets:   (apiKey)            => ipcRenderer.invoke('get-lm-assets', apiKey),
-  createLMAsset: (apiKey, assetData) => ipcRenderer.invoke('create-lm-asset', { apiKey, assetData }),
+  // The active account's API key is resolved in the main process, never passed
+  // from the renderer — these take no key argument.
+  getLMAssets:   ()          => ipcRenderer.invoke('get-lm-assets'),
+  createLMAsset: (assetData) => ipcRenderer.invoke('create-lm-asset', { assetData }),
 
   // LunchMoney Payees
-  getLMPayees:   (apiKey)                        => ipcRenderer.invoke('get-lm-payees', apiKey),
+  getLMPayees:   ()                                 => ipcRenderer.invoke('get-lm-payees'),
   processPayees: ({ transactions, existingPayees }) => ipcRenderer.invoke('process-payees', { transactions, existingPayees }),
 
   // LunchMoney Categories
-  getLMCategories: (apiKey) => ipcRenderer.invoke('get-lm-categories', apiKey),
+  getLMCategories: () => ipcRenderer.invoke('get-lm-categories'),
 
   // Upload Transactions
   uploadTransactions: (payload) => ipcRenderer.invoke('upload-transactions', payload),
@@ -73,6 +75,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   generateS04:  (payload) => ipcRenderer.invoke('generate-s04',  payload),
   generateS04A: (payload) => ipcRenderer.invoke('generate-s04a', payload),
   exportS04PDF: (payload) => ipcRenderer.invoke('export-s04-pdf', payload),
+  taxParamsStatus: (payload) => ipcRenderer.invoke('tax-params:status', payload),
 
   // Filing history
   saveFilingRecord:   (payload) => ipcRenderer.invoke('save-filing',   payload),

@@ -73,4 +73,32 @@ function applySignConvention(transactions) {
   return transactions;
 }
 
-module.exports = { normalizeDate, derivePeriodFromTransactions, applySignConvention };
+/**
+ * Parse a US-style MM/DD/YYYY date to YYYY-MM-DD. Returns '' if it doesn't
+ * match. Use this (not normalizeDate) for sources known to be month-first —
+ * normalizeDate matches the DD/MM branch first and would swap month and day.
+ */
+function parseMDY(str) {
+  if (!str) return '';
+  const m = String(str).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!m) return '';
+  const month = parseInt(m[1], 10), day = parseInt(m[2], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return '';
+  return `${m[3]}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Internal sign (positive = debit / money out) for a transaction of magnitude
+ * `amount`, inferred from the running-balance delta. A falling balance means
+ * money left the account (debit → positive); a rising balance means money came
+ * in (credit → negative). Used by parsers whose rows carry a running balance
+ * but don't label debit vs credit. `prevBalance == null` (first row, unknown
+ * opening balance) returns null so the caller can fall back to a keyword guess.
+ */
+function signedByBalanceDelta(amount, prevBalance, thisBalance) {
+  if (prevBalance == null || thisBalance == null) return null;
+  const mag = Math.abs(amount);
+  return thisBalance < prevBalance ? mag : -mag;
+}
+
+module.exports = { normalizeDate, parseMDY, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta };

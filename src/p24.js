@@ -14,6 +14,7 @@
 
 const path = require('path');
 const { app } = require('electron');
+const { encStr, decStr, encNum, decNum, isEncrypted, secureAvailable } = require('./secure-field');
 
 let db = null;
 
@@ -23,7 +24,41 @@ function getDB() {
   const dbPath = path.join(app.getPath('userData'), 'lunchmoney-tracker.db');
   db = new Database(dbPath);
   initSchema(db);
+  migrateEncryption(db);
   return db;
+}
+
+// Sensitive value columns (payroll figures + tax registration number + notes).
+// year/month/employer_name stay plaintext — needed for filtering and the
+// ORDER BY employer_name sort.
+const ENC_NUM_COLS = ['gross_emoluments', 'nis_deducted', 'nht_deducted', 'ed_tax_deducted', 'paye_deducted', 'net_pay'];
+const ENC_STR_COLS = ['employer_trn', 'notes'];
+
+// One-time, idempotent, non-destructive migration (see filings.js for rationale).
+function migrateEncryption(db) {
+  if (!secureAvailable()) return;
+  try {
+    const rows = db.prepare('SELECT * FROM p24_entries').all();
+    const upd = db.prepare(`UPDATE p24_entries SET ${[...ENC_NUM_COLS, ...ENC_STR_COLS].map(c => `${c} = ?`).join(', ')} WHERE id = ?`);
+    for (const r of rows) {
+      const alreadyEnc = ENC_STR_COLS.concat(ENC_NUM_COLS).every(c => r[c] == null || isEncrypted(r[c]));
+      if (alreadyEnc) continue;
+      try {
+        upd.run(
+          ...ENC_NUM_COLS.map(c => encNum(decNum(r[c]))),
+          ...ENC_STR_COLS.map(c => encStr(decStr(r[c]))),
+          r.id,
+        );
+      } catch (_) { /* leave this row plaintext-but-readable */ }
+    }
+  } catch (_) { /* never fail startup on migration */ }
+}
+
+function decodeRow(row) {
+  if (!row) return row;
+  for (const c of ENC_NUM_COLS) if (c in row) row[c] = decNum(row[c]);
+  for (const c of ENC_STR_COLS) if (c in row) row[c] = decStr(row[c]);
+  return row;
 }
 
 function initSchema(db) {
@@ -73,10 +108,10 @@ function saveEntry({
       WHERE id = ?
     `).run(
       year, month,
-      employerName, employerTrn || null,
-      grossEmoluments || 0, nisDeducted || 0, nhtDeducted || 0,
-      edTaxDeducted || 0, payeDeducted || 0, netPay || 0,
-      notes || null,
+      employerName, encStr(employerTrn || null),
+      encNum(grossEmoluments || 0), encNum(nisDeducted || 0), encNum(nhtDeducted || 0),
+      encNum(edTaxDeducted || 0), encNum(payeDeducted || 0), encNum(netPay || 0),
+      encStr(notes || null),
       id,
     );
     return { id };
@@ -91,10 +126,10 @@ function saveEntry({
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     year, month,
-    employerName, employerTrn || null,
-    grossEmoluments || 0, nisDeducted || 0, nhtDeducted || 0,
-    edTaxDeducted || 0, payeDeducted || 0, netPay || 0,
-    notes || null,
+    employerName, encStr(employerTrn || null),
+    encNum(grossEmoluments || 0), encNum(nisDeducted || 0), encNum(nhtDeducted || 0),
+    encNum(edTaxDeducted || 0), encNum(payeDeducted || 0), encNum(netPay || 0),
+    encStr(notes || null),
   );
   return { id: result.lastInsertRowid };
 }
@@ -107,7 +142,7 @@ function getEntriesForYear(year) {
     SELECT * FROM p24_entries
     WHERE year = ?
     ORDER BY month ASC, employer_name ASC
-  `).all(year);
+  `).all(year).map(decodeRow);
 }
 
 /**

@@ -70,23 +70,44 @@ function reconcile(parsedTxs, lmTxs, balanceSentinels = []) {
     const lmNp = normPayee(payee);
     const lmSign = signOf(lmAmt);
 
-    // Same-sign partner (payee-matched first, then any) → matched, no mismatch.
-    let idx = bucket.findIndex(c => signOf(c.tx.amount) === lmSign && c.np === lmNp);
-    if (idx === -1) idx = bucket.findIndex(c => signOf(c.tx.amount) === lmSign);
-    if (idx !== -1) { bucket.splice(idx, 1); continue; }
+    // Preference order — an exact payee match outranks sign, so a genuinely
+    // flipped row is flagged rather than absorbed by an unrelated same-sign
+    // transaction of equal magnitude on the same day:
+    //   1. same-sign + payee match  → correct, consume silently
+    //   2. opposite-sign + payee match → flag the sign mismatch
+    //   3. same-sign, any payee     → correct, consume silently
+    //   4. opposite-sign, any payee → flag the sign mismatch
+    const flag = (c) => {
+      signMismatches.push({
+        lmId: lmTx.id, date: lmTx.date, payee,
+        lmAmount: lmAmt, parsedAmount: c.tx.amount,
+      });
+    };
 
-    // Every remaining candidate is opposite sign → genuine sign mismatch.
-    let mIdx = bucket.findIndex(c => c.np === lmNp);
-    if (mIdx === -1) mIdx = 0;
-    const parsedTx = bucket[mIdx].tx;
-    signMismatches.push({
-      lmId: lmTx.id, date: lmTx.date, payee,
-      lmAmount: lmAmt, parsedAmount: parsedTx.amount,
-    });
-    bucket.splice(mIdx, 1);
+    let idx = bucket.findIndex(c => signOf(c.tx.amount) === lmSign && c.np === lmNp);
+    if (idx !== -1) { bucket.splice(idx, 1); continue; }         // 1
+
+    idx = bucket.findIndex(c => signOf(c.tx.amount) !== lmSign && c.np === lmNp);
+    if (idx !== -1) { flag(bucket[idx]); bucket.splice(idx, 1); continue; }  // 2
+
+    idx = bucket.findIndex(c => signOf(c.tx.amount) === lmSign);
+    if (idx !== -1) { bucket.splice(idx, 1); continue; }         // 3
+
+    flag(bucket[0]); bucket.splice(0, 1);                        // 4 (remaining are opposite sign)
   }
 
-  return { signMismatches, phantomBalances, suspectedPhantoms };
+  // Parsed transactions left unmatched = present on the statement but NOT in
+  // LunchMoney → a likely missed upload. (Bounded by the statement size, so
+  // unlike "extra in LM" this is a clean, low-noise signal.)
+  const missingInLM = [];
+  for (const bucket of buckets.values()) {
+    for (const { tx } of bucket) {
+      missingInLM.push({ date: tx.date, amount: tx.amount, payee: tx.payee || '' });
+    }
+  }
+  missingInLM.sort((a, b) => (a.date || '').localeCompare(b.date || '') || Math.abs(a.amount) - Math.abs(b.amount));
+
+  return { signMismatches, phantomBalances, suspectedPhantoms, missingInLM };
 }
 
 module.exports = { reconcile, normPayee, BALANCE_RE };

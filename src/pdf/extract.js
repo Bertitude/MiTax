@@ -6,9 +6,11 @@
  * this app parses user-supplied bank statements. pdfjs-dist is the same
  * underlying library pdf-parse wrapped, so extraction semantics are preserved:
  *
- *   - extractText replicates pdf-parse's reflow exactly (a newline is inserted
+ *   - extractText closely reproduces pdf-parse's reflow (a newline is inserted
  *     when a text item's baseline Y — transform[5] — differs from the previous
  *     item's), so every text-based parser's line-oriented regexes still match.
+ *     (Minor deviation: a leading item at baseline y=0 is treated as "no
+ *     previous Y" here, where pdf-parse concatenated — practically negligible.)
  *   - extractPageItems reproduces the old `pagerender` coordinate output
  *     ({ str, x: transform[4], y: transform[5] } per non-empty item, per page)
  *     used by the coordinate-aware Scotiabank and JN parsers.
@@ -29,8 +31,17 @@ async function getDocument(buffer) {
   // pdfjs requires a plain Uint8Array — a Node Buffer (a Uint8Array subclass) is
   // rejected, so always copy into a fresh Uint8Array.
   const data = new Uint8Array(buffer);
-  // isEvalSupported:false hardens against the crafted-PDF eval vector.
-  return pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  try {
+    // isEvalSupported:false hardens against the crafted-PDF eval vector.
+    return await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  } catch (err) {
+    // Surface a clear message for encrypted statements instead of a raw
+    // "No password given" PasswordException.
+    if (err && (err.name === 'PasswordException' || /password/i.test(err.message || ''))) {
+      throw new Error('This PDF is password-protected. Remove the password (open it and re-save/print to PDF without one) and try again.');
+    }
+    throw err;
+  }
 }
 
 /**
@@ -51,29 +62,40 @@ function reflowItems(items) {
 
 async function extractText(buffer) {
   const doc = await getDocument(buffer);
-  let out = '';
-  for (let p = 1; p <= doc.numPages; p++) {
-    const page = await doc.getPage(p);
-    const content = await page.getTextContent();
-    // pdf-parse prefixed every page's text with "\n\n"; preserve that so any
-    // cross-page/whitespace-sensitive regexes behave identically.
-    out += '\n\n' + reflowItems(content.items);
+  try {
+    let out = '';
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      // pdf-parse prefixed every page's text with "\n\n"; preserve that so any
+      // cross-page/whitespace-sensitive regexes behave identically.
+      out += '\n\n' + reflowItems(content.items);
+    }
+    return out;
+  } finally {
+    // Release the PDFDocumentProxy (page trees, fonts, the copied buffer) —
+    // this runs in a long-lived Electron main process, so leaking it per import
+    // accumulates. destroy() never rejects meaningfully; guard anyway.
+    await doc.destroy().catch(() => {});
   }
-  return out;
 }
 
 async function extractPageItems(buffer) {
   const doc = await getDocument(buffer);
-  const pages = [];
-  for (let p = 1; p <= doc.numPages; p++) {
-    const page = await doc.getPage(p);
-    const content = await page.getTextContent();
-    const items = content.items
-      .filter(i => i.str && i.str.trim())
-      .map(i => ({ str: i.str.trim(), x: i.transform[4], y: i.transform[5] }));
-    pages.push(items);
+  try {
+    const pages = [];
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      const items = content.items
+        .filter(i => i.str && i.str.trim())
+        .map(i => ({ str: i.str.trim(), x: i.transform[4], y: i.transform[5] }));
+      pages.push(items);
+    }
+    return pages;
+  } finally {
+    await doc.destroy().catch(() => {});
   }
-  return pages;
 }
 
 module.exports = { extractText, extractPageItems, reflowItems };

@@ -1,266 +1,213 @@
-# MiTax Project Audit
+# MiTax Project Audit — v1.3.0 (post-remediation)
 
-**Date:** 2026-07-02 · **Version audited:** 1.2.25 · **Scope:** full repository — Electron main process & IPC surface, renderer, statement parsers, tax engine, persistence, dependencies, build/release pipeline, and repo hygiene.
+**Date:** 2026-07-08 · **Version audited:** 1.3.0 (commit `1a3eaaf`) · **Scope:** full repository — follow-up to the 2026-07-02 audit of v1.2.25.
 
-MiTax is an Electron desktop app that parses Caribbean bank-statement PDFs/CSVs, uploads transactions to LunchMoney, and computes Jamaica S04/S04A tax. Because it handles untrusted input files, financial-API credentials, and tax arithmetic, the findings below are weighted accordingly: input-parsing security and money-math correctness carry the highest severity.
+This is a fresh audit of the codebase after the v1.3.0 remediation release (PR #7). Every prior finding was re-verified against current source, and all new/changed code (pdfjs extraction, reconcile engine, integer-cents tax math, safeStorage key encryption, hardened IPC surface, test suite) was reviewed in depth. High-severity claims below were confirmed **by executing the code**, not just by reading it.
 
-Every finding was verified against source; file:line references point at the code as of commit `d458f5c`.
+**Baseline:** all 27 tests pass (`npm test`); `npm audit` reports 1 moderate advisory (js-yaml quadratic-complexity DoS, transitive via `electron-updater`/`electron-builder`). electron 41.9.2 · pdfjs-dist 4.10.38 · better-sqlite3 12.11.1.
 
 ---
 
-## Severity summary
+## Prior findings — remediation status (24)
+
+| # | Prior finding | Status | Evidence |
+|---|---|---|---|
+| 1 | Plaintext API keys | **Fixed** | safeStorage encryption (`lm-accounts.js`); the localStorage plaintext mirror that nullified it (N1) was removed 2026-07-08 — the key now stays main-process-side |
+| 2 | Electron 29 EOL | **Fixed** | electron 41.9.2 |
+| 3 | Vulnerable pdf-parse | **Fixed** | pdfjs-dist 4.10.38 with `isEvalSupported:false` (`src/pdf/extract.js:33`); lifecycle gaps → N13 |
+| 4 | Unrestricted `read-file` IPC | **Fixed** | Handler deleted; `allowedFiles` allow-list enforced in `parse-pdf`/`reconcile-statement` (`main.js:94,318`); minor symlink gap → N20 |
+| 5 | No sandbox / nav guards | **Mostly fixed** | `sandbox:true` + `hardenWindow()` on both windows (`main.js:18-21,64,808`); `senderFrame` checks never added → N8 |
+| 6 | Update signing disabled | **Not fixed** | `src/updater.js:23` override intact; `CSC_IDENTITY_AUTO_DISCOVERY:"false"` (`release.yml:42`) → N6 |
+| 7 | Account-view sign inversion | **Fixed** | `isCredit = amount > 0` (`renderer/app.js:3284`) agrees with monthly buckets and `debit_as_negative:true` |
+| 8 | Float money math | **Mostly fixed** | S04 core is integer-cents with a clean single boundary (`s04.js:221-267,398-433`); S04A still float → N4/N24 |
+| 9 | Reconcile fragility | **Mostly fixed** | Deterministic pure module (`src/reconcile.js`), sentinel-scoped deletion; one masking edge → N10 |
+| 10 | Zero tests | **Partially fixed** | 27 tests + CI, but 7 of 9 parsers untested — exactly where new Highs N2/N3 live |
+| 11 | Tracker timezone bug | **Fixed** | All four sites replaced with `date-utils` string-slice helpers (`tracker.js:139,211,217`) |
+| 12 | Scotia silent year default | **Fixed** | Missing-period-header warning (`scotiabank.js:117`); unrecognized months rejected with warning (`:381`) |
+| 13 | CSV sign collapse / double-flip | **Mostly fixed** | debit/credit are sign-bearing, parens negatives handled, pinned by tests; two edge bugs remain → N12 |
+| 14 | Parser output unvalidated | **Fixed** | `validateResult` drops bad dates/amounts with warnings, flags zero-transaction results (`parsers/index.js:102-130`) |
+| 15 | CSP `'unsafe-inline'` scripts | **Mostly fixed** | `script-src 'self'`, zero inline handlers; `style-src 'unsafe-inline'` remains and 2 of ~70 sinks unescaped → N16, N22 |
+| 16 | export-s04-pdf races/leaks | **Fixed** | `mkdtempSync`, `javascript:false`, `loadFile` await, cleanup in `finally` (`main.js:792-837`); no CSP on temp doc → N21 |
+| 17 | Data unencrypted at rest | **Mostly fixed** | filings + P24 sensitive columns encrypted via `safeStorage` (`src/secure-field.js`, 2026-07-09); query columns and the tracker's low-sensitivity fields stay plaintext — full-DB SQLCipher deferred |
+| 18 | No PR CI | **Fixed** | `ci.yml` on push+PR with `npm ci`, least-privilege permissions; `release.yml` uses `npm ci` |
+| 19 | Version/doc drift | **Partially fixed** | README/CHANGELOG refreshed for 1.3.0, but 1.2.18–1.2.25 still undocumented and CHANGELOG misdocuments the sign convention → N18, N28 |
+| 20 | Broken `openExternal` | **Fixed** | Allow-listed `open-external` IPC (`main.js:106-117`); zero `require(` in renderer |
+| 21 | Inconsistent main-process errors | **Fixed** | Global crash handlers (`main.js:36-42`); tracker handlers wrapped in try/catch |
+| 22 | Stuck-spinner busy states | **Partially fixed** | `parseAll`/`startReconcile` fixed; `uploadValidated`, reconcile-apply and others still lack try/finally → N17 |
+| 23 | Duplicated/contradictory sign logic | **Partially fixed** | One documented `applySignConvention` invariant, applied once per parser — but five pass-through parsers violate it → N2 |
+| 24 | Tooling debt | **Partially fixed** | Tests+CI exist; node-fetch still a dep, no ESLint, `renderer/app.js` still a ~4k-line monolith |
+
+**Bottom line:** the remediation was real — 10 findings fully fixed, and the fixed paths (Scotiabank, CSV happy path, S04 annual math, IPC surface) are solid. But two of the headline fixes were undermined by follow-on bugs: the key-encryption work was nullified by a plaintext localStorage mirror (N1 — **now resolved**), and the sign-convention consolidation exposed that five untested parsers systematically violate the new invariant (N2).
+
+---
+
+## New findings — severity summary
 
 | Severity | Count | Themes |
 |---|---|---|
-| Critical | 1 | Credential storage |
-| High | 9 | EOL runtime, vulnerable PDF parser, IPC file access, update integrity, sign-convention bug, float money math, reconcile fragility, no tests |
-| Medium | 9 | Timezone bugs, input validation, CSP, encryption at rest, CI gaps, doc drift |
-| Low | 5 | Broken external links, error-handling gaps, duplication, stale tooling |
+| Critical | 1 | Encrypted API key re-persisted in plaintext |
+| High | 6 | Parser sign inversions, JMMB crash, PayPal dates, S04A due dates & months math, unsigned updates |
+| Medium | 13 | Crypto fallback gaps, IPC hardening, reconcile edge, upload duplication, CSV/PDF gaps, tax params, XSS sinks, busy states |
+| Low | 9 (grouped) | Reconcile UX, tax/date nits, API-layer nits, docs/hygiene |
 
 ---
 
 ## Critical
 
-### 1. LunchMoney API keys stored in plaintext
-`src/lm-accounts.js:26,74-76`
+### N1. Decrypted API key round-trips to the renderer and is re-persisted in plaintext localStorage — **RESOLVED 2026-07-08**
+`renderer/app.js:8,1680,1822,1837,1859`; `main.js:397-448` (`lm-accounts:get-active/add/switch` return the decrypted `api_key`)
 
-The `lm_accounts` table defines `api_key TEXT NOT NULL` and inserts the raw key into `lunchmoney-tracker.db` under `app.getPath('userData')`. A LunchMoney API key grants full read/write access to the user's financial account. Anything with read access to the user's profile directory — other local processes, cloud backup sync, malware, or the app's own unrestricted `read-file` IPC handler (finding #4) — obtains the key.
+The v1.3.0 safeStorage work encrypts keys in SQLite — and then the renderer immediately writes the same key back in plaintext: `localStorage.setItem('lm_api_key', …)` on connect (`:1680`), add (`:1822`), switch (`:1837`), and remove (`:1859`), and reads it into `state.apiKey` at startup (`:8`). The legacy-migration path never calls `removeItem`. The plaintext key therefore sits permanently in Chromium's Local Storage leveldb inside the **same `userData` directory** the encryption was meant to protect — any local process, backup sync, or malware reading the profile recovers it, encryption or not. The prior audit's praise that "keys never cross the IPC boundary" is no longer true.
 
-Mitigating factors already present: the accounts-list projection deliberately omits `api_key` (`lm-accounts.js:38-41`), and keys are never sent to the renderer through `lm-accounts:*` responses.
-
-**Fix:** encrypt with Electron's `safeStorage.encryptString()` before insert and decrypt on read in the main process only. Migrate existing rows on first launch (read plaintext → re-store encrypted). `safeStorage` uses the OS keychain/DPAPI and requires no new dependencies.
+**Fixed:** the key is now resolved entirely in the main process. A shared `activeApiKey()` (`main.js`) supplies the decrypted active key to every LunchMoney handler, which no longer accepts an `apiKey` from the renderer; the account handlers (`get-active`/`switch`/`remove`) return a `publicAccount` projection that strips `api_key` and exposes only a `connected` flag. The renderer keeps `state.connected` (boolean) instead of the key, no longer writes `lm_api_key` to localStorage, and deletes any pre-1.3 plaintext key from localStorage after migrating it. Also (companion to N26): `decryptKey` now returns `null` on failure instead of the raw ciphertext, so a keychain reset surfaces as "not connected" rather than a ciphertext blob silently used as a key.
 
 ---
 
-## High — security
+## High
 
-### 2. Electron 29 is end-of-life
-`package.json:22` (`"electron": "^29.0.0"`, resolves to 29.4.6)
+### N2. Five untested parsers silently produce sign-inverted or fabricated amounts — **RESOLVED 2026-07-08**
+All verified by executing the parser modules. `applySignConvention` (`parsers/utils.js`) flips every amount at the boundary on the assumption that parsers emit bank-convention (positive = debit) values — these parsers emit user-convention or broken values, so the flip corrupts them:
 
-Electron 29 (Feb 2024) left the supported window around August 2024 and receives no Chromium/V8/Node security backports. The app therefore inherits every unpatched Chromium CVE since — a serious exposure for an app that renders content derived from untrusted PDFs.
+- **Wise** (`wise.js:29,47,67`): amounts are already signed user-convention; pass-through + flip inverts everything. "Received money … 1,500.00" → **−1500 (expense)**.
+- **Stripe** (`stripe.js:23,42`): payout net amounts are positive money-in; all Stripe revenue becomes expenses ("Charge … 96.80" → **−96.80**).
+- **PayPal** (`paypal.js:30,42,62`): same inversion for received payments.
+- **NCB** (`ncb.js:27,91`): the main regex requires wide spacing that real two-number rows never have, so everything falls to a fallback that assumes `amounts[0]` is a debit — "SALARY PAYMENT 500.00 10,500.00" → **−500** with the amount text left inside the payee. The `-amounts[1]` branch at `:91` is unreachable.
+- **generic** (`generic.js:159-168,148-151`): the header column map assigns ordinals assuming every monetary column is populated, so a row with an empty debit cell has its credit land in the debit slot ("SALARY DEPOSIT 500.00 10,500.00" under a Debit/Credit header → **−500**); and the DR/CR-suffix rule doesn't exclude the balance column — "…5,000.00 105,000.00 CR" emits the **balance +105,000 as Income**.
 
-**Fix:** upgrade to a currently supported Electron major. This forces a `better-sqlite3` bump (currently 9.6.0; v11+ supports modern Electron ABIs) — the existing `postinstall: electron-builder install-app-deps` handles the rebuild. Budget for renderer/API deprecation sweeps.
+For a tax app this is worse than a crash: wrong-sign data uploads silently and flows into S04 income figures. None of these paths have tests (prior finding #10's gap).
 
-### 3. `pdf-parse` is unmaintained and bundles an old, vulnerable pdf.js
-`package.json:19` (`pdf-parse@^1.1.1`, resolves 1.1.4)
+**Fixed:** Wise/Stripe/PayPal now negate their user-convention amounts to the internal convention before the boundary flip; NCB and the generic parser infer debit vs credit from the **running-balance delta** (new `signedByBalanceDelta` in `parsers/utils.js`), with an opening-balance seed and a payee-keyword fallback for the first row. The generic parser now only trusts positional column mapping when the row's amount count matches the header's column count, and ignores a DR/CR marker on the balance (last) amount. Golden fixtures + tests added for JMMB, NCB, Wise, Stripe, PayPal, and the generic empty-cell/balance-CR cases. **Note:** only PayPal was validated against a real statement; the NCB/JMMB/Wise/Stripe/generic fixes are validated against synthetic fixtures encoding the documented conventions and should be spot-checked against a real statement when one is available.
 
-`pdf-parse` has had no meaningful maintenance in years and vendors an ancient `pdfjs-dist`. Old pdf.js versions are affected by CVE-2024-4367 (arbitrary JavaScript execution when parsing a malicious PDF). Parsing user-supplied bank-statement PDFs is MiTax's core function, so this is a live, reachable attack surface — a booby-trapped "statement" PDF is a realistic delivery vector.
+### N3. JMMB parser crashes on every statement; latent balance-as-amount bug behind it — **RESOLVED 2026-07-08**
+`jmmb.js:57` references `accountNumber`, which is never defined — every JMMB parse threw `ReferenceError` (verified), surfaced to users as a generic parse error. The two-amount heuristic also took the **running balance** as the transaction amount whenever balance > amount, i.e. almost always.
 
-**Fix:** migrate to maintained `pdfjs-dist` (≥ 4.2.67) or `unpdf`. The parsers already consume text + coordinates (`src/parsers/scotiabank.js` uses per-item coordinates), which pdfjs-dist provides directly via `getTextContent()`.
+**Fixed:** `accountNumber` is derived from `accountMatch` (last 4 digits); the transaction amount is always the first number, with the second treated as the running balance and used for balance-delta sign inference (opening-balance seed + keyword fallback). Fixture + test added.
 
-### 4. `read-file` IPC handler allows unrestricted arbitrary file read
-`main.js:803-806`
+### N4. PayPal dates are MM/DD/YYYY but parsed as DD/MM — months and days swapped — **RESOLVED 2026-07-08**
+`paypal.js:19` routed dates through `normalizeDate`, whose DD/MM branch (`utils.js:17`) matches every slash date first. Verified: `7/4/2024` (July 4) → `2024-04-07`.
 
-```js
-ipcMain.handle('read-file', async (event, filePath) => {
-  const buffer = fs.readFileSync(filePath);
-  return { buffer: buffer.toString('base64'), name: path.basename(filePath) };
-});
-```
+**Fixed:** added `parseMDY` to `parsers/utils.js` and the PayPal parser now uses it (month-first), so `7/4/2024` → `2024-07-04`. Pinned by a test that also documents the `normalizeDate` day-first behaviour. *(The `normalizeDate` DD/MM-first default is retained for the Caribbean bank parsers that depend on it.)* Note: PayPal often syncs to LunchMoney directly, so this parser may see little real-world use — but it is reachable via file upload and is now correct.
 
-Any renderer-reachable code can read **any file the user account can read** (SSH keys, browser cookie DBs, the app's own credential database from finding #1) and receive it base64-encoded. `parse-pdf` (`main.js:53`) and `reconcile-statement` (`main.js:229`) likewise pass renderer-supplied paths straight to the parser. Combined with the hand-escaped-`innerHTML` XSS surface (finding #15), one missed escape turns a crafted statement into full local file disclosure.
+### N5. S04A due dates are malformed; "past due" detection can never fire and corrupt dates are persisted — **RESOLVED 2026-07-08**
+`s04.js:511-513`: `due` is `'Mar 15'`, so `` `${year}-${due.replace('Mar','03')…}-15` `` yields `"2026-03 15-15"` — an Invalid Date. Consequently `isPast` is always false, the renderer's overdue badge (`app.js:3614`) can never appear, and saving a quarter persists the malformed string into `tax_filings.due_date`, which filing history then renders as "Invalid Date". The S04A test asserts only `quarters.length === 4`.
 
-**Fix:** maintain a `Set` of paths returned by `open-file-dialog` (and drag-and-drop, if supported) and reject any `read-file`/`parse-pdf`/`reconcile-statement` call whose path is not in it. Additionally check the extension against the dialog filter (`pdf`, `csv`, `xlsx`).
+**Fixed:** `S04A_DUE_DATES` now stores `{month, day, dueLabel}`; `dueDate` is built as valid `${year}-MM-DD` and `isPast` is a lexicographic `todayStr > dueDate` compare. Renderer trusts the server `q.isPast`. Pinned by tests.
 
-### 5. No renderer sandbox and no navigation guards
-`main.js:23-27` (window creation; `sandbox` omitted); no `will-navigate` or `setWindowOpenHandler` anywhere in `main.js`
+### N6. S04A `monthsElapsed` overcounts by ~1 month, distorting provisional-tax recommendations — **RESOLVED 2026-07-08**
+`s04.js:490`: `(now.getMonth() + 1) + (now.getDate() / 31)` counts the current partial month as a full month *and* adds its day fraction (Jan 31 → 2.0 months when 1.0 has elapsed). Verified scenario: steady J$1M/month income, generated 2026-07-08 → annualized trend J$10.35M instead of ~J$12M → trend ratio 0.86 trips the ±10% adjustment and recommended quarterly drops from the correct $200,000 to $172,498 — a ~$110k/year provisional-tax underpayment for a filer whose income is flat. The dashboard's own formula (`main.js:536`, `getMonth() + date/30.5`) is the correct shape; the two disagree by ~1 month on the same date. Related: generating S04A for a **past** year (`main.js:740-743`) fetches YTD through *today* (a multi-year window) but still divides by ≤12.26 months, inflating the trend ~2.5× in the verified example.
 
-The renderer parses and displays untrusted statement content without the OS-level sandbox, and nothing prevents the window from being navigated to an arbitrary origin. If navigation occurs, every privileged IPC handler (file read, exports, LunchMoney calls with stored keys) remains callable — no handler checks `event.senderFrame`.
+**Fixed:** `monthsElapsed = (month-1) + day/daysInMonth` (string-sliced `todayStr`, no Date round-trip); fully-past years use 12 months, and the `generate-s04a` handler clamps the LunchMoney fetch window to `min(todayStr, ${currentYear}-12-31)`. Pinned by tests.
 
-**Fix:**
-- Add `sandbox: true` to the `webPreferences` of both windows (`main.js:23-27`, `main.js:764`).
-- Add `mainWindow.webContents.on('will-navigate', e => e.preventDefault())` and `setWindowOpenHandler(() => ({ action: 'deny' }))`.
-- In high-value handlers, verify `event.senderFrame.url` matches the local index file.
+### N7. Auto-update code-signature verification still disabled; builds still unsigned *(carried: prior #6)*
+`src/updater.js:23` (`verifyUpdateCodeSignature = () => null`) + `release.yml:42`. With `autoInstallOnAppQuit:true` and silent NSIS install, anyone who can publish a release to the configured repo ships arbitrary code; the SHA512 in `latest.yml` comes from the same release the attacker controls. macOS auto-update remains silently broken (Squirrel requires a valid signature).
 
-### 6. Auto-update code-signature verification is disabled
-`src/updater.js:23` — `autoUpdater.verifyUpdateCodeSignature = () => null;` (returns "verification passed" unconditionally)
-Paired with `.github/workflows/release.yml:41` — `CSC_IDENTITY_AUTO_DISCOVERY: "false"` (builds are unsigned)
-
-electron-updater still validates the SHA512 from `latest.yml` over HTTPS, so a pure network MITM is mitigated — but the disabled signature check removes the defense against a compromised release pipeline or rogue artifact. Side effects of shipping unsigned: macOS Gatekeeper blocks the app by default, **macOS auto-update does not work at all** (Squirrel.Mac requires a valid signature — the update flow advertised in the README is silently broken on Mac), and Windows shows SmartScreen "Unknown Publisher".
-
-**Fix:** obtain a Windows code-signing cert and an Apple Developer ID, wire `WIN_CSC_LINK` / notarization into `release.yml`, and delete the `verifyUpdateCodeSignature` override. Until then, document clearly that macOS auto-update is non-functional.
-
----
-
-## High — correctness
-
-### 7. Sign-convention contradiction inside the Account Summary view
-`renderer/app.js:3114` vs `renderer/app.js:3202`
-
-Two interpretations of the same LunchMoney `amount` field, in the same view, are opposite:
-
-```js
-// Monthly buckets (app.js:3114): positive = income
-if (amount > 0)  months[m].income   += amount;
-else             months[m].expenses += Math.abs(amount);
-
-// Per-transaction list (app.js:3202): negative = credit
-const isCredit = amount < 0;   // rendered '+' and green
-```
-
-A positive-amount transaction is counted as income in the monthly table but displayed with a `−` and debit styling in the list directly beneath it. Given that uploads use `debit_as_negative: true` (`src/lunchmoney.js:295`) and the tax engine treats positive as income (`src/tax/s04.js:166`), **the per-transaction display at `app.js:3202` is the inverted one.** This most likely explains ongoing user-visible sign confusion despite repeated parser-side sign fixes (v1.2.17, v1.2.23, v1.2.24).
-
-**Fix:** flip `isCredit` to `amount > 0` at `app.js:3202` (and swap the `+`/`−` rendering accordingly), then codify the convention once — see finding #23.
-
-### 8. Floating-point arithmetic for currency throughout
-`src/tax/s04.js:173,188,246,251,386,432`; `renderer/app.js:3114-3121`; parsers (`parseFloat` at `src/parsers/scotiabank.js:413,434`, `src/parsers/index.js:138`)
-
-All money is IEEE-754 `number`. Sums accumulate float error (`expenses.total += absAmt`), rounding happens only at the very end (`roundJMD`/`r2`), and tax-band thresholds are compared against un-rounded floats (`s04.js:246,251`). For a tool that computes tax owed and files S04 figures, penny-level drift is a correctness and credibility issue.
-
-**Fix:** represent money as integer cents from the parse boundary inward (`Math.round(parseFloat(s) * 100)`), do all accumulation and band comparison in integers, and format to decimal only at display/export boundaries. Alternatively adopt a small decimal library, but integer cents needs no dependency.
-
-### 9. Reconcile matching is order-dependent; phantom-balance deletion is greedy
-`main.js:246-289` (matching); `main.js:262-270` (deletion)
-
-- Parsed transactions are keyed only by `` `${date}|${abs(amount).toFixed(2)}` ``. Two same-day transactions with the same absolute amount (e.g. two identical ATM withdrawals) pair against LunchMoney rows in arbitrary order via `matches[0]`/`matches.shift()` — a correct transaction can be flagged as a sign mismatch while the real mismatch is missed.
-- Any LunchMoney transaction whose payee matches `BALANCE_RE` ("beginning/closing/opening balance", "balance forward", …) is offered for **deletion** regardless of amount or whether it corresponds to anything in the parsed statement. Deletion via `deleteTransaction` (`src/lunchmoney.js:420`) is irreversible.
-
-**Fix:** include a normalized-payee component in the match key with fallback to date+amount; when duplicates remain, match pairwise by sign first so only genuinely mismatched rows are flagged. Scope phantom deletion to rows whose date+amount also appears as a balance-sentinel line in the parsed statement, and show amount+date in the confirmation UI.
-
-### 10. Zero automated tests
-No `test` script in `package.json`, no test files or directories anywhere in the repo.
-
-The codebase is dominated by exactly the logic unit tests are best at protecting: 11 statement parsers, a sign-convention pipeline, and a tax calculator. The git history is a chain of shipped-blind regressions in that logic — v1.2.11 (coverage miscounts), v1.2.17 (inverted debit/credit across four parsers), v1.2.23/24/25 (Scotiabank sign and phantom-balance fixes). Every one of those fixes could regress again silently today.
-
-**Fix (highest-leverage single change in this audit):**
-- Add a test runner (`node:test` needs no dependency; vitest if preferred).
-- **Golden-file parser tests:** commit sanitized text fixtures per institution; assert exact transaction lists (date, amount, sign, payee).
-- **Sign-convention unit tests** around `applySignConvention` (`src/parsers/utils.js`) and the upload payload (`debit_as_negative`).
-- **S04 unit tests:** known income/expense sets → expected tax per `TAX_PARAMS` year, including band boundaries.
-- Wire into PR CI (finding #18).
+**Status (2026-07-08):** the underlying gap requires **paid certificates** (Apple Developer Program ~$99/yr for macOS; a Windows code-signing cert) and can't be closed in code alone. Groundwork done: `release.yml` now sources all signing variables from optional, per-OS repo secrets so signing is a **drop-in flip** (add secrets + delete the `updater.js` override — which is required *only* while unsigned) with no further code changes; the README documents the one-time SmartScreen/Gatekeeper bypass and that macOS auto-update is non-functional until signed. **Remaining:** obtain the certs, add the secrets, remove the override.
 
 ---
 
 ## Medium
 
-### 11. UTC/local timezone bug corrupts coverage tracking
-`src/tracker.js:138-141,215,219,268`
+### N8. No `senderFrame` validation on privileged IPC handlers — **RESOLVED 2026-07-08**
+`main.js` — zero occurrences of `senderFrame` (verified). Prior finding #5 recommended it; sandbox+nav-guards landed, the sender check didn't. Any code execution in the renderer (or a sub-frame) can directly invoke `apply-reconciliation` (irreversible deletes), `export-s04-pdf`, `open-external`. **Fix:** shared guard asserting `event.senderFrame.url` is the local `index.html` top frame on mutating handlers.
 
-`new Date("YYYY-MM-DD")` parses as **UTC midnight**, but `.getFullYear()`/`.getMonth()` read **local** time. In Jamaica (UTC−5), `2024-01-01` becomes `2023-12-31` locally, so `saveUpload`, `getMissingMonths`, and `getOldestUploadYear` attribute January statements to the prior December/year — corrupting the coverage grid and "missing months" report. The renderer already does this correctly with `Intl.DateTimeFormat('en-CA', { timeZone })` (`renderer/app.js:37-52`).
+### N9. `apply-reconciliation` accepts unvalidated IDs that are string-interpolated into API URL paths — **RESOLVED 2026-07-08**
+`main.js:346-371` does no shape check on `flipIds`/`deleteIds`; `lunchmoney.js:359,367,421` builds `` `/transactions/${txId}` ``. A compromised renderer can send `deleteIds:["group/123"]` → `DELETE /v1/transactions/group/123`, or steer requests via crafted fragments. **Fix:** `filter(Number.isInteger)`, cap lengths, `encodeURIComponent` in `lunchmoney.js`.
 
-**Fix:** parse date-only strings with string slicing (`+d.slice(0,4)`, `+d.slice(5,7)`) instead of `Date` round-trips.
+### N10. Reconcile pairing prefers same-sign-any over payee-exact opposite-sign, masking flips in equal-magnitude ± pairs — **RESOLVED 2026-07-08**
+`reconcile.js:73-76`. Verified: statement `SALARY +50000` / `RENT −50000` same day, both LM rows sign-flipped → **0 mismatches** (each flipped row pairs cross-payee with the other's statement tx). This is exactly the flip-bug class reconcile exists to catch. **Fix:** candidate order `same-sign+payee` → `opposite-sign+payee (flag)` → `same-sign-any` → `opposite-any`.
 
-### 12. Scotiabank year inference silently defaults to the current year
-`src/parsers/scotiabank.js:371-392` (fallback at `:376`); period-header regex at `:107`
+### N11. Non-idempotent POST `/transactions` is blindly retried on 5xx — **RESOLVED 2026-07-08**
+`lunchmoney.js:70-75` retries any 429/5xx regardless of method. A commit-then-500 (or timeout-after-write) re-inserts the whole batch → duplicate transactions whenever `skipDuplicates` is off. **Fix:** restrict blind retry to GET; for POST retry only on network-error-before-response/429.
 
-If the `DDMMMYY to DDMMMYY` period header fails to match (layout variance), every transaction in the statement is silently assigned `new Date().getFullYear()`. A year-boundary or backlog statement gets misfiled with no warning. Also: `'20' + slice` hard-codes the century (`:379`) and `MONTH_MAP[mmm] || 1` coerces unrecognized months to January instead of rejecting the row (`:374`).
+### N12. CSV edge bugs: `0.00` debit shadows a real credit; quoted embedded newlines drop rows — **RESOLVED 2026-07-08**
+`parsers/index.js:211` tests string truthiness, so `…,0.00,500.00` (debit,credit) parses as **amount 0** instead of +500 (verified) and uploads. `index.js:136-140` splits records on raw `\n` before quote-aware parsing, so a quoted multi-line field silently loses the transaction (verified; no warning in multi-row files), and headers use naive `split(',')`. **Fix:** prefer the nonzero parsed value; scan records with quote state; count drops into `warnings`.
 
-**Fix:** when the period header is unparseable, surface a parser warning and require user confirmation of the statement year rather than guessing; reject rows with unrecognized months.
+### N13. pdfjs documents are never destroyed; PDFs parsed twice; no password handling — **RESOLVED 2026-07-08** (destroy + password; double-read deferred)
+`src/pdf/extract.js:33,52-77` — no `doc.destroy()`/`cleanup()` and no try/finally, so every parsed statement permanently retains a `PDFDocumentProxy` in the long-lived main process; coordinate parsers additionally load each PDF twice (`extractText` + `extractPageItems`). Password-protected statements (common for Caribbean banks) reject with a raw `PasswordException` and no user-facing message. **Fix:** `finally { await doc.destroy() }`; single-pass extraction; catch `PasswordException` → targeted error.
 
-### 13. CSV parsing collapses debit/credit columns and double-flips signs
-`src/parsers/index.js:112,129-149`
+### N14. Dashboard quarterly estimate bypasses `getTaxParams` — **RESOLVED 2026-07-08**
+`main.js:535` — `TAX_PARAMS[year] || TAX_PARAMS[2025]`: any year without an entry (2027+) silently uses **2025** params instead of nearest-earlier, overstating annual tax by ~J$19.3k above threshold, with no fallback warning. **Fix:** `getTaxParams(year)`.
 
-`row['amount'] || row['debit'] || row['credit']` treats a value from a `credit` column identically to a `debit` value — no sign distinction. `applySignConvention` then unconditionally negates every amount, so a CSV already carrying signed amounts is double-flipped. `parseFloat(amountStr.replace(/[^0-9.\-]/g,''))` (`:138`) mangles accounting-negative `(1,234.00)`. The hand-rolled `splitCSVLine` (`:116-127`) doesn't handle escaped quotes or embedded newlines.
+### N15. TAX_PARAMS threshold convention was internally inconsistent across years — **RESOLVED 2026-07-08**
+`s04.js:35,48` — the 2026 entry used TAJ's weighted full-year-effective threshold (1,876,614), but 2024/2025 used raw post-April-1 values despite those increases also being effective April 1. Verified against TAJ's published guidance ([JIS technical advisory](https://jis.gov.jm/taj-develops-technical-advisory-for-revised-income-tax-threshold-and-pension-exemptions/), [Dawgen Global 2024 payroll changes](https://www.dawgen.global/understanding-the-new-changes-to-payroll-taxes-in-jamaica-a-closer-look-at-the-increased-income-tax-threshold-and-exemptions/), [JIS April 2026 increase](https://jis.gov.jm/increase-in-income-tax-threshold-now-in-effect/)): the pro-rated convention is TAJ's official one, so 2024/2025 were understating tax by ~J$12.5k/~J$6.2k for above-threshold filers. **Fixed:** 2024 → 1,650,090 and 2025 → 1,774,470 (TAJ's published figures), pinned by tests; a params-staleness banner now warns when `TAX_PARAMS` haven't been re-verified since the most recent April 1 (`taxParamsStatus` in `s04.js`, surfaced via `tax-params:status`).
 
-**Fix:** treat `debit` and `credit` columns as sign-bearing (credit → negate or not per the documented convention); support parenthesized negatives; consider a small CSV library (`csv-parse`) instead of the hand parser.
+### N16. Two unescaped `innerHTML` sinks interpolate statement-derived strings — **RESOLVED 2026-07-08**
+`renderer/app.js:493-495` (`item.parsed.institution/accountName/period` and `item.path` — accountName is extracted verbatim from PDF text, i.e. attacker-influenced via a crafted statement) and `:642` (period strings); `:2350-2356` renders S04 `report.notes` unescaped (app-generated today, an injection point tomorrow). CSP (`script-src 'self'`) blocks script execution, so impact is HTML/UI spoofing — but this is the missed-escape class finding #15 warned about. Of ~70 sinks sampled, all others escape correctly. **Fix:** wrap in `escHtml`.
 
-### 14. Parser output is not validated before upload
-`src/parsers/utils.js:37` (unparseable dates returned verbatim); `src/parsers/index.js:74-78` (recognized-but-empty → `{success: true, transactions: []}`)
+### N17. Busy-state and partial-failure reporting regressions — **RESOLVED 2026-07-08**
+- `renderer/app.js:3097-3115` (reconcile apply): the `await` has no try/finally — an IPC rejection leaves the button stuck on "Applying…" with the user unable to tell whether deletions executed. `uploadValidated` (`:1109-1234`), `saveS04Filing`, `applyPayeeUpdates` similarly lack try/finally (CHANGELOG 1.3.0's "no more stuck spinners" overstates).
+- `main.js:352-365` flattens flip failures to bare strings (tx id dropped) and discards `skipped` entirely; on success-with-errors the renderer closes the modal and shows only an error **count** — the user can never learn which irreversible deletes failed. **Fix:** structured `{failedFlips, skipped, failedDeletes}`; keep the modal open and list failing rows.
 
-`normalizeDate` returns the original unparsed string when no pattern matches, which flows to LunchMoney as `date` and fails with an opaque API error at upload time. A recognized statement that parses to zero transactions reports success with no warning — silent wrong-data rather than a visible failure.
+### N18. CHANGELOG actively misdocuments the live sign convention; 1.2.18–1.2.25 still missing *(carried: prior #19)*
+`CHANGELOG.md:68` (1.2.17 entry) documents "**positive = expense/debit**" — the exact opposite of the shipped convention (`lunchmoney.js:295`, `debit_as_negative: true`) — with no later entry recording the reversal, and eight versions remain undocumented even though code comments reference them ("pre-v1.2.18 sign-flip bug"). For a codebase whose recurring bug class is sign confusion, the changelog is part of the attack surface. **Fix:** add a corrective note + backfill entries.
 
-**Fix:** in the dispatcher, validate every transaction (`date` is real ISO, `amount` finite and non-zero) and warn on zero-transaction results before the file reaches the upload queue.
-
-### 15. CSP allows `'unsafe-inline'` scripts; XSS safety rests on ~71 hand-escaped sinks
-`renderer/index.html:6`; `renderer/app.js` (many `innerHTML` template literals)
-
-`script-src 'self' 'unsafe-inline'` defeats most of the CSP's XSS protection. The renderer builds ~71 `innerHTML` strings; statement-derived data (payees, notes, account names — attacker-controllable via a crafted PDF) is escaped with `escHtml`/`escAttr` nearly everywhere, but the pattern is one missed call away from stored XSS, and numeric-id interpolations (`data-tx-id="${tx.id}"`, `app.js:3204`) bypass escaping on trust.
-
-**Fix:** remove `'unsafe-inline'` from `script-src` (move any inline scripts/handlers to files) — this makes a missed escape far less exploitable. Longer term, replace hand-escaped `innerHTML` with a small DOM-builder helper that escapes by construction.
-
-### 16. `export-s04-pdf`: renderer HTML executed with JS at a fixed temp path; resources leak on error
-`main.js:757-788`
-
-The handler writes renderer-supplied HTML to a **fixed, predictable** temp filename, loads it in a hidden window with `javascript: true` (`:764`), waits a fixed 900 ms (`:769` — a race on slow layouts, wasted time on fast ones), and cleans up only on the success path: if `loadURL`/`printToPDF`/the save dialog throws, `printWin.destroy()` and `fs.unlinkSync(tmpPath)` are skipped, leaking a hidden BrowserWindow and the temp file per failure.
-
-**Fix:** disable JavaScript in the print window; use `fs.mkdtemp` for a unique path; replace the sleep with `did-finish-load`; wrap cleanup in `finally`.
-
-### 17. Financial and tax data unencrypted at rest
-`src/tracker.js`, `src/filings.js`, `src/p24.js`
-
-Uploads, filings, P24 employment-income entries, and transaction-id lists live in plaintext SQLite in userData. Lower urgency than the API key (finding #1) but the same `safeStorage`-based approach — or SQLCipher — covers it.
-
-### 18. No CI on pull requests; release workflow uses `npm install`
-`.github/workflows/release.yml` is the only workflow (tag-triggered); `:35` runs `npm install` despite a committed lockfile
-
-PRs merge with zero automated checks. Release builds can drift from the lockfile. No Dependabot, CodeQL, or dependency caching. Note also: no `v*` git tags exist in the repo despite the tag-driven workflow — worth confirming releases are actually being cut.
-
-**Fix:** add a `ci.yml` on `pull_request`/`push` running `npm ci` + lint + tests (once finding #10 lands); switch `release.yml` to `npm ci`; enable `actions/setup-node` caching and Dependabot.
-
-### 19. Version and documentation drift
-- `CHANGELOG.md` stops at **1.2.17** while the code is at **1.2.25** — eight releases (including Smart Reconcile) undocumented.
-- `README.md` is still titled "LunchMoney Importer — Jamaica Edition", says `cd LunchMoneyApp`, contains a stale `GITHUB_USERNAME_HERE` placeholder, and omits the JN Bank (`src/parsers/jn.js`) and UNFCU (`src/parsers/unfcu.js`) parsers plus several `src/` modules from its file-structure section.
-- `build.bat` still prints "LunchMoney Importer — Build".
-- Node version inconsistent: CI pins 20, README/build.bat say "18+"; no `.nvmrc`.
-- `package.json` copyright says "© 2025"; publish target is `Bertitude/MiTax` while branding is FuzionWorks — confirm that's the real release repo or update checks will 404.
+### N19. Reconcile's sign comparison rides on LunchMoney's *default* GET sign convention — **RESOLVED 2026-07-08** (pinned; DELETE endpoint still to confirm)
+`lunchmoney.js:176-201` never pins `debit_as_negative` on GET while uploads pin it on POST (`:295`). If LM's GET default differs (or changes), every expense false-flags as a mismatch and Apply corrupts correct data. Works today by inheritance; should be pinned explicitly (`params.append('debit_as_negative','true')`). Also confirm `DELETE /v1/transactions/:id` is a supported public endpoint — if not, every phantom deletion fails at runtime.
 
 ---
 
 ## Low
 
-### 20. External-link buttons are broken: `require('electron')` in the renderer
-`renderer/app.js:1669,3702`
+### N20. Path allow-list is not symlink/swap-resistant — **RESOLVED 2026-07-08**
+`main.js:120-134` — `register-statement-file` validates with `statSync` (follows symlinks), never canonicalizes, and the Set is never pruned; enforcement re-checks string membership only (TOCTOU window). Low exploitability (renderer can't create symlinks). **Fix:** `realpathSync` at registration, re-`lstat` at parse.
 
-With `contextIsolation: true` / `nodeIntegration: false`, `require` is undefined in the renderer — these `shell.openExternal` calls throw at runtime. **Fix:** add an `open-external` IPC handler that whitelists the specific URL(s) and expose it via the preload.
+### N21. Print window loads report HTML with no CSP — remote sub-resources fetch during export — **RESOLVED 2026-07-08**
+`main.js:792-837` — `javascript:false` blocks scripts, but `<img src="http://…">` in report HTML beacons out during `printToPDF`. **Fix:** inject a `default-src 'none'` meta CSP into the temp HTML.
 
-### 21. Inconsistent error handling in main process
-- Tracker handlers (`main.js:139-169`) have no try/catch, unlike every other handler — a `better-sqlite3` throw reaches the renderer as a raw rejection instead of `{success: false}`.
-- No global `process.on('uncaughtException'/'unhandledRejection')` in the main process.
-- `get-dashboard-data` (`main.js:548-550`) and `check-duplicates` (`main.js:609-613`) swallow errors and return `success: true` with partial data — the renderer can't distinguish "no data" from "API failed" (the duplicates case is intentionally fail-open; the dashboard case looks unintentional).
+### N22. `style-src 'unsafe-inline'` remains in the CSP *(carried: prior #15 residue)*
+`renderer/index.html:6` — residual CSS-exfiltration channel if an injection sink is hit (see N16). Meta-only delivery is a platform constraint for `loadFile`; acceptable.
 
-### 22. Stuck-spinner error paths in the renderer
-`renderer/app.js:517-550` (`parseAll`), `:2903-2912` (reconcile)
+### N23. Reconcile scope/UX gaps — **MOSTLY RESOLVED 2026-07-09**
+*(Matching-order masking fixed under N10; failed flips/deletes listed under N17. Now also: reconcile emits `missingInLM` — statement transactions absent from LunchMoney, a likely missed upload — and warns when the statement's dates don't fall in the selected year, so a clean result is no longer misreported as "all match." Remaining, deferred: duplicate-LM detection and Scotia-only sentinel coverage.)* Original: One-directional: statement transactions missing from LM and duplicate LM rows are silently dropped (`reconcile.js:89`), then the UI declares "All transactions match" — false reassurance for exactly the missed-upload/double-upload cases. LM fetch spans the whole selected year vs a ~1-month statement, so every balance-payee row in the year reappears as a suspected phantom on each run, and a year-mismatch yields "all match" instead of a no-overlap warning (`main.js:316-339`). `balanceSentinels` are only emitted by the Scotiabank coordinate path (`scotiabank.js:122,161`) — "confirmed phantom" structurally doesn't exist for other institutions or the Scotia regex fallback. The final confirm dialog merges confirmed+suspected into one "delete N phantoms" count (`app.js:3088-3095`), and multi-selected files silently reconcile only the first (`app.js:2938`).
 
-Button re-enable is not in `finally`; an unexpected rejection or early error return leaves the UI stuck on "Parsing…". Only 19 try/catch/`.catch` sites across ~4,000 renderer lines. **Fix:** wrap async UI actions in try/finally around the busy-state toggle.
+### N24. Tax/date nits — **MOSTLY RESOLVED 2026-07-08**
+Resolved: float instalment split → integer cents (Q4 remainder); `methodUsed` label now honours `manualData.useActualExpenses`; renderer "today" routed through the timezone-aware `getAppNow()` (`app.js` filed-date, balance-date, `today()`); `yearMonthOf` rejects invalid months `00`/`13`–`99` (pinned by test); `getMostRecentS04` tiebreaks with `, id DESC`. Remaining (deferred, low): `buildMonthlyBreakdown` ignores `userCategoryMappings` so monthly income can exceed `grossIncome`, and unclassified credits are excluded from gross income rather than defaulting to `other` (`s04.js:436-459`).
 
-### 23. Duplicated and contradictory sign/parsing logic
-- `cleanPayee` re-implemented per parser with different allow-lists (`scotiabank.js:527`, `generic.js:202`, …).
-- `BALANCE_RE`/balance-line regex duplicated between `scotiabank.js:48` and `main.js:244`.
-- Coordinate row-bucketing copy-pasted (`scotiabank.js:120-133` vs `:247-256`).
-- Sign-convention comments contradict across pipeline stages (`generic.js:5-7` says positive = debit; `utils.js:53-64` says negative = debit). This ambiguity is the root cause of the recurring sign bugs.
+### N25. LunchMoney API-layer nits — **RESOLVED 2026-07-09**
+Resolved: 30s AbortController timeout (retried like a transient network error); 429 retries now honour a `Retry-After` header (seconds or HTTP-date, capped at 60s); errors carry `err.status` and `getPayees`/`getAssetMonthCoverage` rethrow auth errors (401/403) instead of masking a bad key as empty data (transient/empty results are still tolerated for those optional features).
 
-**Fix:** extract shared helpers into `src/parsers/utils.js` and write **one** authoritative sign-convention doc comment there stating the invariant at each pipeline stage (raw parser output → `applySignConvention` → LunchMoney upload).
+### N26. Key-storage secondary gaps — **MOSTLY RESOLVED 2026-07-08**
+Resolved: `decryptKey` returns `null` on failure (surfaces as "not connected"); `keyStorageInsecure` now derives from the actually-stored value (re-read after migration), not `encryptionAvailable()` alone; **all** plaintext rows are migrated at DB open (not just the active one) and `PRAGMA secure_delete` + a one-time `VACUUM` scrub the old pages. Remaining (deferred, low value): `api_key UNIQUE` is vestigial under non-deterministic ciphertext (app-level decrypt-and-scan dedupe is the real guard; a table rebuild to drop the constraint isn't worth it), and the insecure-storage warning is still a single toast rather than a persistent Settings banner (`app.js:193-196`).
 
-### 24. Tooling gaps and minor debt
-- `node-fetch@2` is likely removable (Node 20 and Electron both ship global `fetch`).
-- No ESLint, no Prettier/`.editorconfig`.
-- `renderer/app.js` is a 3,982-line monolith with a single shared mutable `state` global — split by tab/feature when convenient (parse queue, reconcile, account view, tax views, settings).
+### N27. Parser nits — **PARTIALLY RESOLVED 2026-07-08**
+Resolved: generic's two-amount fallback and header-mapped path now share one balance-delta/keyword sign path (no more opposite signs for the same row, N2 work); the `reflowItems` "replicates exactly" comment is corrected to note the `y=0` deviation. Remaining (deferred, low): detection order can route a statement mentioning "Scotiabank" in a payee to the Scotiabank parser (`parsers/index.js:31-35`); JN drops wrapped description continuation lines and its em-dash payee join leaves double spaces (`jn.js:126-127,207-210`); a Scotia date-row whose amount never arrives is discarded without warning (`scotiabank.js:151,181-183`).
+
+### N28. Docs/hygiene — **MOSTLY RESOLVED 2026-07-08**
+Resolved: README installer names (`MiTax-*`), `cd MiTax`, the `GITHUB_USERNAME_HERE` step, Node "v20+", and the Data Storage paths (`MiTax`/`mitax`); `build.bat` branding; `package.json` copyright © 2026. Remaining (deferred): no `v*` git tags exist despite the tag-driven release workflow (a release-process action, not a code change); the js-yaml moderate advisory is transitive via `electron-updater`/`electron-builder` (parses `latest.yml`) — track upstream; `node-fetch` remains removable in favour of global `fetch`.
+
+### N22. `style-src 'unsafe-inline'` remains in the CSP — **DEFERRED (rationale) 2026-07-08**
+The renderer relies on inline `style="…"` attributes throughout its markup and generated `innerHTML`; CSP `style-src` governs those attributes, so removing `'unsafe-inline'` would require migrating every inline style to CSS classes — a large refactor disproportionate to a Low finding whose residual risk is CSS-injection exfiltration only (script injection is already blocked by `script-src 'self'`). Deferred deliberately.
 
 ---
 
 ## What's done well
 
-- **Electron security baseline is correct:** `contextIsolation: true` + `nodeIntegration: false` on every window, with a bounded `contextBridge` API using fixed channel names (no dynamic channel passthrough). This is the app's strongest area.
-- **No SQL injection:** `better-sqlite3` prepared statements with bound parameters throughout.
-- **Consistent `{success, error}` IPC envelope** on nearly all handlers; principled retry/backoff with an explicit retryable-error allow-list in `src/lunchmoney.js:20-38`.
-- **Credential hygiene in projections:** `api_key` deliberately omitted from the accounts-list query; keys never cross the IPC boundary to the renderer.
-- **Clean cross-platform release automation:** single workflow building Windows/macOS (x64+arm64)/Linux, correct `asar` + `asarUnpack` for native modules, all platform icons present, correct `postinstall` native rebuild.
-- **Privacy-conscious `.gitignore`:** `*.db`, `*.db-journal`, `userData/` keep user financial data out of version control.
-- **Tax parameters carry provenance** (`source`/`verifiedAt` in `TAX_PARAMS`) with a fallback-warning path.
-- Detailed, specific CHANGELOG entries (when they're written).
+- **The remediation held up where it was applied.** The IPC surface is genuinely hardened: the arbitrary-read handler was deleted (not wrapped), the path allow-list is enforced in every path-accepting handler, `open-external` is written the *correct* way (normalized href + trailing-slash prefix + https-only — resistant to userinfo/subdomain bypasses), and the print-window flow fixed all four prior defects.
+- **The integer-cents S04 core is a clean single-boundary design** — convert in once, compute entirely in cents, convert out in one block; no mixed-unit comparison exists anywhere in the annual path, and every subtraction is floor-guarded.
+- **The reconcile rewrite is deterministic and safe-by-default**: multi-key sort + splice consumption survives input permutation; suspected phantoms render unchecked with warnings; sentinel matching is robust to sign/representation drift; 404s skip instead of failing the batch.
+- **`src/pdf/extract.js` is a careful pdf-parse replacement** — `isEvalSupported:false` addresses the CVE vector, the pure/IO split makes coordinate parsers testable without PDFs, and the fixtures use it.
+- **Escaping discipline is near-total** (2 misses in ~70 sinks), the CSP now has no inline scripts, and API keys never appear in logs or error messages.
+- **CI is real**: push+PR tests with `npm ci`, least-privilege permissions, and the 27-test suite pins the previously regression-prone Scotiabank/CSV/S04 paths.
 
 ---
 
 ## Recommended remediation order
 
-**Phase 1 — quick wins (hours each):**
-1. Fix the Account Summary sign inversion (#7) — one-line logic flip plus display swap.
-2. Path allow-list for `read-file`/`parse-pdf`/`reconcile-statement` (#4).
-3. Tracker timezone fix (#11) — string-slice date parsing.
-4. `sandbox: true` + navigation guards (#5).
-5. Fix broken `openExternal` buttons via a whitelisted IPC handler (#20).
-6. try/finally around renderer busy states and tracker handlers (#21, #22).
+**Phase 1 — stop the bleeding (hours each):**
+1. ~~Delete the localStorage key mirror; resolve keys main-process-side (N1)~~ — done 2026-07-08.
+2. ~~Fix the five parser sign inversions + JMMB crash + PayPal dates (N2–N4)~~ — done 2026-07-08, with golden fixtures + tests for JMMB/NCB/Wise/Stripe/PayPal/generic (only PayPal validated against a real statement).
+3. ~~S04A due-date format and `monthsElapsed` (N5, N6)~~ — done 2026-07-08 (N5, N6, and the N24 instalment rounding resolved together).
+4. Validate/encode IDs in `apply-reconciliation` (N9); pin `debit_as_negative` on GET (N19).
 
-**Phase 2 — foundation (days):**
-7. Test harness: golden-file parser tests, sign-convention tests, S04 unit tests (#10).
-8. PR CI with `npm ci` + tests; Dependabot (#18).
-9. Electron upgrade off EOL 29 + better-sqlite3 bump (#2).
-10. Replace `pdf-parse` with maintained `pdfjs-dist`/`unpdf` (#3).
-11. Consolidate sign convention into one documented invariant; dedupe parser helpers (#23).
+**Phase 2 — harden (days):**
+5. `decryptKey` failure path + storage-security flag from stored value + migrate-all-rows (N26); persistent insecure-storage banner.
+6. `senderFrame` guard on mutating handlers (N8); realpath in the allow-list (N20).
+7. POST retry idempotency (N11); CSV zero-debit/newline fixes (N12); pdfjs destroy/password handling (N13).
+8. Escape the two missed sinks (N16); try/finally sweep + structured apply-errors (N17).
+9. Dashboard `getTaxParams` (N14). ~~Verify 2024/2025 thresholds with TAJ (N15)~~ — done 2026-07-08; values corrected.
 
-**Phase 3 — deeper work:**
-12. `safeStorage` encryption for API keys, then broader at-rest encryption (#1, #17).
-13. Integer-cents money representation (#8).
-14. Reconcile matching redesign with payee-aware keys and scoped phantom deletion (#9).
-15. Code signing + notarization; remove the signature-verification override (#6).
-16. CSP hardening and DOM-builder rendering (#15); docs/version sync (#19).
+**Phase 3 — finish the story:**
+10. Code signing + notarization; remove the verification override (N7).
+11. Reconcile bidirectional reporting + period-scoped fetch + sentinel coverage beyond Scotia (N10, N23).
+12. Changelog backfill + sign-convention corrective note; README/build.bat sweep; tag releases (N18, N28).
+13. Carried structural items: at-rest encryption (#17), renderer decomposition, ESLint, drop node-fetch (#24).
