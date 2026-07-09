@@ -1,18 +1,50 @@
 name: Build & Release
 
-# Triggers on version tags, or can be run manually from the Actions UI
+# Triggers on version tags, or can be run manually from the Actions UI.
 on:
   push:
     tags:
-      - 'v*'           # e.g. v1.1.2  → creates a public GitHub Release
-  workflow_dispatch:   # allows "Run workflow" button in the Actions UI
+      - 'v*'           # e.g. v1.3.1 → creates a public GitHub Release
+  workflow_dispatch:   # "Run workflow" button — tags from package.json first
 
 permissions:
-  contents: write   # required to create GitHub Releases and upload assets
+  contents: write   # required to push the tag and create GitHub Releases
 
 jobs:
+  # When run manually (no tag in the ref), electron-builder can't publish —
+  # GitHub rejects "Published releases must have a valid tag". So on a manual
+  # run we first create and push v<version> from package.json. (The GITHUB_TOKEN
+  # push intentionally does NOT trigger a second workflow run, so the build job
+  # below runs once, in the same run, against the now-existing tag.)
+  tag:
+    name: Ensure version tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create and push v<version> tag if missing
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on the remote — nothing to do."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "MiTax ${TAG}"
+            git push origin "refs/tags/${TAG}"
+            echo "Created and pushed ${TAG}."
+          fi
+
   build:
     name: Build (${{ matrix.os }})
+    needs: [tag]
+    # Run after the tag job on a manual dispatch (needs = success), and also on a
+    # direct tag push where the tag job is skipped (needs = skipped).
+    if: always() && needs.tag.result != 'failure'
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -20,7 +52,9 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
-      # ── 1. Checkout code ───────────────────────────────────────────────────────────
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      # The tag job has already created v<version>, so electron-builder can
+      # publish to that existing tag regardless of which ref we build from.
       - name: Checkout
         uses: actions/checkout@v4
 
