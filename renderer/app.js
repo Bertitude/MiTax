@@ -501,8 +501,8 @@ function renderQueue() {
       <div class="file-info">
         <div class="file-name">${escHtml(item.name)}</div>
         <div class="file-meta">${item.parsed
-          ? `${item.parsed.institution} · ${item.parsed.accountName} · ${item.parsed.currency} · ${item.parsed.period?.start || '?'} → ${item.parsed.period?.end || '?'}`
-          : item.path}</div>
+          ? `${escHtml(item.parsed.institution)} · ${escHtml(item.parsed.accountName)} · ${escHtml(item.parsed.currency)} · ${escHtml(item.parsed.period?.start || '?')} → ${escHtml(item.parsed.period?.end || '?')}`
+          : escHtml(item.path)}</div>
       </div>
       ${item.assetName ? `<span class="badge badge-blue">→ ${escHtml(item.assetName)}</span>` : ''}
       <span class="file-status ${item.status}">${statusLabel}</span>
@@ -649,7 +649,7 @@ function openAccountModal() {
           <span class="badge badge-yellow" style="margin-left:4px;">${escHtml(item.parsed.currency)}</span>
         </div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
-          ${item.parsed.transactions?.length || 0} transactions · ${item.parsed.period?.start || '?'} → ${item.parsed.period?.end || '?'}
+          ${item.parsed.transactions?.length || 0} transactions · ${escHtml(item.parsed.period?.start || '?')} → ${escHtml(item.parsed.period?.end || '?')}
         </div>
       </div>
       <div style="flex:1;min-width:0;">
@@ -1125,6 +1125,7 @@ async function uploadValidated() {
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Uploading…';
 
+  try {
   // Group by assetId
   const byAsset = {};
   for (const row of selected) {
@@ -1232,9 +1233,6 @@ async function uploadValidated() {
     }
   }
 
-  btn.disabled  = false;
-  btn.innerHTML = '☁️ Upload Selected to LunchMoney';
-
   // Always close the modal and remove processed files from the queue
   document.getElementById('validate-modal').classList.remove('open');
   state.queue = state.queue.filter(q => !processedFiles.has(q.name));
@@ -1249,6 +1247,12 @@ async function uploadValidated() {
     toast('No new transactions were uploaded.', 'info');
   }
   if (allErrors.length) toast(`Upload issues: ${allErrors.join('; ')}`, 'error', 8000);
+  } catch (err) {
+    toast(`Upload failed: ${err.message || err}`, 'error');
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '☁️ Upload Selected to LunchMoney';
+  }
 }
 
 // ─── CSV Export ───────────────────────────────────────────────────────────────
@@ -2353,7 +2357,7 @@ function renderTaxReport(report) {
         const style  = isWarn
           ? 'background:#fff3cd;border-left:3px solid #f0ad4e;padding:8px 10px;margin:6px 0;color:#8a6d3b;border-radius:4px;font-weight:600;'
           : '';
-        return `<div class="${cls}"${style ? ` style="${style}"` : ''}>${isWarn ? '' : '• '}${n}</div>`;
+        return `<div class="${cls}"${style ? ` style="${style}"` : ''}>${isWarn ? '' : '• '}${escHtml(String(n))}</div>`;
       }).join('')}</div>
 
       <!-- Save as Filed form (collapsed by default) -->
@@ -2888,10 +2892,16 @@ async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
   applyBtn.disabled = true;
   applyBtn.innerHTML = `<span class="spinner"></span> Updating ${updates.length}…`;
 
-  const res = await window.electronAPI.updatePayeeBatch({ updates });
-
-  applyBtn.disabled = false;
-  applyBtn.innerHTML = 'Apply Selected';
+  let res;
+  try {
+    res = await window.electronAPI.updatePayeeBatch({ updates });
+  } catch (err) {
+    toast(`Update failed: ${err.message || err}`, 'error');
+    return;
+  } finally {
+    applyBtn.disabled = false;
+    applyBtn.innerHTML = 'Apply Selected';
+  }
 
   if (!res.success) { toast(`Update failed: ${res.error}`, 'error'); return; }
 
@@ -3568,8 +3578,15 @@ async function saveS04Filing(report) {
     notes,
   };
 
-  const res = await window.electronAPI.saveFilingRecord(payload);
-  if (btn) { btn.disabled = false; btn.textContent = '✓ Save Filing'; }
+  let res;
+  try {
+    res = await window.electronAPI.saveFilingRecord(payload);
+  } catch (err) {
+    toast(`Failed to save filing: ${err.message || err}`, 'error');
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Save Filing'; }
+  }
 
   if (!res.success) {
     toast(`Failed to save filing: ${res.error}`, 'error');
@@ -4107,7 +4124,7 @@ function buildPrintHTML(report, profile = {}) {
 
   <!-- Notes -->
   <div class="notes">
-    ${report.notes.map(n => `<p>${n}</p>`).join('')}
+    ${report.notes.map(n => `<p>${escHtml(String(n))}</p>`).join('')}
   </div>
 
   <!-- Signature block -->
