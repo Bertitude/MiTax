@@ -266,6 +266,9 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   // Allowable deductions
   const stdDedCents    = Math.round(grossCents * params.standardDeductionRate);
   const allowableCents = Math.max(actualExpCents, manualData.useActualExpenses ? actualExpCents : stdDedCents);
+  // Which deduction method was actually applied (for the report label): the
+  // user forcing actual, or actual simply exceeding the 20% standard.
+  const usedActualMethod = !!manualData.useActualExpenses || actualExpCents >= stdDedCents;
   const statutoryCents = Math.max(0, grossCents - allowableCents);
 
   // NIS (National Insurance Scheme) — calculated on combined income, capped at nisMaxIncome.
@@ -351,7 +354,7 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       ),
       standardDeduction: roundJMD(standardDeduction),
       actualExpenses: roundJMD(actualExpenses),
-      methodUsed: actualExpenses >= standardDeduction ? 'Actual' : 'Standard (20%)',
+      methodUsed: usedActualMethod ? 'Actual' : 'Standard (20%)',
     },
 
     // Part C: Statutory Income

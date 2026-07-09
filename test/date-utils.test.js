@@ -11,6 +11,9 @@ test('yearMonthOf / yearOf: string-slice parsing (no timezone shift)', () => {
   assert.equal(yearOf('2024-01-01'), 2024);
   assert.equal(yearMonthOf('garbage'), null);
   assert.equal(yearOf(''), null);
+  // Invalid months are rejected rather than passed through (N24).
+  assert.equal(yearMonthOf('2024-00-10'), null);
+  assert.equal(yearMonthOf('2024-13-10'), null);
 });
 
 test('eachMonthInRange: inclusive, within a year', () => {

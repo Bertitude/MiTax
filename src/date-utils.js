@@ -13,7 +13,7 @@
 /** { year, month } (month 1-12) from an ISO date-only string, or null. */
 function yearMonthOf(isoStr) {
   if (!isoStr || typeof isoStr !== 'string') return null;
-  const m = isoStr.match(/^(\d{4})-(\d{2})/);
+  const m = isoStr.match(/^(\d{4})-(0[1-9]|1[0-2])/);   // reject month 00 / 13–99
   if (!m) return null;
   return { year: parseInt(m[1], 10), month: parseInt(m[2], 10) };
 }

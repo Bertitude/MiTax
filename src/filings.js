@@ -118,7 +118,7 @@ function getMostRecentS04(year) {
   return db.prepare(`
     SELECT * FROM tax_filings
     WHERE type = 's04' AND year = ?
-    ORDER BY created_at DESC LIMIT 1
+    ORDER BY created_at DESC, id DESC LIMIT 1
   `).get(year) || null;
 }
 

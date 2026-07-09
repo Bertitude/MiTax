@@ -821,7 +821,7 @@ function openCreateForm(item) {
                                                             : item.parsed.accountType === 'investment' ? 'brokerage' : '';
   document.getElementById('new-account-currency').value     = item.parsed.currency || 'JMD';
   document.getElementById('new-account-balance').value      = '0';
-  document.getElementById('new-account-balance-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('new-account-balance-date').value = getAppNow();
   document.getElementById('new-account-closed-on').value    = '';
   document.getElementById('new-account-exclude-tx').checked = false;
 
@@ -2368,7 +2368,7 @@ function renderTaxReport(report) {
           <div class="grid-3">
             <div class="form-group">
               <label style="font-size:12px;">Filed Date</label>
-              <input type="date" id="filing-date" value="${new Date().toISOString().slice(0,10)}" style="font-size:12px;" />
+              <input type="date" id="filing-date" value="${getAppNow()}" style="font-size:12px;" />
             </div>
             <div class="form-group">
               <label style="font-size:12px;">Amount Paid (JMD)</label>
@@ -2669,7 +2669,7 @@ function fmtAmount(v) {
 }
 function escHtml(s)  { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s)  { return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-function today()     { return new Date().toISOString().slice(0,10); }
+function today()     { return getAppNow(); }   // timezone-aware (not UTC)
 
 /**
  * Formats a SQLite-stored UTC timestamp (e.g. "2024-01-15 14:30:00" or
