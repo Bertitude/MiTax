@@ -44,9 +44,32 @@ function getDB() {
     const Database = require('better-sqlite3');
     const dbPath   = path.join(app.getPath('userData'), 'lunchmoney-tracker.db');
     _db = new Database(dbPath);
+    // Zero out freed pages so a migrated-away plaintext key doesn't linger in
+    // unallocated space on disk.
+    try { _db.pragma('secure_delete = ON'); } catch (_) { /* older sqlite */ }
     initSchema(_db);
+    migrateAllToEncrypted(_db);
   }
   return _db;
+}
+
+// Re-encrypt every legacy plaintext key once encryption is available — not just
+// the active account. Best-effort; never throws.
+function migrateAllToEncrypted(db) {
+  if (!encryptionAvailable()) return;
+  try {
+    const rows = db.prepare('SELECT id, api_key FROM lm_accounts').all();
+    const upd  = db.prepare('UPDATE lm_accounts SET api_key = ? WHERE id = ?');
+    for (const r of rows) {
+      if (!isEncrypted(r.api_key)) {
+        const enc = encryptKey(r.api_key);
+        if (isEncrypted(enc)) upd.run(enc, r.id);
+      }
+    }
+    // Reclaim/zero the pages that held the old plaintext (secure_delete only
+    // covers future deletes; VACUUM rewrites the whole file once).
+    try { db.exec('VACUUM'); } catch (_) { /* best effort */ }
+  } catch (_) { /* never fail startup on migration */ }
 }
 
 function initSchema(db) {
@@ -79,11 +102,11 @@ function getActiveAccount() {
     .get() || null;
   if (!row) return null;
 
-  const wasEncrypted = isEncrypted(row.api_key);
-  row.api_key = decryptKey(row.api_key);
+  const rawStored = row.api_key;
+  row.api_key = decryptKey(rawStored);
 
   // Lazy migration: re-store a legacy plaintext key encrypted (best-effort).
-  if (!wasEncrypted && encryptionAvailable()) {
+  if (!isEncrypted(rawStored) && encryptionAvailable()) {
     try {
       const enc = encryptKey(row.api_key);
       if (isEncrypted(enc)) {
@@ -92,7 +115,11 @@ function getActiveAccount() {
     } catch (_) { /* never fail a read */ }
   }
 
-  row.keyStorageInsecure = !encryptionAvailable();
+  // Report insecurity from what is ACTUALLY stored now (re-read after any
+  // migration), not merely from encryptionAvailable() — a transient encrypt
+  // failure could leave plaintext on disk while encryption reads as available.
+  const after = getDB().prepare('SELECT api_key FROM lm_accounts WHERE id = ?').get(row.id);
+  row.keyStorageInsecure = !isEncrypted(after ? after.api_key : rawStored);
   return row;
 }
 

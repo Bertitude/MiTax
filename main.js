@@ -604,7 +604,7 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
   if (apiKey) {
     try {
       const { getAssets, getTransactions }   = require('./src/lunchmoney');
-      const { TAX_PARAMS, estimateAnnualTax } = require('./src/tax/s04');
+      const { getTaxParams, estimateAnnualTax } = require('./src/tax/s04');
 
       result.assets = await getAssets(apiKey);
 
@@ -621,8 +621,10 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
         return amount > 0 ? sum + amount : sum;
       }, 0);
 
-      // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates
-      const params        = TAX_PARAMS[year] || TAX_PARAMS[2025];
+      // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates.
+      // getTaxParams falls back to the nearest-earlier defined year (not a hard-
+      // coded 2025), matching the S04/S04A path.
+      const { params }    = getTaxParams(year);
       const monthsElapsed = now.getMonth() + now.getDate() / 30.5; // approximate
       const annualEst     = monthsElapsed > 0
         ? (result.ytdIncome / monthsElapsed) * 12
