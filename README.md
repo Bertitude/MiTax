@@ -16,6 +16,24 @@ Download the latest installer from the **[Releases](../../releases)** page:
 
 The app **checks for updates automatically** at startup and shows a banner when a new version is available. You can also trigger a manual check from the topbar at any time.
 
+### First-launch security prompts (unsigned builds)
+
+Current releases are **not code-signed**, so the OS shows a one-time warning the first time you run the app. This is expected — bypass it once and it won't ask again:
+
+- **Windows** — Microsoft Defender SmartScreen shows *"Windows protected your PC."* Click **More info → Run anyway**.
+- **macOS** — Gatekeeper says the app *"cannot be opened because the developer cannot be verified."* **Right-click (or Control-click) the app → Open → Open**. (Double-clicking won't offer the bypass.)
+- **Linux** — no prompt; just `chmod +x` the AppImage and run.
+
+### Auto-update support by platform
+
+| Platform | Auto-update | Notes |
+|---|---|---|
+| Windows | ✅ Works | Update integrity is verified by the SHA-512 checksum in `latest.yml` over HTTPS. |
+| Linux (AppImage) | ✅ Works | Same checksum verification. |
+| macOS | ❌ **Not functional on unsigned builds** | Apple's updater (Squirrel.Mac) requires a valid signature, so on macOS you must **download each new release manually** from the Releases page. |
+
+Signing (which removes the prompts above and enables macOS auto-update) requires paid certificates — an **Apple Developer Program** membership (~$99/yr) for macOS and a Windows code-signing certificate. The release workflow is already wired to sign automatically once those certificates are added as repo secrets (see `.github/workflows/release.yml`); until then, builds ship unsigned.
+
 ---
 
 ## Publishing an Update

@@ -104,6 +104,11 @@ All notable changes to MiTax are documented here.
   an operation fails (try/finally around the busy states).
 - Refreshed README (installer names, Node version, data-storage paths),
   `build.bat` branding, and the copyright year.
+- **Release workflow is signing-ready.** Code-signing variables are now
+  sourced from optional, per-OS repo secrets, so signing becomes a drop-in
+  change once certificates are available (no unsigned-build behaviour change in
+  the meantime). README documents the first-launch SmartScreen/Gatekeeper
+  bypass and that macOS auto-update needs a signed build.
 
 ### Added
 - **Tax-parameter staleness warning.** Thresholds change every April 1; the app

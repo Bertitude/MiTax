@@ -101,7 +101,7 @@ For a tax app this is worse than a crash: wrong-sign data uploads silently and f
 ### N7. Auto-update code-signature verification still disabled; builds still unsigned *(carried: prior #6)*
 `src/updater.js:23` (`verifyUpdateCodeSignature = () => null`) + `release.yml:42`. With `autoInstallOnAppQuit:true` and silent NSIS install, anyone who can publish a release to the configured repo ships arbitrary code; the SHA512 in `latest.yml` comes from the same release the attacker controls. macOS auto-update remains silently broken (Squirrel requires a valid signature).
 
-**Fix:** unchanged from the prior audit — certs + notarization in `release.yml`, delete the override.
+**Status (2026-07-08):** the underlying gap requires **paid certificates** (Apple Developer Program ~$99/yr for macOS; a Windows code-signing cert) and can't be closed in code alone. Groundwork done: `release.yml` now sources all signing variables from optional, per-OS repo secrets so signing is a **drop-in flip** (add secrets + delete the `updater.js` override — which is required *only* while unsigned) with no further code changes; the README documents the one-time SmartScreen/Gatekeeper bypass and that macOS auto-update is non-functional until signed. **Remaining:** obtain the certs, add the secrets, remove the override.
 
 ---
 
