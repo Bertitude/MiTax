@@ -6,6 +6,20 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Documentation
+- **Authoritative sign convention (correcting the 1.2.17 entry, which is
+  ambiguous).** Two conventions exist and must not be confused:
+  - *Parser-internal* (before `applySignConvention`): **positive = debit /
+    money out**, negative = credit / money in. This is what the 1.2.17 entry's
+    "positive = expense/debit" describes.
+  - *LunchMoney upload payload and everything downstream* (tax, UI): uploads use
+    `debit_as_negative: true`, so **negative = expense/debit, positive =
+    income/credit**. `applySignConvention` flips the internal sign exactly once
+    at the parser boundary to get here.
+- Versions **1.2.18–1.2.25** were released without individual changelog entries;
+  see the git history for those commits. This gap is acknowledged rather than
+  reconstructed from memory to avoid inaccurate notes.
+
 ### Fixed
 - **Statement parsers no longer invert or fabricate transaction signs.** The
   Wise, Stripe and PayPal parsers were treating money-in as expenses (and vice
@@ -33,6 +47,20 @@ All notable changes to MiTax are documented here.
   store and deleted. A stored key that can't be decrypted (e.g. after an OS
   keychain reset) now cleanly reports "not connected" instead of being used as
   a broken key.
+- **IPC surface hardened.** Every IPC handler now rejects calls whose sender
+  isn't the app's own top-level window; reconcile transaction IDs are validated
+  to integers and URL-encoded before hitting the API; the statement-file
+  allow-list resolves symlinks (canonical paths) and rejects non-regular files;
+  the S04 print window is given a strict CSP so a crafted report can't fetch
+  remote resources during PDF export.
+- **Fewer ways to leak/duplicate data over the API.** 5xx responses are retried
+  only for idempotent GETs (a POST the server may have committed is no longer
+  blindly re-sent); `GET /transactions` pins `debit_as_negative=true` so
+  reconcile never rides on the account default; requests time out after 30s;
+  all remaining plaintext keys are migrated to encrypted at startup with
+  `secure_delete` + `VACUUM` scrubbing old pages.
+- **Statement-derived text is HTML-escaped** in the two remaining innerHTML
+  sinks (import queue + account-mapping) and the S04 report notes.
 
 ### Added
 - **S04A falls back to the prior-year base when current-year income data is
@@ -62,6 +90,20 @@ All notable changes to MiTax are documented here.
   $1,700,088 → **$1,650,090**; 2025: $1,799,376 → **$1,774,470**. Above-threshold
   filers' computed tax for those years increases by ~$12,499.50 (2024) and
   ~$6,226.50 (2025). Verified against TAJ/JIS guidance 2026-07-08.
+- **Reconcile no longer masks a flipped transaction** when a same-day,
+  equal-amount, same-sign transaction exists — an exact payee match now
+  outranks sign, and the apply step lists exactly which flips/deletes failed.
+- **CSV import edge cases.** A `0.00` in the debit column no longer shadows a
+  populated credit column, and a newline inside a quoted field no longer splits
+  (and drops) the record.
+- **Dashboard quarterly estimate** uses the nearest-earlier defined tax year
+  instead of hard-coding 2025 params for unknown years.
+- **PDF documents are released after parsing** (no more per-import memory growth
+  in the long-running process); password-protected PDFs show a clear message.
+- Buttons no longer get stuck on "Uploading…/Saving…/Updating…/Applying…" when
+  an operation fails (try/finally around the busy states).
+- Refreshed README (installer names, Node version, data-storage paths),
+  `build.bat` branding, and the copyright year.
 
 ### Added
 - **Tax-parameter staleness warning.** Thresholds change every April 1; the app

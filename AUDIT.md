@@ -107,73 +107,76 @@ For a tax app this is worse than a crash: wrong-sign data uploads silently and f
 
 ## Medium
 
-### N8. No `senderFrame` validation on privileged IPC handlers
+### N8. No `senderFrame` validation on privileged IPC handlers — **RESOLVED 2026-07-08**
 `main.js` — zero occurrences of `senderFrame` (verified). Prior finding #5 recommended it; sandbox+nav-guards landed, the sender check didn't. Any code execution in the renderer (or a sub-frame) can directly invoke `apply-reconciliation` (irreversible deletes), `export-s04-pdf`, `open-external`. **Fix:** shared guard asserting `event.senderFrame.url` is the local `index.html` top frame on mutating handlers.
 
-### N9. `apply-reconciliation` accepts unvalidated IDs that are string-interpolated into API URL paths
+### N9. `apply-reconciliation` accepts unvalidated IDs that are string-interpolated into API URL paths — **RESOLVED 2026-07-08**
 `main.js:346-371` does no shape check on `flipIds`/`deleteIds`; `lunchmoney.js:359,367,421` builds `` `/transactions/${txId}` ``. A compromised renderer can send `deleteIds:["group/123"]` → `DELETE /v1/transactions/group/123`, or steer requests via crafted fragments. **Fix:** `filter(Number.isInteger)`, cap lengths, `encodeURIComponent` in `lunchmoney.js`.
 
-### N10. Reconcile pairing prefers same-sign-any over payee-exact opposite-sign, masking flips in equal-magnitude ± pairs
+### N10. Reconcile pairing prefers same-sign-any over payee-exact opposite-sign, masking flips in equal-magnitude ± pairs — **RESOLVED 2026-07-08**
 `reconcile.js:73-76`. Verified: statement `SALARY +50000` / `RENT −50000` same day, both LM rows sign-flipped → **0 mismatches** (each flipped row pairs cross-payee with the other's statement tx). This is exactly the flip-bug class reconcile exists to catch. **Fix:** candidate order `same-sign+payee` → `opposite-sign+payee (flag)` → `same-sign-any` → `opposite-any`.
 
-### N11. Non-idempotent POST `/transactions` is blindly retried on 5xx
+### N11. Non-idempotent POST `/transactions` is blindly retried on 5xx — **RESOLVED 2026-07-08**
 `lunchmoney.js:70-75` retries any 429/5xx regardless of method. A commit-then-500 (or timeout-after-write) re-inserts the whole batch → duplicate transactions whenever `skipDuplicates` is off. **Fix:** restrict blind retry to GET; for POST retry only on network-error-before-response/429.
 
-### N12. CSV edge bugs: `0.00` debit shadows a real credit; quoted embedded newlines drop rows
+### N12. CSV edge bugs: `0.00` debit shadows a real credit; quoted embedded newlines drop rows — **RESOLVED 2026-07-08**
 `parsers/index.js:211` tests string truthiness, so `…,0.00,500.00` (debit,credit) parses as **amount 0** instead of +500 (verified) and uploads. `index.js:136-140` splits records on raw `\n` before quote-aware parsing, so a quoted multi-line field silently loses the transaction (verified; no warning in multi-row files), and headers use naive `split(',')`. **Fix:** prefer the nonzero parsed value; scan records with quote state; count drops into `warnings`.
 
-### N13. pdfjs documents are never destroyed; PDFs parsed twice; no password handling
+### N13. pdfjs documents are never destroyed; PDFs parsed twice; no password handling — **RESOLVED 2026-07-08** (destroy + password; double-read deferred)
 `src/pdf/extract.js:33,52-77` — no `doc.destroy()`/`cleanup()` and no try/finally, so every parsed statement permanently retains a `PDFDocumentProxy` in the long-lived main process; coordinate parsers additionally load each PDF twice (`extractText` + `extractPageItems`). Password-protected statements (common for Caribbean banks) reject with a raw `PasswordException` and no user-facing message. **Fix:** `finally { await doc.destroy() }`; single-pass extraction; catch `PasswordException` → targeted error.
 
-### N14. Dashboard quarterly estimate bypasses `getTaxParams`
+### N14. Dashboard quarterly estimate bypasses `getTaxParams` — **RESOLVED 2026-07-08**
 `main.js:535` — `TAX_PARAMS[year] || TAX_PARAMS[2025]`: any year without an entry (2027+) silently uses **2025** params instead of nearest-earlier, overstating annual tax by ~J$19.3k above threshold, with no fallback warning. **Fix:** `getTaxParams(year)`.
 
 ### N15. TAX_PARAMS threshold convention was internally inconsistent across years — **RESOLVED 2026-07-08**
 `s04.js:35,48` — the 2026 entry used TAJ's weighted full-year-effective threshold (1,876,614), but 2024/2025 used raw post-April-1 values despite those increases also being effective April 1. Verified against TAJ's published guidance ([JIS technical advisory](https://jis.gov.jm/taj-develops-technical-advisory-for-revised-income-tax-threshold-and-pension-exemptions/), [Dawgen Global 2024 payroll changes](https://www.dawgen.global/understanding-the-new-changes-to-payroll-taxes-in-jamaica-a-closer-look-at-the-increased-income-tax-threshold-and-exemptions/), [JIS April 2026 increase](https://jis.gov.jm/increase-in-income-tax-threshold-now-in-effect/)): the pro-rated convention is TAJ's official one, so 2024/2025 were understating tax by ~J$12.5k/~J$6.2k for above-threshold filers. **Fixed:** 2024 → 1,650,090 and 2025 → 1,774,470 (TAJ's published figures), pinned by tests; a params-staleness banner now warns when `TAX_PARAMS` haven't been re-verified since the most recent April 1 (`taxParamsStatus` in `s04.js`, surfaced via `tax-params:status`).
 
-### N16. Two unescaped `innerHTML` sinks interpolate statement-derived strings
+### N16. Two unescaped `innerHTML` sinks interpolate statement-derived strings — **RESOLVED 2026-07-08**
 `renderer/app.js:493-495` (`item.parsed.institution/accountName/period` and `item.path` — accountName is extracted verbatim from PDF text, i.e. attacker-influenced via a crafted statement) and `:642` (period strings); `:2350-2356` renders S04 `report.notes` unescaped (app-generated today, an injection point tomorrow). CSP (`script-src 'self'`) blocks script execution, so impact is HTML/UI spoofing — but this is the missed-escape class finding #15 warned about. Of ~70 sinks sampled, all others escape correctly. **Fix:** wrap in `escHtml`.
 
-### N17. Busy-state and partial-failure reporting regressions
+### N17. Busy-state and partial-failure reporting regressions — **RESOLVED 2026-07-08**
 - `renderer/app.js:3097-3115` (reconcile apply): the `await` has no try/finally — an IPC rejection leaves the button stuck on "Applying…" with the user unable to tell whether deletions executed. `uploadValidated` (`:1109-1234`), `saveS04Filing`, `applyPayeeUpdates` similarly lack try/finally (CHANGELOG 1.3.0's "no more stuck spinners" overstates).
 - `main.js:352-365` flattens flip failures to bare strings (tx id dropped) and discards `skipped` entirely; on success-with-errors the renderer closes the modal and shows only an error **count** — the user can never learn which irreversible deletes failed. **Fix:** structured `{failedFlips, skipped, failedDeletes}`; keep the modal open and list failing rows.
 
 ### N18. CHANGELOG actively misdocuments the live sign convention; 1.2.18–1.2.25 still missing *(carried: prior #19)*
 `CHANGELOG.md:68` (1.2.17 entry) documents "**positive = expense/debit**" — the exact opposite of the shipped convention (`lunchmoney.js:295`, `debit_as_negative: true`) — with no later entry recording the reversal, and eight versions remain undocumented even though code comments reference them ("pre-v1.2.18 sign-flip bug"). For a codebase whose recurring bug class is sign confusion, the changelog is part of the attack surface. **Fix:** add a corrective note + backfill entries.
 
-### N19. Reconcile's sign comparison rides on LunchMoney's *default* GET sign convention
+### N19. Reconcile's sign comparison rides on LunchMoney's *default* GET sign convention — **RESOLVED 2026-07-08** (pinned; DELETE endpoint still to confirm)
 `lunchmoney.js:176-201` never pins `debit_as_negative` on GET while uploads pin it on POST (`:295`). If LM's GET default differs (or changes), every expense false-flags as a mismatch and Apply corrupts correct data. Works today by inheritance; should be pinned explicitly (`params.append('debit_as_negative','true')`). Also confirm `DELETE /v1/transactions/:id` is a supported public endpoint — if not, every phantom deletion fails at runtime.
 
 ---
 
 ## Low
 
-### N20. Path allow-list is not symlink/swap-resistant
+### N20. Path allow-list is not symlink/swap-resistant — **RESOLVED 2026-07-08**
 `main.js:120-134` — `register-statement-file` validates with `statSync` (follows symlinks), never canonicalizes, and the Set is never pruned; enforcement re-checks string membership only (TOCTOU window). Low exploitability (renderer can't create symlinks). **Fix:** `realpathSync` at registration, re-`lstat` at parse.
 
-### N21. Print window loads report HTML with no CSP — remote sub-resources fetch during export
+### N21. Print window loads report HTML with no CSP — remote sub-resources fetch during export — **RESOLVED 2026-07-08**
 `main.js:792-837` — `javascript:false` blocks scripts, but `<img src="http://…">` in report HTML beacons out during `printToPDF`. **Fix:** inject a `default-src 'none'` meta CSP into the temp HTML.
 
 ### N22. `style-src 'unsafe-inline'` remains in the CSP *(carried: prior #15 residue)*
 `renderer/index.html:6` — residual CSS-exfiltration channel if an injection sink is hit (see N16). Meta-only delivery is a platform constraint for `loadFile`; acceptable.
 
-### N23. Reconcile scope/UX gaps
-One-directional: statement transactions missing from LM and duplicate LM rows are silently dropped (`reconcile.js:89`), then the UI declares "All transactions match" — false reassurance for exactly the missed-upload/double-upload cases. LM fetch spans the whole selected year vs a ~1-month statement, so every balance-payee row in the year reappears as a suspected phantom on each run, and a year-mismatch yields "all match" instead of a no-overlap warning (`main.js:316-339`). `balanceSentinels` are only emitted by the Scotiabank coordinate path (`scotiabank.js:122,161`) — "confirmed phantom" structurally doesn't exist for other institutions or the Scotia regex fallback. The final confirm dialog merges confirmed+suspected into one "delete N phantoms" count (`app.js:3088-3095`), and multi-selected files silently reconcile only the first (`app.js:2938`).
+### N23. Reconcile scope/UX gaps — **PARTIALLY RESOLVED 2026-07-08**
+*(The matching-order masking bug is fixed under N10; the confirm dialog now lists exactly which flips/deletes failed under N17. The remaining bidirectional-reporting and period-scoping items below are deferred.)* One-directional: statement transactions missing from LM and duplicate LM rows are silently dropped (`reconcile.js:89`), then the UI declares "All transactions match" — false reassurance for exactly the missed-upload/double-upload cases. LM fetch spans the whole selected year vs a ~1-month statement, so every balance-payee row in the year reappears as a suspected phantom on each run, and a year-mismatch yields "all match" instead of a no-overlap warning (`main.js:316-339`). `balanceSentinels` are only emitted by the Scotiabank coordinate path (`scotiabank.js:122,161`) — "confirmed phantom" structurally doesn't exist for other institutions or the Scotia regex fallback. The final confirm dialog merges confirmed+suspected into one "delete N phantoms" count (`app.js:3088-3095`), and multi-selected files silently reconcile only the first (`app.js:2938`).
 
 ### N24. Tax/date nits
 ~~`generateS04A` still computes in float `r2` — 4× quarterly can differ from the cents-based annual by cents~~ **(resolved 2026-07-08: `splitInstalments` splits the annual in integer cents, Q4 carrying the remainder, so the four instalments sum exactly);** `methodUsed` label ignores `manualData.useActualExpenses` (`:313`); `buildMonthlyBreakdown` ignores `userCategoryMappings` so monthly income can exceed `grossIncome`, and unclassified credits are silently excluded from gross income rather than defaulting to `other` (`:436-459`); renderer still derives "today" from UTC (`app.js:814,2367,2669` — after 7 PM in Jamaica the filed-date defaults to tomorrow); `yearMonthOf` accepts month `00`–`99` (`date-utils.js:16`); `getMostRecentS04` ties on same-second saves (`filings.js:121` — add `, id DESC`).
 
-### N25. LunchMoney API-layer nits
-No request timeout (node-fetch v2 default: none) — a stalled connection hangs uploads forever (`lunchmoney.js:56`); 429 handling ignores `Retry-After`; `getPayees`/`getAssetMonthCoverage` swallow all errors into empty results, making auth failure indistinguishable from no-data (`:154-172,210-219`).
+### N25. LunchMoney API-layer nits — **PARTIALLY RESOLVED 2026-07-08**
+~~No request timeout~~ **(resolved: 30s AbortController timeout, retried like a transient network error).** Remaining: 429 handling ignores `Retry-After`; `getPayees`/`getAssetMonthCoverage` swallow all errors into empty results, making auth failure indistinguishable from no-data (`:154-172,210-219`).
 
-### N26. Key-storage secondary gaps
-~~`decryptKey` returns the raw **ciphertext as if it were the key** on decrypt failure~~ **(resolved 2026-07-08: returns `null`, surfacing as "not connected");** `keyStorageInsecure` is still computed from `encryptionAvailable()` rather than what was actually stored, so a transient `encryptString` throw stores plaintext while reporting secure (`:27-31,92`); lazy migration re-encrypts only the *active* account and never scrubs old plaintext pages (no `secure_delete`/VACUUM) (`:82-90`); `api_key UNIQUE` is vestigial under non-deterministic ciphertext and the decrypt-and-scan dedupe fails open on decrypt failure (`:54,111-114`); the insecure-storage warning is a single 4-second toast, once per install (`app.js:193-196`).
+### N26. Key-storage secondary gaps — **MOSTLY RESOLVED 2026-07-08**
+Resolved: `decryptKey` returns `null` on failure (surfaces as "not connected"); `keyStorageInsecure` now derives from the actually-stored value (re-read after migration), not `encryptionAvailable()` alone; **all** plaintext rows are migrated at DB open (not just the active one) and `PRAGMA secure_delete` + a one-time `VACUUM` scrub the old pages. Remaining (deferred, low value): `api_key UNIQUE` is vestigial under non-deterministic ciphertext (app-level decrypt-and-scan dedupe is the real guard; a table rebuild to drop the constraint isn't worth it), and the insecure-storage warning is still a single toast rather than a persistent Settings banner (`app.js:193-196`).
 
-### N27. Parser nits
-Detection order routes a statement mentioning "Scotiabank" in a payee to the Scotiabank parser (`parsers/index.js:31-35`); generic's two-amount fallback and header-mapped path give the same unsigned row opposite signs (`generic.js:173,186-189`); JN drops wrapped description continuation lines and its em-dash payee join leaves double spaces (`jn.js:126-127,207-210`); a Scotia date-row whose amount never arrives is discarded without warning (`scotiabank.js:151,181-183`); `reflowItems` deviates from pdf-parse for `y=0` baselines despite the "replicates exactly" comment (`extract.js:45`).
+### N27. Parser nits — **PARTIALLY RESOLVED 2026-07-08**
+Resolved: generic's two-amount fallback and header-mapped path now share one balance-delta/keyword sign path (no more opposite signs for the same row, N2 work); the `reflowItems` "replicates exactly" comment is corrected to note the `y=0` deviation. Remaining (deferred, low): detection order can route a statement mentioning "Scotiabank" in a payee to the Scotiabank parser (`parsers/index.js:31-35`); JN drops wrapped description continuation lines and its em-dash payee join leaves double spaces (`jn.js:126-127,207-210`); a Scotia date-row whose amount never arrives is discarded without warning (`scotiabank.js:151,181-183`).
 
-### N28. Docs/hygiene
-README still names `LunchMoney-Importer-Setup-*.exe` artifacts (productName is `MiTax`), says `cd LunchMoneyApp`, references the removed `GITHUB_USERNAME_HERE` step, claims Node "v18+" (CI pins 20; better-sqlite3 12 needs ≥20), and points Data Storage at `lunchmoney-importer/` paths; `build.bat:3,8` still says "LunchMoney Importer"; `package.json:29` copyright says © 2025; no `v*` git tags exist despite the tag-driven release workflow; js-yaml moderate advisory (via electron-updater at runtime — it parses `latest.yml`); node-fetch remains removable in favor of global fetch.
+### N28. Docs/hygiene — **MOSTLY RESOLVED 2026-07-08**
+Resolved: README installer names (`MiTax-*`), `cd MiTax`, the `GITHUB_USERNAME_HERE` step, Node "v20+", and the Data Storage paths (`MiTax`/`mitax`); `build.bat` branding; `package.json` copyright © 2026. Remaining (deferred): no `v*` git tags exist despite the tag-driven release workflow (a release-process action, not a code change); the js-yaml moderate advisory is transitive via `electron-updater`/`electron-builder` (parses `latest.yml`) — track upstream; `node-fetch` remains removable in favour of global `fetch`.
+
+### N22. `style-src 'unsafe-inline'` remains in the CSP — **DEFERRED (rationale) 2026-07-08**
+The renderer relies on inline `style="…"` attributes throughout its markup and generated `innerHTML`; CSP `style-src` governs those attributes, so removing `'unsafe-inline'` would require migrating every inline style to CSS classes — a large refactor disproportionate to a Low finding whose residual risk is CSS-injection exfiltration only (script injection is already blocked by `script-src 'self'`). Deferred deliberately.
 
 ---
 

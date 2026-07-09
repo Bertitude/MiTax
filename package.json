@@ -26,7 +26,7 @@
   "build": {
     "appId": "net.fuzionworks.mitax",
     "productName": "MiTax",
-    "copyright": "© 2025 Kaiel Eytle / FuzionWorks",
+    "copyright": "© 2026 Kaiel Eytle / FuzionWorks",
     "asar": true,
     "asarUnpack": [
       "node_modules/better-sqlite3/**"

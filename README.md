@@ -10,9 +10,9 @@ Download the latest installer from the **[Releases](../../releases)** page:
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows | `LunchMoney-Importer-Setup-x.x.x.exe` | Run installer, launch from Start Menu |
-| macOS | `LunchMoney-Importer-x.x.x.dmg` | Drag to Applications |
-| Linux | `LunchMoney-Importer-x.x.x.AppImage` | `chmod +x` then run |
+| Windows | `MiTax-Setup-x.x.x.exe` | Run installer, launch from Start Menu |
+| macOS | `MiTax-x.x.x.dmg` | Drag to Applications |
+| Linux | `MiTax-x.x.x.AppImage` | `chmod +x` then run |
 
 The app **checks for updates automatically** at startup and shows a banner when a new version is available. You can also trigger a manual check from the topbar at any time.
 
@@ -46,9 +46,9 @@ Within 5 seconds of launching the app, existing users see an **update available*
 ## One-time GitHub setup (first release only)
 
 1. Push the code to a **GitHub repository**
-2. In `package.json`, replace `GITHUB_USERNAME_HERE` with your GitHub username
+2. Confirm the `build.publish` owner/repo in `package.json` points at your release repo (currently `Bertitude/MiTax`)
 3. Go to your repo → **Settings → Actions → General** → enable "Read and write permissions" for `GITHUB_TOKEN`
-4. Tag `v1.1.0` and push — the first build will run
+4. Tag a release (e.g. `v1.3.0`) and push — the build workflow will run
 
 No extra secrets or code-signing certificates are required for basic builds. Code signing (to remove Windows "Unknown Publisher" warnings) can be added later via `WIN_CSC_LINK` secrets.
 
@@ -69,11 +69,11 @@ No extra secrets or code-signing certificates are required for basic builds. Cod
 ## Quick Start
 
 ### 1. Install Node.js
-Download from https://nodejs.org (v18 or later recommended)
+Download from https://nodejs.org (v20 or later — required by better-sqlite3 12 / Electron 41)
 
 ### 2. Install dependencies
 ```bash
-cd LunchMoneyApp
+cd MiTax
 npm install
 ```
 
@@ -165,6 +165,6 @@ MiTax/
 ## Data Storage
 
 The app stores its SQLite database in your OS user data folder:
-- **macOS**: `~/Library/Application Support/lunchmoney-importer/`
-- **Windows**: `%APPDATA%\lunchmoney-importer\`
-- **Linux**: `~/.config/lunchmoney-importer/`
+- **macOS**: `~/Library/Application Support/MiTax/` (dev: `.../mitax/`)
+- **Windows**: `%APPDATA%\MiTax\` (dev: `%APPDATA%\mitax\`)
+- **Linux**: `~/.config/MiTax/` (dev: `~/.config/mitax/`)

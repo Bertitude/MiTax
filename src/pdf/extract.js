@@ -6,9 +6,11 @@
  * this app parses user-supplied bank statements. pdfjs-dist is the same
  * underlying library pdf-parse wrapped, so extraction semantics are preserved:
  *
- *   - extractText replicates pdf-parse's reflow exactly (a newline is inserted
+ *   - extractText closely reproduces pdf-parse's reflow (a newline is inserted
  *     when a text item's baseline Y — transform[5] — differs from the previous
  *     item's), so every text-based parser's line-oriented regexes still match.
+ *     (Minor deviation: a leading item at baseline y=0 is treated as "no
+ *     previous Y" here, where pdf-parse concatenated — practically negligible.)
  *   - extractPageItems reproduces the old `pagerender` coordinate output
  *     ({ str, x: transform[4], y: transform[5] } per non-empty item, per page)
  *     used by the coordinate-aware Scotiabank and JN parsers.
