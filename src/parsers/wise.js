@@ -26,7 +26,9 @@ function parse(text, filePath) {
     const date = normalizeDate(dateStr);
     if (!date) continue;
 
-    const amount = parseFloat(amountStr.replace(/,/g, ''));
+    // Wise amounts are user-convention (positive = money in). Negate to the
+    // internal convention (positive = debit/money out) before the boundary flip.
+    const amount = -parseFloat(amountStr.replace(/,/g, ''));
     const payee = (description || 'Wise Transfer').trim();
 
     transactions.push({
@@ -60,15 +62,16 @@ function fallbackParse(lines, transactions, currency) {
 
     const rest = line.replace(dateRe, '').trim();
     const payee = rest.split(/\s{2,}/)[0] || 'Wise Transaction';
+    const amount = -amounts[0];   // user-convention → internal (positive = debit)
 
     transactions.push({
       date: normalizeDate(dateStr),
       payee: cleanPayee(payee),
-      amount: amounts[0],
+      amount,
       currency,
       notes: '',
-      category: categorize(payee, amounts[0]),
-      type: amounts[0] < 0 ? 'credit' : 'debit',
+      category: categorize(payee, amount),
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 }

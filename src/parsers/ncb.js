@@ -2,7 +2,7 @@
  * NCB Jamaica Statement Parser
  * Handles NCB personal/business chequing and savings account PDFs.
  */
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -56,7 +56,9 @@ function parse(text, filePath) {
 
   // Fallback: simpler date + amount pattern for short statements
   if (transactions.length === 0) {
-    fallbackParse(lines, transactions, currency);
+    const openingMatch = text.match(/(?:opening|previous|brought\s+forward|b\/f)\s+balance[:\s]*([\d,]+\.\d{2})/i);
+    const openingBalance = openingMatch ? parseFloat(openingMatch[1].replace(/,/g, '')) : null;
+    fallbackParse(lines, transactions, currency, openingBalance);
   }
 
   applySignConvention(transactions);
@@ -73,9 +75,10 @@ function parse(text, filePath) {
   };
 }
 
-function fallbackParse(lines, transactions, currency) {
+function fallbackParse(lines, transactions, currency, openingBalance = null) {
   const dateRe = /^(\d{2}[\/\-]\d{2}[\/\-]\d{4})/;
   const amountRe = /([\d,]+\.\d{2})/g;
+  let prevBalance = openingBalance;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -85,10 +88,20 @@ function fallbackParse(lines, transactions, currency) {
     const amounts = [...line.matchAll(amountRe)].map(m => parseFloat(m[1].replace(/,/g, '')));
     if (amounts.length === 0) continue;
 
-    const descriptionParts = line.replace(dateRe, '').trim().split(/\s{2,}/);
-    const payee = descriptionParts[0] || 'Transaction';
-    // Fallback heuristic: first amount is usually a debit (positive = expense)
-    const amount = amounts.length >= 2 ? (amounts[0] > 0 ? amounts[0] : -amounts[1]) : amounts[0];
+    // Description with the trailing amount/balance numbers stripped, so the
+    // payee doesn't absorb them when columns are single-spaced.
+    const desc  = line.replace(dateRe, '').replace(/[\d,]+\.\d{2}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    const payee = desc || 'Transaction';
+
+    // Rows are `… <amount> <running balance>`. The transaction amount is the
+    // first number; the last is the balance. Determine debit vs credit from the
+    // balance delta (a falling balance = money out = debit → internal positive).
+    // Fall back to a keyword guess only when there's no balance to delta against.
+    const txAmount = amounts[0];
+    const balance  = amounts.length >= 2 ? amounts[amounts.length - 1] : null;
+    let amount = signedByBalanceDelta(txAmount, prevBalance, balance);
+    if (amount == null) amount = looksLikeCredit(payee) ? -Math.abs(txAmount) : Math.abs(txAmount);
+    if (balance != null) prevBalance = balance;
 
     transactions.push({
       date: normalizeDate(dateStr),
@@ -98,8 +111,15 @@ function fallbackParse(lines, transactions, currency) {
       notes: '',
       category: categorize(payee, amount),
       type: amount < 0 ? 'credit' : 'debit',
+      balance,
     });
   }
+}
+
+// Payee keywords indicating money IN (credit) — signs the first row only when
+// there's no opening balance to delta against.
+function looksLikeCredit(payee) {
+  return /salary|payroll|wage|deposit|refund|credit|interest|dividend|received|transfer\s*in/i.test(payee || '');
 }
 
 function cleanPayee(str) {

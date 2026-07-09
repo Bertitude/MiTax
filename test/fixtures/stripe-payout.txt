@@ -1,0 +1,4 @@
+Stripe Payments Balance Statement
+acct_1A2b3C4d5E
+2024-01-05 Charge cus_x 100.00 -3.20 96.80
+2024-01-06 Payout to bank 0.00 0.00 -500.00

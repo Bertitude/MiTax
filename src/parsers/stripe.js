@@ -19,8 +19,9 @@ function parse(text, filePath) {
     const date = normalizeDate(dateStr);
     if (!date) continue;
 
-    // col3 is usually net, col1 is gross
-    const amount = col3 ? parseFloat(col3.replace(/,/g, '')) : parseFloat(col1.replace(/,/g, ''));
+    // col3 is usually net, col1 is gross. Stripe amounts are user-convention
+    // (positive = money in); negate to internal convention (positive = debit).
+    const amount = -(col3 ? parseFloat(col3.replace(/,/g, '')) : parseFloat(col1.replace(/,/g, '')));
     const payee = (description || 'Stripe').trim();
 
     transactions.push({
@@ -55,15 +56,16 @@ function fallbackParse(lines, transactions, currency) {
 
     const rest = line.replace(dateRe, '').trim();
     const payee = rest.split(/\s{2,}/)[0] || 'Stripe Transaction';
+    const amount = -amounts[amounts.length - 1];   // user-convention → internal
 
     transactions.push({
       date: normalizeDate(dateStr),
       payee: cleanPayee(payee),
-      amount: amounts[amounts.length - 1],
+      amount,
       currency,
       notes: '',
-      category: categorize(payee, amounts[amounts.length - 1]),
-      type: amounts[amounts.length - 1] < 0 ? 'credit' : 'debit',
+      category: categorize(payee, amount),
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 }

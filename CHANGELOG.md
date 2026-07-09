@@ -6,6 +6,23 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Statement parsers no longer invert or fabricate transaction signs.** The
+  Wise, Stripe and PayPal parsers were treating money-in as expenses (and vice
+  versa); NCB and the generic fallback mis-signed deposits when a statement row
+  had a single amount column. They now negate fintech user-convention amounts
+  correctly and infer bank debit/credit from the running-balance delta. The
+  generic parser also stops letting an empty debit cell or a DR/CR marker on the
+  running balance flip a row's sign.
+- **JMMB statements no longer fail to import.** The JMMB parser threw on every
+  file (undefined `accountNumber`) and, behind that, used the running balance as
+  the transaction amount — both fixed.
+- **PayPal dates parse month-first.** PayPal's MM/DD/YYYY dates were read as
+  DD/MM, landing transactions in the wrong month (or dropping them); e.g.
+  `7/4/2024` is now July 4, not April 7.
+- Added golden-file parser tests for JMMB, NCB, Wise, Stripe, PayPal and the
+  generic debit/credit-column and balance-marker cases.
+
 ### Security
 - **LunchMoney API key no longer leaves the main process.** The key was
   encrypted at rest but then decrypted, sent to the renderer, and mirrored in

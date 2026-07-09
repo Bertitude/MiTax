@@ -1,0 +1,5 @@
+National Commercial Bank Jamaica Limited
+Account Number: 001234567
+Opening Balance: 10,000.00
+05/01/2024 SALARY PAYMENT 500.00 10,500.00
+06/01/2024 ATM WITHDRAWAL 200.00 10,300.00

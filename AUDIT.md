@@ -65,7 +65,7 @@ The v1.3.0 safeStorage work encrypts keys in SQLite — and then the renderer im
 
 ## High
 
-### N2. Five untested parsers silently produce sign-inverted or fabricated amounts
+### N2. Five untested parsers silently produce sign-inverted or fabricated amounts — **RESOLVED 2026-07-08**
 All verified by executing the parser modules. `applySignConvention` (`parsers/utils.js`) flips every amount at the boundary on the assumption that parsers emit bank-convention (positive = debit) values — these parsers emit user-convention or broken values, so the flip corrupts them:
 
 - **Wise** (`wise.js:29,47,67`): amounts are already signed user-convention; pass-through + flip inverts everything. "Received money … 1,500.00" → **−1500 (expense)**.
@@ -76,17 +76,17 @@ All verified by executing the parser modules. `applySignConvention` (`parsers/ut
 
 For a tax app this is worse than a crash: wrong-sign data uploads silently and flows into S04 income figures. None of these paths have tests (prior finding #10's gap).
 
-**Fix:** normalize each parser to the documented internal convention before the boundary flip (or mark pass-through parsers to skip `applySignConvention`); make generic's ordinal mapping conditional on `amounts.length` matching the mapped columns; ignore a DR/CR suffix on the balance column. Add a golden fixture per institution — every bug above is a one-line test.
+**Fixed:** Wise/Stripe/PayPal now negate their user-convention amounts to the internal convention before the boundary flip; NCB and the generic parser infer debit vs credit from the **running-balance delta** (new `signedByBalanceDelta` in `parsers/utils.js`), with an opening-balance seed and a payee-keyword fallback for the first row. The generic parser now only trusts positional column mapping when the row's amount count matches the header's column count, and ignores a DR/CR marker on the balance (last) amount. Golden fixtures + tests added for JMMB, NCB, Wise, Stripe, PayPal, and the generic empty-cell/balance-CR cases. **Note:** only PayPal was validated against a real statement; the NCB/JMMB/Wise/Stripe/generic fixes are validated against synthetic fixtures encoding the documented conventions and should be spot-checked against a real statement when one is available.
 
-### N3. JMMB parser crashes on every statement; latent balance-as-amount bug behind it
-`jmmb.js:57` references `accountNumber`, which is never defined — every JMMB parse throws `ReferenceError` (verified), surfaced to users as a generic parse error. JMMB support is 100% broken, and has been shipping that way. Once fixed, `jmmb.js:36`'s two-amount heuristic (`val2 > val1 ? -val2 : val1`) takes the **running balance** as the transaction amount whenever balance > amount, i.e. almost always.
+### N3. JMMB parser crashes on every statement; latent balance-as-amount bug behind it — **RESOLVED 2026-07-08**
+`jmmb.js:57` references `accountNumber`, which is never defined — every JMMB parse threw `ReferenceError` (verified), surfaced to users as a generic parse error. The two-amount heuristic also took the **running balance** as the transaction amount whenever balance > amount, i.e. almost always.
 
-**Fix:** derive `accountNumber` from `accountMatch` (as `ncb.js:13-14` does); treat the last amount as balance, not candidate amount. A single fixture test would have caught both.
+**Fixed:** `accountNumber` is derived from `accountMatch` (last 4 digits); the transaction amount is always the first number, with the second treated as the running balance and used for balance-delta sign inference (opening-balance seed + keyword fallback). Fixture + test added.
 
-### N4. PayPal dates are MM/DD/YYYY but parsed as DD/MM — months and days swapped
-`paypal.js:19` routes dates through `normalizeDate`, whose DD/MM branch (`utils.js:17`) matches every slash date first — the MM/DD branch at `utils.js:21-22` is dead code. Verified: `7/4/2024` (July 4) → `2024-04-07`; days > 12 produce invalid dates that `validateResult` silently drops. Transactions land in the wrong month (corrupting quarterly S04A figures) or vanish. `unfcu.js:34` has a local `parseMDY` with a comment warning about this exact trap.
+### N4. PayPal dates are MM/DD/YYYY but parsed as DD/MM — months and days swapped — **RESOLVED 2026-07-08**
+`paypal.js:19` routed dates through `normalizeDate`, whose DD/MM branch (`utils.js:17`) matches every slash date first. Verified: `7/4/2024` (July 4) → `2024-04-07`.
 
-**Fix:** parse MDY locally in the PayPal parser; delete or parameterize the unreachable branch in `normalizeDate`.
+**Fixed:** added `parseMDY` to `parsers/utils.js` and the PayPal parser now uses it (month-first), so `7/4/2024` → `2024-07-04`. Pinned by a test that also documents the `normalizeDate` day-first behaviour. *(The `normalizeDate` DD/MM-first default is retained for the Caribbean bank parsers that depend on it.)* Note: PayPal often syncs to LunchMoney directly, so this parser may see little real-world use — but it is reachable via file upload and is now correct.
 
 ### N5. S04A due dates are malformed; "past due" detection can never fire and corrupt dates are persisted — **RESOLVED 2026-07-08**
 `s04.js:511-513`: `due` is `'Mar 15'`, so `` `${year}-${due.replace('Mar','03')…}-15` `` yields `"2026-03 15-15"` — an Invalid Date. Consequently `isPast` is always false, the renderer's overdue badge (`app.js:3614`) can never appear, and saving a quarter persists the malformed string into `tax_filings.due_date`, which filing history then renders as "Invalid Date". The S04A test asserts only `quarters.length === 4`.
@@ -192,7 +192,7 @@ README still names `LunchMoney-Importer-Setup-*.exe` artifacts (productName is `
 
 **Phase 1 — stop the bleeding (hours each):**
 1. ~~Delete the localStorage key mirror; resolve keys main-process-side (N1)~~ — done 2026-07-08.
-2. Fix the five parser sign inversions + JMMB crash + PayPal dates (N2–N4) — each is a one-line-to-small fix, and each needs one golden fixture so it can never silently regress. This is the same lesson as prior finding #10: **every High in this audit lives in untested code.**
+2. ~~Fix the five parser sign inversions + JMMB crash + PayPal dates (N2–N4)~~ — done 2026-07-08, with golden fixtures + tests for JMMB/NCB/Wise/Stripe/PayPal/generic (only PayPal validated against a real statement).
 3. ~~S04A due-date format and `monthsElapsed` (N5, N6)~~ — done 2026-07-08 (N5, N6, and the N24 instalment rounding resolved together).
 4. Validate/encode IDs in `apply-reconciliation` (N9); pin `debit_as_negative` on GET (N19).
 

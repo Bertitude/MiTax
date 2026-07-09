@@ -1,7 +1,7 @@
 /**
  * PayPal Statement Parser
  */
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
+const { normalizeDate, parseMDY, derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -16,21 +16,25 @@ function parse(text, filePath) {
 
   while ((match = txPattern.exec(text)) !== null) {
     const [, dateStr, name, type, grossStr, feeStr, netStr] = match;
-    const date = normalizeDate(dateStr);
+    // PayPal dates are MM/DD/YYYY — parse month-first (normalizeDate's DD/MM
+    // branch would swap month and day).
+    const date = parseMDY(dateStr);
     if (!date) continue;
 
     const gross = parseFloat(grossStr.replace(/,/g, ''));
-    const net = parseFloat(netStr.replace(/,/g, ''));
+    // Net is user-convention (positive = money in); negate to internal
+    // convention (positive = debit/money out) before the boundary flip.
+    const amount = -parseFloat(netStr.replace(/,/g, ''));
     const payee = (name || 'PayPal').trim();
 
     transactions.push({
       date,
       payee: cleanPayee(payee),
-      amount: net,
+      amount,
       currency,
       notes: `Type: ${type} | Gross: ${gross} | Fee: ${feeStr}`,
-      category: categorize(type, net),
-      type: net < 0 ? 'credit' : 'debit',
+      category: categorize(type, amount),
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 
@@ -55,15 +59,16 @@ function fallbackParse(lines, transactions, currency) {
 
     const rest = line.replace(dateRe, '').trim();
     const payee = rest.split(/\s{2,}/)[0] || 'PayPal';
+    const amount = -amounts[amounts.length - 1];   // user-convention → internal
 
     transactions.push({
-      date: normalizeDate(dateStr),
+      date: parseMDY(dateStr),
       payee: cleanPayee(payee),
-      amount: amounts[amounts.length - 1],
+      amount,
       currency,
       notes: '',
-      category: amounts[amounts.length - 1] < 0 ? 'Payment Received' : 'Payment Sent',
-      type: amounts[amounts.length - 1] < 0 ? 'credit' : 'debit',
+      category: amount < 0 ? 'Payment Received' : 'Payment Sent',
+      type: amount < 0 ? 'credit' : 'debit',
     });
   }
 }

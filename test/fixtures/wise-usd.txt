@@ -1,0 +1,4 @@
+Wise Payments Limited
+statement for customer@example.com
+05-01-2024 Received money from Acme Client 1,500.00 USD
+06-01-2024 Sent money to Supplier -300.00 USD
