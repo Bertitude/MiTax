@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.2] — 2026-07-21
 
 ### Added
 - **Import-time sign correction.** Re-importing a statement now detects rows
