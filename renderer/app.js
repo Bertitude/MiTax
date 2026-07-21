@@ -1210,15 +1210,19 @@ async function uploadValidated() {
     }
   }
 
-  // ── 2. Inserts, grouped by assetId ───────────────────────────────────────
-  const byAsset = {};
+  // ── 2. Inserts, grouped by source file ───────────────────────────────────
+  // One POST per file (each file maps to exactly one asset) so the returned
+  // LM ids belong to that file alone. Grouping by asset shared the whole
+  // group's ids across every file's history record, which made "Fix Signs"
+  // flip a full batch while claiming one statement's count.
+  const byFile = {};
   for (const row of insertRows) {
-    const key = row._assetId || '__none__';
-    if (!byAsset[key]) byAsset[key] = { assetId: row._assetId, assetName: row._assetName, rows: [] };
-    byAsset[key].rows.push(row);
+    const key = row._source || '__nofile__';
+    if (!byFile[key]) byFile[key] = { assetId: row._assetId, assetName: row._assetName, rows: [] };
+    byFile[key].rows.push(row);
   }
 
-  for (const group of Object.values(byAsset)) {
+  for (const group of Object.values(byFile)) {
     const txs = group.rows.map(r => ({
       date:       r.date,
       payee:      r.payee,
@@ -1242,7 +1246,7 @@ async function uploadValidated() {
       totalUp += uploaded;
 
       if (uploaded > 0) {
-        // NB: ids are per-group; a multi-file group shares the full id list.
+        // Groups are single-file, so these ids are exactly this file's.
         for (const f of sources) aggFor(f).insertedIds.push(...(result.data.ids || []));
       } else {
         const lmErrors = (result.data.errors || []).filter(Boolean).join('; ');
@@ -1583,6 +1587,11 @@ function showUploadDetail(u) {
   const eligible = isFlippedEligible(u);
   const alreadyFixed = !!u.signs_fixed_at;
 
+  // Records saved by pre-v1.3.2 versions stored the whole upload batch's LM
+  // ids on every file's record — surface the mismatch instead of silently
+  // claiming one statement's count while acting on the full batch.
+  const isBatchRecord = !!(lmIds && u.tx_count && lmIds.length > u.tx_count);
+
   body.innerHTML = `
     <div style="display:grid;grid-template-columns:130px 1fr;gap:8px 16px;font-size:13px;margin-bottom:16px;">
       <span style="color:var(--text-muted);">Status</span>
@@ -1610,6 +1619,7 @@ function showUploadDetail(u) {
         <span style="color:var(--text-muted);">LM IDs</span>
         <span style="font-size:11px;color:var(--text-muted);">
           ${lmIds.slice(0,12).join(', ')}${lmIds.length > 12 ? ` + ${lmIds.length - 12} more` : ''}
+          ${isBatchRecord ? `<br><span style="color:var(--warn);">⚠ ${lmIds.length} ids recorded vs ${u.tx_count} transactions parsed from this file — this record was saved by an older version that stored the ids for the whole upload batch (every statement uploaded together).</span>` : ''}
         </span>
       ` : ''}
     </div>
@@ -1620,6 +1630,7 @@ function showUploadDetail(u) {
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
           This upload was made before v1.2.22 (which changed the debit/credit convention). Amounts in LunchMoney are currently inverted.
           Clicking below will flip the sign on <strong>${(lmIds || []).length}</strong> transaction${(lmIds || []).length === 1 ? '' : 's'} in LunchMoney.
+          ${isBatchRecord ? `<br><span style="color:var(--warn);">This covers the <strong>entire upload batch</strong> (${(lmIds || []).length} transactions across all statements uploaded together), not just this file's ${u.tx_count}. The batch's other records will be marked fixed automatically so they can't re-flip the same transactions.</span>` : ''}
         </div>
         <button class="btn btn-primary btn-sm" id="fix-signs-btn" data-upload-id="${u.id}">🔧 Fix signs for this upload</button>
         <div id="fix-signs-progress" style="display:none;margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
@@ -1672,7 +1683,11 @@ async function runFixSigns(u) {
     return;
   }
 
-  const msg = `This will flip the sign on ${lmIds.length} transaction${lmIds.length === 1 ? '' : 's'} in LunchMoney for "${u.filename || u.account_name}".\n\nThis cannot be undone by this tool (you would need to run it again to revert).\n\nProceed?`;
+  const isBatch = !!(u.tx_count && lmIds.length > u.tx_count);
+  const scope = isBatch
+    ? `the ENTIRE upload batch that included "${u.filename || u.account_name}" (${lmIds.length} transactions across all statements uploaded together — this record predates per-file id tracking). The batch's other history records will be marked fixed automatically.`
+    : `"${u.filename || u.account_name}"`;
+  const msg = `This will flip the sign on ${lmIds.length} transaction${lmIds.length === 1 ? '' : 's'} in LunchMoney for ${scope}\n\nThis cannot be undone by this tool (you would need to run it again to revert).\n\nProceed?`;
   if (!window.confirm(msg)) return;
 
   const btn       = document.getElementById('fix-signs-btn');

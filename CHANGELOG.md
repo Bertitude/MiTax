@@ -26,6 +26,17 @@ All notable changes to MiTax are documented here.
   connected, fetch failed, or LunchMoney returned zero transactions for the
   year — instead of silently rendering an all-zero return.
 
+### Fixed
+- **Upload history no longer stores the whole batch's LunchMoney ids on every
+  file's record.** Uploads are now POSTed per source file (previously per
+  asset), so each history record holds exactly its own statement's transaction
+  ids. Records saved by older versions (e.g. "31 transactions" but 549 ids)
+  are surfaced honestly: the detail modal flags the mismatch, "Fix Signs"
+  states it will act on the entire batch, and after a batch fix every sibling
+  record covered by the flip is automatically marked signs-fixed — previously
+  clicking a sibling's "Fix Signs" would flip the same transactions straight
+  back.
+
 ---
 
 ## [1.3.1] — 2026-07-09

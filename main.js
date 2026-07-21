@@ -340,8 +340,8 @@ handle('get-oldest-upload-year', async () => {
 // on success so it can't be run twice (protects against re-flipping).
 handle('fix-flipped-signs', async (event, { uploadId }) => {
   try {
-    const { getUpload, markSignsFixed } = require('./src/tracker');
-    const { flipTransactionSigns }      = require('./src/lunchmoney');
+    const { getUpload, markSignsFixed, markSignsFixedForLmIds } = require('./src/tracker');
+    const { flipTransactionSigns } = require('./src/lunchmoney');
 
     const upload = getUpload(uploadId);
     if (!upload)               return { success: false, error: 'Upload not found' };
@@ -362,6 +362,18 @@ handle('fix-flipped-signs', async (event, { uploadId }) => {
     // Mark fixed even if some rows failed — prevents double-flips on retry.
     // The UI surfaces failures so the user can address them individually.
     markSignsFixed(uploadId, new Date().toISOString());
+
+    // Records saved by pre-fix versions stored the WHOLE upload batch's ids on
+    // every file's record (a batch of statements shared one id list). Stamp any
+    // sibling record fully covered by what was just flipped, so clicking its
+    // "Fix Signs" can't flip the same transactions straight back.
+    try {
+      const notOk = new Set([
+        ...((result.failed  || []).map(f => Number(f.id))),
+        ...((result.skipped || []).map(Number)),
+      ]);
+      markSignsFixedForLmIds(lmIds.map(Number).filter(id => !notOk.has(id)));
+    } catch (e) { logError('fix-flipped-signs:mark-siblings', e); }
 
     return { success: true, data: result };
   } catch (err) {
