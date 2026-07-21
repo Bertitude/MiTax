@@ -616,7 +616,9 @@ function openAccountModal() {
   const rows = document.getElementById('account-modal-rows');
   rows.innerHTML = '';
 
-  const assetOptions = () => state.lmAssets.map(a =>
+  // Uploads can only target manually-managed assets — the LunchMoney API
+  // does not allow inserting transactions into Plaid-synced accounts.
+  const assetOptions = () => state.lmAssets.filter(a => a.source !== 'plaid').map(a =>
     `<option value="${a.id}">${escHtml(a.display_name || a.name)} (${(a.currency || '').toUpperCase()})</option>`
   ).join('');
 
@@ -686,7 +688,11 @@ function openAccountModal() {
  * Returns { asset, confidence: 'high'|'medium'|'low'|null, reasons: [] }
  */
 function autoSuggestAsset(parsed) {
-  if (!parsed || !state.lmAssets.length) return { asset: null, confidence: null, reasons: [] };
+  // Suggest only manually-managed assets — the mapping dropdown excludes
+  // Plaid-synced accounts (uploads can't target them), so a Plaid suggestion
+  // would point at an option that doesn't exist.
+  const candidates = state.lmAssets.filter(a => a.source !== 'plaid');
+  if (!parsed || !candidates.length) return { asset: null, confidence: null, reasons: [] };
 
   const inst    = (parsed.institution || '').toLowerCase().trim();
   const cur     = (parsed.currency    || '').toLowerCase();
@@ -728,7 +734,7 @@ function autoSuggestAsset(parsed) {
   let bestScore = 0;
   let bestReasons = [];
 
-  for (const a of state.lmAssets) {
+  for (const a of candidates) {
     let score = 0;
     const reasons = [];
 
@@ -867,7 +873,7 @@ async function createNewAccount() {
     return;
   }
 
-  const newAsset = result.data;
+  const newAsset = { ...result.data, source: 'asset' };
   state.lmAssets.push(newAsset);
   toast(`✓ Created "${name}" in LunchMoney`, 'success');
 
@@ -899,7 +905,7 @@ async function confirmAccountModal() {
     if (!item) return;
     const assetId    = sel.value && sel.value !== '__create__' ? parseInt(sel.value) : null;
     item.assetId     = assetId;
-    const asset      = state.lmAssets.find(a => a.id === assetId);
+    const asset      = state.lmAssets.find(a => a.source !== 'plaid' && a.id === assetId);
     item.assetName   = asset ? (asset.display_name || asset.name) : null;
   });
 
@@ -1340,6 +1346,21 @@ async function exportCSV() {
 //  COVERAGE TRACKER — live from LunchMoney, handles overlapping months
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Manual assets filter transactions by asset_id; Plaid-synced accounts by
+// plaid_account_id (different id namespaces). Every per-account transaction
+// query must go through this.
+function accountRefParams(asset) {
+  return asset && asset.source === 'plaid'
+    ? { plaidAccountId: asset.id }
+    : { assetId: asset ? asset.id : null };
+}
+
+// Namespaced key for per-account UI state (coverage exclusion, card wiring) —
+// a Plaid account id can collide numerically with a manual asset id.
+function accountKey(asset) {
+  return asset.source === 'plaid' ? `p${asset.id}` : asset.id;
+}
+
 // ─── Exclusion persistence ────────────────────────────────────────────────────
 const COVERAGE_EXCLUDED_KEY = 'coverageExcluded';
 
@@ -1388,12 +1409,12 @@ async function refreshTracker() {
   const hiddenCards = [];    // excluded cards (built but hidden by default)
 
   for (const asset of state.lmAssets) {
-    const isExcluded = excluded.has(asset.id);
+    const isExcluded = excluded.has(accountKey(asset));
 
     let monthData = Array.from({ length: 12 }, (_, i) => ({ month: i+1, year, hasTxns: false, count: 0, earliestDate: null, latestDate: null }));
 
     if (state.connected) {
-      const cov = await window.electronAPI.getAssetCoverage({ assetId: asset.id, year });
+      const cov = await window.electronAPI.getAssetCoverage({ ...accountRefParams(asset), year });
       if (cov.success) monthData = cov.data;
     }
 
@@ -1407,7 +1428,11 @@ async function refreshTracker() {
     let dbDormantMonths = new Set();
     let dbStaleMonths   = new Set();
     try {
-      const dbMonths = await window.electronAPI.getDbCoverage({ lmAssetId: asset.id, year });
+      // Local upload records are keyed by manual-asset id — a Plaid account's
+      // id is a different namespace and could collide, so skip the overlay.
+      const dbMonths = asset.source === 'plaid'
+        ? []
+        : await window.electronAPI.getDbCoverage({ lmAssetId: asset.id, year });
       if (Array.isArray(dbMonths)) {
         for (const entry of dbMonths) {
           if (entry && typeof entry === 'object') {
@@ -1453,11 +1478,11 @@ async function refreshTracker() {
 
     const card   = document.createElement('div');
     card.className = 'card' + (isExcluded ? ' tracker-card-excluded' : '');
-    card.dataset.assetId = asset.id;
+    card.dataset.assetId = accountKey(asset);
     card.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;">
         <div style="min-width:0;">
-          <div style="font-weight:600;">${escHtml(asset.display_name || asset.name)}</div>
+          <div style="font-weight:600;">${escHtml(asset.display_name || asset.name)}${asset.source === 'plaid' ? ' <span class="badge badge-blue" style="font-size:10px;vertical-align:middle;" title="Bank-synced via Plaid — transactions arrive automatically; statements cannot be imported into this account">🔄 synced</span>' : ''}</div>
           <div style="font-size:12px;color:var(--text-muted);">
             ${escHtml(asset.institution_name || '')}
             · ${(asset.currency || '').toUpperCase()}
@@ -1493,7 +1518,7 @@ async function refreshTracker() {
 
     // Wire the exclude/include button
     card.querySelector('.tracker-exclude-btn').addEventListener('click', () => {
-      toggleCoverageExcluded(asset.id);
+      toggleCoverageExcluded(accountKey(asset));
       refreshTracker();
     });
 
@@ -2625,30 +2650,30 @@ function renderDashboardBalances(assets) {
     totalByCurrency[cur] = (totalByCurrency[cur] || 0) + parseFloat(a.balance || 0);
   });
 
-  el.innerHTML = assets.map(a => {
+  el.innerHTML = assets.map((a, idx) => {
     const icon = typeIcon[(a.type_name || '').toLowerCase()] || '💰';
     const bal  = parseFloat(a.balance || 0);
     const isNeg = bal < 0;
     const cur  = (a.currency || 'JMD').toUpperCase();
     const asOf = a.balance_as_of || '';
-    return `<div class="dash-balance-card" data-asset-id="${a.id}" style="cursor:pointer;" title="Click to view account summary">
+    return `<div class="dash-balance-card" data-asset-idx="${idx}" style="cursor:pointer;" title="Click to view account summary">
       <div class="dash-balance-icon">${icon}</div>
       <div class="dash-balance-body">
-        <div class="dash-balance-name" title="${escHtml(a.display_name || a.name)}">${escHtml(a.display_name || a.name)}</div>
+        <div class="dash-balance-name" title="${escHtml(a.display_name || a.name)}">${escHtml(a.display_name || a.name)}${a.source === 'plaid' ? ' <span class="badge badge-blue" style="font-size:9px;vertical-align:middle;" title="Bank-synced via Plaid">🔄</span>' : ''}</div>
         <div class="dash-balance-inst">${escHtml(a.institution_name || a.type_name || '')}</div>
         <div class="dash-balance-amount ${isNeg ? 'amount-neg' : ''}">
           ${cur} ${fmtAmount(bal)}
         </div>
-        ${asOf ? `<div class="dash-balance-date">as of ${escHtml(asOf)}</div>` : ''}
+        ${asOf ? `<div class="dash-balance-date">as of ${escHtml(String(asOf).slice(0, 10))}</div>` : ''}
       </div>
     </div>`;
   }).join('');
 
-  // Wire click → account summary view
-  el.querySelectorAll('.dash-balance-card[data-asset-id]').forEach(card => {
+  // Wire click → account summary view. Index-keyed: manual-asset ids and
+  // Plaid-account ids are different namespaces and can collide numerically.
+  el.querySelectorAll('.dash-balance-card[data-asset-idx]').forEach(card => {
     card.addEventListener('click', () => {
-      const assetId = parseInt(card.dataset.assetId);
-      const asset   = assets.find(a => a.id === assetId);
+      const asset = assets[parseInt(card.dataset.assetIdx, 10)];
       if (asset) showAccountView(asset);
     });
   });
@@ -3065,7 +3090,7 @@ async function startReconcile() {
 
   let res;
   try {
-    res = await window.electronAPI.reconcileStatement({ assetId: asset.id, filePath, year });
+    res = await window.electronAPI.reconcileStatement({ ...accountRefParams(asset), filePath, year });
   } catch (err) {
     body.innerHTML = `<div style="padding:20px;color:var(--warn);">Error: ${escHtml(err.message || String(err))}</div>`;
     return;
@@ -3309,7 +3334,8 @@ function showAccountView(asset) {
   document.getElementById('account-view-name').textContent =
     asset.display_name || asset.name || 'Account';
   document.getElementById('account-view-meta').textContent =
-    [asset.institution_name, asset.type_name, (asset.currency || '').toUpperCase()]
+    [asset.institution_name, asset.type_name, (asset.currency || '').toUpperCase(),
+     asset.source === 'plaid' ? '🔄 bank-synced' : null]
       .filter(Boolean).join(' · ');
 
   navigateTo('account');
@@ -3333,7 +3359,7 @@ async function loadAccountSummary(asset) {
   }
 
   const res = await window.electronAPI.getAccountTransactions({
-    assetId: asset.id,
+    ...accountRefParams(asset),
     year,
   });
 

@@ -135,6 +135,46 @@ async function getAssets(apiKey) {
   return data.assets || [];
 }
 
+/** Fetch Plaid-synced (bank-linked) accounts. GET /v1/plaid_accounts */
+async function getPlaidAccounts(apiKey) {
+  const data = await lmRequest('GET', '/plaid_accounts', apiKey);
+  return data.plaid_accounts || [];
+}
+
+/**
+ * Merged account list: manually-managed assets AND Plaid-synced accounts,
+ * normalized to one shape and tagged with `source: 'asset' | 'plaid'`.
+ *
+ * The two live in different id namespaces and different transaction filters
+ * (`asset_id` vs `plaid_account_id`), so every consumer must carry `source`
+ * alongside `id`. Statement uploads can only target manual assets — the API
+ * does not allow inserting transactions into Plaid accounts — but viewing,
+ * coverage, and reconcile work for both.
+ */
+async function getAllLmAccounts(apiKey) {
+  const [assets, plaid] = await Promise.all([
+    getAssets(apiKey),
+    // A budget with no Plaid connection may 404/vary — degrade to assets-only.
+    getPlaidAccounts(apiKey).catch(() => []),
+  ]);
+  return [
+    ...assets.map(a => ({ ...a, source: 'asset' })),
+    ...plaid.map(p => ({
+      id:               p.id,
+      name:             p.name,
+      display_name:     p.display_name || p.name,
+      institution_name: p.institution_name,
+      currency:         p.currency,
+      balance:          p.balance,
+      balance_as_of:    p.balance_last_update || p.balance_as_of,
+      type_name:        p.type,
+      subtype_name:     p.subtype,
+      status:           p.status,
+      source:           'plaid',
+    })),
+  ];
+}
+
 /**
  * Create a new manual asset (account) in LunchMoney.
  * Supports all native LunchMoney asset fields.
@@ -209,7 +249,7 @@ async function getPayees(apiKey) {
 
 // ─── Transactions ────────────────────────────────────────────────────────────
 
-async function getTransactions(apiKey, { startDate, endDate, assetId } = {}) {
+async function getTransactions(apiKey, { startDate, endDate, assetId, plaidAccountId } = {}) {
   // LunchMoney paginates with `limit`/`offset`; we fetch every page and
   // concatenate. Loop cap is defensive — 500 pages × 500 = 250,000 rows.
   const PAGE_SIZE = 500;
@@ -220,7 +260,10 @@ async function getTransactions(apiKey, { startDate, endDate, assetId } = {}) {
     const params = new URLSearchParams();
     if (startDate) params.append('start_date', startDate);
     if (endDate)   params.append('end_date',   endDate);
-    if (assetId)   params.append('asset_id',   assetId);
+    // Manual assets and Plaid-synced accounts are different id namespaces
+    // with different filter params — pass exactly one.
+    if (assetId)             params.append('asset_id',         assetId);
+    else if (plaidAccountId) params.append('plaid_account_id', plaidAccountId);
     // Pin the sign convention explicitly so reconcile/flip logic never rides on
     // LunchMoney's account-level default (negative = expense, positive = income).
     params.append('debit_as_negative', 'true');
@@ -246,13 +289,18 @@ async function getTransactions(apiKey, { startDate, endDate, assetId } = {}) {
  * One API call per year (not 12) — fetch the full year, group by month.
  * This correctly handles overlap: a Dec-Jan statement uploads Dec txns in Dec and Jan txns in Jan.
  */
-async function getAssetMonthCoverage(apiKey, assetId, year) {
+async function getAssetMonthCoverage(apiKey, accountRef, year) {
   const startDate = `${year}-01-01`;
   const endDate   = `${year}-12-31`;
 
+  // accountRef: a bare asset id (legacy callers) or { assetId, plaidAccountId }.
+  const ref = (accountRef && typeof accountRef === 'object')
+    ? accountRef
+    : { assetId: accountRef };
+
   let txs = [];
   try {
-    txs = await getTransactions(apiKey, { startDate, endDate, assetId });
+    txs = await getTransactions(apiKey, { startDate, endDate, ...ref });
   } catch (err) {
     if (isAuthError(err)) throw err;   // surface a bad key rather than showing "no coverage"
     // Otherwise the asset may simply have no transactions — return empty coverage.
@@ -488,6 +536,8 @@ module.exports = {
   getPayees,
   getTransactions,
   getTransactionsByYear,
+  getPlaidAccounts,
+  getAllLmAccounts,
   getAssetMonthCoverage,
   getAllAssetsCoverage,
   uploadTransactions,

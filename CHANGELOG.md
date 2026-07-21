@@ -6,6 +6,17 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Plaid-synced (bank-linked) LunchMoney accounts are now visible.** The app
+  previously listed only manually-managed assets and filtered transactions by
+  `asset_id`, so accounts synced via Plaid — and any transactions assigned to
+  them — were invisible: real balances on the dashboard but $0 monthly
+  summaries. The dashboard, account summary view, coverage tracker, and
+  Reconcile now include Plaid accounts (tagged "🔄 synced") and query their
+  transactions with `plaid_account_id`. Statement imports still target manual
+  assets only — the LunchMoney API does not allow inserting transactions into
+  synced accounts — so the mapping dropdown and auto-suggestions exclude them.
+
 ### Fixed
 - **Coverage tracker no longer vouches for transactions that were deleted from
   LunchMoney.** The local "statement uploaded" overlay used to mark a month

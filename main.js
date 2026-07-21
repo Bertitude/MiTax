@@ -215,8 +215,11 @@ handle('register-statement-file', (event, filePath) => {
 // ─── IPC: LunchMoney Assets ─────────────────────────────────────────────────
 handle('get-lm-assets', async () => {
   try {
-    const { getAssets } = require('./src/lunchmoney');
-    const assets = await getAssets(activeApiKey());
+    // Manual assets AND Plaid-synced accounts, tagged with `source` — see
+    // getAllLmAccounts. Uploads still target manual assets only; the renderer
+    // filters by source where that matters.
+    const { getAllLmAccounts } = require('./src/lunchmoney');
+    const assets = await getAllLmAccounts(activeApiKey());
     return { success: true, data: assets };
   } catch (err) {
     return { success: false, error: err.message };
@@ -277,10 +280,10 @@ handle('payee-update-batch', async (event, { updates }) => {
 });
 
 // ─── IPC: Coverage (from LunchMoney) ────────────────────────────────────────
-handle('get-asset-coverage', async (event, { assetId, year }) => {
+handle('get-asset-coverage', async (event, { assetId, plaidAccountId, year }) => {
   try {
     const { getAssetMonthCoverage } = require('./src/lunchmoney');
-    const coverage = await getAssetMonthCoverage(activeApiKey(), assetId, year);
+    const coverage = await getAssetMonthCoverage(activeApiKey(), { assetId, plaidAccountId }, year);
     return { success: true, data: coverage };
   } catch (err) {
     return { success: false, error: err.message };
@@ -419,7 +422,7 @@ handle('flip-single-transaction', async (event, { txId }) => {
 // Returns { signMismatches, phantomBalances, suspectedPhantoms } — see
 // src/reconcile.js. Phantom deletion is scoped to balance lines the parser
 // actually saw (balanceSentinels); payee-only matches are merely "suspected".
-handle('reconcile-statement', async (event, { assetId, filePath, year }) => {
+handle('reconcile-statement', async (event, { assetId, plaidAccountId, filePath, year }) => {
   try {
     if (!isFileAuthorized(filePath)) {
       return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
@@ -439,6 +442,7 @@ handle('reconcile-statement', async (event, { assetId, filePath, year }) => {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
+      plaidAccountId,
     });
 
     const data = reconcile(parsedTxs, lmTxs, balanceSentinels);
@@ -511,13 +515,14 @@ handle('apply-reconciliation', async (event, { flipIds, deleteIds }) => {
 });
 
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
-handle('get-account-transactions', async (event, { assetId, year }) => {
+handle('get-account-transactions', async (event, { assetId, plaidAccountId, year }) => {
   try {
     const { getTransactions } = require('./src/lunchmoney');
     const txs = await getTransactions(activeApiKey(), {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
+      plaidAccountId,
     });
     return { success: true, data: txs };
   } catch (err) {
@@ -651,10 +656,10 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
   // ── LunchMoney: assets + YTD income + quarterly tax estimate ────────────
   if (apiKey) {
     try {
-      const { getAssets, getTransactions }   = require('./src/lunchmoney');
+      const { getAllLmAccounts, getTransactions } = require('./src/lunchmoney');
       const { getTaxParams, estimateAnnualTax } = require('./src/tax/s04');
 
-      result.assets = await getAssets(apiKey);
+      result.assets = await getAllLmAccounts(apiKey);
 
       const now    = new Date();
       const ytdEnd = now.toISOString().slice(0, 10);
