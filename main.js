@@ -322,8 +322,8 @@ handle('tracker-get-all-accounts',  async () => {
 handle('tracker-get-db-coverage', async (event, { lmAssetId, year }) => {
   try {
     const { getDbCoverageForAsset } = require('./src/tracker');
-    // Convert Set → Array so it serialises cleanly over IPC
-    return Array.from(getDbCoverageForAsset(lmAssetId, year));
+    // Array of { month, expectedTxns } — see getDbCoverageForAsset.
+    return getDbCoverageForAsset(lmAssetId, year);
   } catch (err) { logError('tracker-get-db-coverage', err); return []; }
 });
 

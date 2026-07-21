@@ -321,10 +321,16 @@ function getOldestUploadYear() {
 }
 
 /**
- * Returns a Set of month numbers (1-12) for which a statement has been
- * uploaded to the local DB for the given LunchMoney asset ID and year.
- * Used to overlay "statement uploaded but no transactions" coverage on
- * the tracker grid so those months are not flagged as missing.
+ * Returns per-month local-DB coverage for the given LunchMoney asset ID and
+ * year: an array of { month, expectedTxns } for each covered month (1-12).
+ *
+ * `expectedTxns` distinguishes the two things a local "statement uploaded"
+ * record can mean when LunchMoney has no transactions for the month:
+ *   - false → the upload recorded zero inserted transactions (a genuinely
+ *     dormant statement month) — the month is covered, LM is empty by design.
+ *   - true  → the upload DID insert transactions, so LunchMoney should have
+ *     them; if it doesn't, they were deleted (or never landed) and the month
+ *     must not be silently shown as covered.
  */
 function getDbCoverageForAsset(lmAssetId, year) {
   const db = getDB();
@@ -334,14 +340,23 @@ function getDbCoverageForAsset(lmAssetId, year) {
     `SELECT id FROM accounts WHERE lm_asset_id = ?`
   ).get(lmAssetId);
 
-  if (!account) return new Set();
+  if (!account) return [];
 
   const rows = db.prepare(`
-    SELECT month FROM monthly_coverage
-    WHERE account_id = ? AND year = ? AND covered = 1
+    SELECT mc.month, u.tx_count, u.lm_ids
+    FROM monthly_coverage mc
+    LEFT JOIN uploads u ON u.id = mc.upload_id
+    WHERE mc.account_id = ? AND mc.year = ? AND mc.covered = 1
   `).all(account.id, year);
 
-  return new Set(rows.map(r => r.month));
+  return rows.map(r => {
+    let idCount = 0;
+    try { idCount = (JSON.parse(r.lm_ids || '[]') || []).length; } catch { idCount = 0; }
+    // lm_ids is the ground truth when present; legacy records (pre-v1.2.7
+    // false-positive era) may claim a tx_count with no ids recorded — those
+    // also "expected" transactions and deserve scrutiny rather than trust.
+    return { month: r.month, expectedTxns: idCount > 0 || (r.tx_count || 0) > 0 };
+  });
 }
 
 module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getUpload, markSignsFixed, markSignsFixedForLmIds, getFixedLmIdSet, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };

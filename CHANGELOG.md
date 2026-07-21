@@ -4,6 +4,21 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Coverage tracker no longer vouches for transactions that were deleted from
+  LunchMoney.** The local "statement uploaded" overlay used to mark a month
+  covered even when the upload's transactions no longer exist in LunchMoney.
+  The overlay now distinguishes the two cases: a dormant statement month
+  (upload recorded zero transactions — still shown covered, blue) versus a
+  month whose upload DID insert transactions that LunchMoney no longer has —
+  now shown as a dashed amber "uploaded, now empty in LunchMoney" cell,
+  counted as missing, and called out in the card's missing list with a
+  re-import hint.
+
+---
+
 ## [1.3.2] — 2026-07-21
 
 ### Added
