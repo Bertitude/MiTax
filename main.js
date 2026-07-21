@@ -340,7 +340,7 @@ handle('get-oldest-upload-year', async () => {
 // on success so it can't be run twice (protects against re-flipping).
 handle('fix-flipped-signs', async (event, { uploadId }) => {
   try {
-    const { getUpload, markSignsFixed, markSignsFixedForLmIds } = require('./src/tracker');
+    const { getUpload, markSignsFixed, markSignsFixedForLmIds, getFixedLmIdSet } = require('./src/tracker');
     const { flipTransactionSigns } = require('./src/lunchmoney');
 
     const upload = getUpload(uploadId);
@@ -353,11 +353,26 @@ handle('fix-flipped-signs', async (event, { uploadId }) => {
       return { success: false, error: 'No LunchMoney transaction IDs recorded for this upload' };
     }
 
-    const result = await flipTransactionSigns(activeApiKey(), lmIds, progress => {
+    // Id-level guard: never re-flip a transaction already covered by a
+    // signs-fixed record. Legacy batch records share one id list across every
+    // file uploaded together, so without this, working up the history list
+    // would flip the same set back and forth — and a partial failure leaves
+    // sibling records unstamped (only annotated) yet still clickable.
+    const fixedSet = getFixedLmIdSet();
+    const toFlip = lmIds.map(Number).filter(id => !fixedSet.has(id));
+    const alreadyCovered = lmIds.length - toFlip.length;
+
+    if (!toFlip.length) {
+      markSignsFixed(uploadId, new Date().toISOString());
+      return { success: true, data: { ok: 0, failed: [], skipped: [], alreadyCovered } };
+    }
+
+    const result = await flipTransactionSigns(activeApiKey(), toFlip, progress => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('fix-flipped-signs:progress', { uploadId, ...progress });
       }
     });
+    result.alreadyCovered = alreadyCovered;
 
     // Mark fixed even if some rows failed — prevents double-flips on retry.
     // The UI surfaces failures so the user can address them individually.

@@ -187,6 +187,29 @@ function markSignsFixed(uploadId, timestamp) {
 }
 
 /**
+ * Union of every LM transaction id belonging to a signs-fixed upload record.
+ * Used as an id-level guard: a transaction covered by ANY fixed record must
+ * never be flipped again by "Fix Signs", regardless of which record it's
+ * reached through (legacy batch records share one id list across files).
+ */
+function getFixedLmIdSet() {
+  const db = getDB();
+  const rows = db.prepare(
+    `SELECT lm_ids FROM uploads WHERE signs_fixed_at IS NOT NULL AND lm_ids IS NOT NULL`
+  ).all();
+  const fixed = new Set();
+  for (const r of rows) {
+    try {
+      for (const id of JSON.parse(r.lm_ids) || []) {
+        const n = Number(id);
+        if (Number.isFinite(n)) fixed.add(n);
+      }
+    } catch { /* ignore malformed rows */ }
+  }
+  return fixed;
+}
+
+/**
  * After signs were corrected outside the per-upload "Fix Signs" action (via
  * reconcile or an import-time sign correction), stamp any upload whose entire
  * lm_ids set is covered by `flippedLmIds` as signs-fixed, so the History
@@ -321,4 +344,4 @@ function getDbCoverageForAsset(lmAssetId, year) {
   return new Set(rows.map(r => r.month));
 }
 
-module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getUpload, markSignsFixed, markSignsFixedForLmIds, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };
+module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getUpload, markSignsFixed, markSignsFixedForLmIds, getFixedLmIdSet, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };

@@ -35,7 +35,10 @@ All notable changes to MiTax are documented here.
   states it will act on the entire batch, and after a batch fix every sibling
   record covered by the flip is automatically marked signs-fixed — previously
   clicking a sibling's "Fix Signs" would flip the same transactions straight
-  back.
+  back. As a backstop, "Fix Signs" now also checks each individual transaction
+  id against every signs-fixed record and never re-flips one that is already
+  covered, so working up the history list can no longer toggle a batch back
+  and forth even after a partial failure.
 
 ---
 

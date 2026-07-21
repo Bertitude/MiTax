@@ -1708,9 +1708,10 @@ async function runFixSigns(u) {
       if (btn) { btn.disabled = false; btn.textContent = '🔧 Fix signs for this upload'; }
       return;
     }
-    const { ok, failed, skipped } = res.data;
+    const { ok, failed, skipped, alreadyCovered } = res.data;
     const skippedCount = Array.isArray(skipped) ? skipped.length : (skipped || 0);
     const parts = [`${ok} fixed`];
+    if (alreadyCovered) parts.push(`${alreadyCovered} already fixed earlier (left untouched)`);
     if (skippedCount) parts.push(`${skippedCount} skipped`);
     if (failed && failed.length) parts.push(`${failed.length} failed`);
     toast(`Flipped signs: ${parts.join(', ')}.`, failed && failed.length ? 'error' : 'success');
