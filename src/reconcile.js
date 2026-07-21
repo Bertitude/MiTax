@@ -110,4 +110,62 @@ function reconcile(parsedTxs, lmTxs, balanceSentinels = []) {
   return { signMismatches, phantomBalances, suspectedPhantoms, missingInLM };
 }
 
-module.exports = { reconcile, normPayee, BALANCE_RE };
+/**
+ * Classify parsed statement rows against existing LunchMoney transactions
+ * before upload:
+ *   'duplicate' — a same-sign LM twin exists; inserting again would duplicate.
+ *   'signflip'  — an opposite-sign LM twin exists (the pre-v1.2.22 flipped-sign
+ *                 uploads); the row should CORRECT that entry, not be inserted —
+ *                 LunchMoney's skip_duplicates only matches signed amounts, so a
+ *                 plain re-upload would add a second copy beside the flipped one.
+ *   'new'       — no LM match; safe to insert.
+ *
+ * Same pairing rules as reconcile(): an exact payee match outranks sign, so a
+ * genuinely flipped row is not absorbed by an unrelated same-sign transaction
+ * of equal magnitude on the same day. Each LM transaction is consumed at most
+ * once. Returns an array aligned with `parsedRows`:
+ *   { status, lmId?, lmAmount? }.
+ */
+function classifyImportRows(parsedRows, lmTxs) {
+  // LM transactions bucketed by date|abs → [{ id, amount, np }], sorted for
+  // deterministic pairing regardless of API ordering.
+  const buckets = new Map();
+  const prepared = (lmTxs || [])
+    .map(tx => {
+      const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount);
+      return { id: tx.id, amount: amt, date: tx.date, np: normPayee(tx.payee || tx.original_name) };
+    })
+    .filter(t => t.date && Number.isFinite(t.amount))
+    .sort((a, b) => a.np.localeCompare(b.np) || signOf(a.amount) - signOf(b.amount) || (a.id || 0) - (b.id || 0));
+  for (const t of prepared) {
+    const key = amtKey(t.date, t.amount);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(t);
+  }
+
+  return (parsedRows || []).map(row => {
+    const amount = parseFloat(row && row.amount);
+    if (!row || !row.date || !Number.isFinite(amount)) return { status: 'new' };
+
+    const bucket = buckets.get(amtKey(row.date, amount));
+    if (!bucket || !bucket.length) return { status: 'new' };
+
+    const np   = normPayee(row.payee);
+    const sign = signOf(amount);
+    const take = (idx) => bucket.splice(idx, 1)[0];
+
+    let idx = bucket.findIndex(c => signOf(c.amount) === sign && c.np === np);
+    if (idx !== -1) { const c = take(idx); return { status: 'duplicate', lmId: c.id, lmAmount: c.amount }; }
+
+    idx = bucket.findIndex(c => signOf(c.amount) !== sign && c.np === np);
+    if (idx !== -1) { const c = take(idx); return { status: 'signflip', lmId: c.id, lmAmount: c.amount }; }
+
+    idx = bucket.findIndex(c => signOf(c.amount) === sign);
+    if (idx !== -1) { const c = take(idx); return { status: 'duplicate', lmId: c.id, lmAmount: c.amount }; }
+
+    const c = take(0);   // remaining candidates are all opposite-sign
+    return { status: 'signflip', lmId: c.id, lmAmount: c.amount };
+  });
+}
+
+module.exports = { reconcile, classifyImportRows, normPayee, BALANCE_RE };

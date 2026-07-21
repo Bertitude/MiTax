@@ -4,6 +4,44 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Import-time sign correction.** Re-importing a statement now detects rows
+  that match an existing LunchMoney entry with the *opposite* sign (the
+  pre-v1.2.22 flipped-sign uploads) and converts them from inserts into
+  in-place corrections. The validate modal badges these rows ("⇄ FIXES SIGN"),
+  the upload button shows the split ("Upload N new · Fix M signs"), and a
+  confirmation summarises what will be corrected. This closes a duplication
+  hazard: LunchMoney's `skip_duplicates` matches *signed* amounts, so a plain
+  re-upload over flipped data inserted a second copy beside the bad entry.
+  Same-sign matches are flagged as duplicates and pre-unchecked, as before.
+- **Double-flip protection across features.** When signs are corrected via
+  re-import or the Reconcile modal, upload-history records whose transactions
+  are fully covered are stamped `signs_fixed_at` (partially covered records get
+  an explanatory note), so the History "Fix Signs" action can no longer re-flip
+  already-corrected entries.
+- **S04 empty-data warning.** The S04 report now carries an explicit banner
+  (screen + notes/PDF) when it was generated with no transaction data — not
+  connected, fetch failed, or LunchMoney returned zero transactions for the
+  year — instead of silently rendering an all-zero return.
+
+### Fixed
+- **Upload history no longer stores the whole batch's LunchMoney ids on every
+  file's record.** Uploads are now POSTed per source file (previously per
+  asset), so each history record holds exactly its own statement's transaction
+  ids. Records saved by older versions (e.g. "31 transactions" but 549 ids)
+  are surfaced honestly: the detail modal flags the mismatch, "Fix Signs"
+  states it will act on the entire batch, and after a batch fix every sibling
+  record covered by the flip is automatically marked signs-fixed — previously
+  clicking a sibling's "Fix Signs" would flip the same transactions straight
+  back. As a backstop, "Fix Signs" now also checks each individual transaction
+  id against every signs-fixed record and never re-flips one that is already
+  covered, so working up the history list can no longer toggle a batch back
+  and forth even after a partial failure.
+
+---
+
 ## [1.3.1] — 2026-07-09
 
 Follow-up fix release completing the v1.3.0 audit remediation (see `AUDIT.md`).

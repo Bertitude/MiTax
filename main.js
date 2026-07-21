@@ -340,8 +340,8 @@ handle('get-oldest-upload-year', async () => {
 // on success so it can't be run twice (protects against re-flipping).
 handle('fix-flipped-signs', async (event, { uploadId }) => {
   try {
-    const { getUpload, markSignsFixed } = require('./src/tracker');
-    const { flipTransactionSigns }      = require('./src/lunchmoney');
+    const { getUpload, markSignsFixed, markSignsFixedForLmIds, getFixedLmIdSet } = require('./src/tracker');
+    const { flipTransactionSigns } = require('./src/lunchmoney');
 
     const upload = getUpload(uploadId);
     if (!upload)               return { success: false, error: 'Upload not found' };
@@ -353,15 +353,42 @@ handle('fix-flipped-signs', async (event, { uploadId }) => {
       return { success: false, error: 'No LunchMoney transaction IDs recorded for this upload' };
     }
 
-    const result = await flipTransactionSigns(activeApiKey(), lmIds, progress => {
+    // Id-level guard: never re-flip a transaction already covered by a
+    // signs-fixed record. Legacy batch records share one id list across every
+    // file uploaded together, so without this, working up the history list
+    // would flip the same set back and forth — and a partial failure leaves
+    // sibling records unstamped (only annotated) yet still clickable.
+    const fixedSet = getFixedLmIdSet();
+    const toFlip = lmIds.map(Number).filter(id => !fixedSet.has(id));
+    const alreadyCovered = lmIds.length - toFlip.length;
+
+    if (!toFlip.length) {
+      markSignsFixed(uploadId, new Date().toISOString());
+      return { success: true, data: { ok: 0, failed: [], skipped: [], alreadyCovered } };
+    }
+
+    const result = await flipTransactionSigns(activeApiKey(), toFlip, progress => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('fix-flipped-signs:progress', { uploadId, ...progress });
       }
     });
+    result.alreadyCovered = alreadyCovered;
 
     // Mark fixed even if some rows failed — prevents double-flips on retry.
     // The UI surfaces failures so the user can address them individually.
     markSignsFixed(uploadId, new Date().toISOString());
+
+    // Records saved by pre-fix versions stored the WHOLE upload batch's ids on
+    // every file's record (a batch of statements shared one id list). Stamp any
+    // sibling record fully covered by what was just flipped, so clicking its
+    // "Fix Signs" can't flip the same transactions straight back.
+    try {
+      const notOk = new Set([
+        ...((result.failed  || []).map(f => Number(f.id))),
+        ...((result.skipped || []).map(Number)),
+      ]);
+      markSignsFixedForLmIds(lmIds.map(Number).filter(id => !notOk.has(id)));
+    } catch (e) { logError('fix-flipped-signs:mark-siblings', e); }
 
     return { success: true, data: result };
   } catch (err) {
@@ -455,6 +482,16 @@ handle('apply-reconciliation', async (event, { flipIds, deleteIds }) => {
       result.flipped = flipResult.ok || 0;
       if (flipResult.failed)  result.failedFlips = flipResult.failed;         // [{id, error}]
       if (flipResult.skipped) result.skipped     = flipResult.skipped;        // 404 in LM
+
+      // Stamp tracker uploads covered by these corrections as signs-fixed so
+      // the History "Fix Signs" action can't re-flip the now-correct entries.
+      if (result.flipped > 0) {
+        try {
+          const { markSignsFixedForLmIds } = require('./src/tracker');
+          const notOk = new Set([...result.failedFlips.map(f => f.id), ...result.skipped].map(Number));
+          markSignsFixedForLmIds(flips.filter(id => !notOk.has(id)));
+        } catch (e) { logError('apply-reconciliation:mark-signs-fixed', e); }
+      }
     }
 
     for (const id of deletes) {
@@ -754,6 +791,60 @@ handle('check-duplicates', async (event, { transactions }) => {
     console.warn('[check-duplicates] error:', err.message);
     // Fail open — never block the user from uploading
     return { success: true, data: new Array(transactions.length).fill(false) };
+  }
+});
+
+// ─── IPC: Classify Import — duplicate / sign-correction detection ────────────
+// Supersedes check-duplicates in the validate modal: for each incoming row,
+// reports whether a same-sign LM twin exists ('duplicate'), an opposite-sign
+// twin exists ('signflip' — the row should correct that entry rather than be
+// inserted, since LM's skip_duplicates matches signed amounts and a plain
+// re-upload would add a second copy), or no match ('new').
+handle('classify-import', async (event, { transactions }) => {
+  const asNew = () => new Array((transactions || []).length).fill(null).map(() => ({ status: 'new' }));
+  try {
+    const { getTransactions }    = require('./src/lunchmoney');
+    const { classifyImportRows } = require('./src/reconcile');
+    const apiKey = activeApiKey();
+
+    if (!apiKey || !transactions || !transactions.length) {
+      return { success: true, data: asNew() };
+    }
+
+    // One API call per asset, matching within that asset's date window.
+    const byAsset = {};
+    transactions.forEach((tx, idx) => {
+      const key = tx.assetId != null ? String(tx.assetId) : '__none__';
+      if (!byAsset[key]) byAsset[key] = [];
+      byAsset[key].push({ idx, date: tx.date, amount: tx.amount, payee: tx.payee });
+    });
+
+    const results = asNew();
+
+    for (const [assetIdStr, items] of Object.entries(byAsset)) {
+      // Rows mapped to "No account" can't be compared against an asset's
+      // ledger — leave them 'new' (same policy as check-duplicates).
+      if (assetIdStr === '__none__') continue;
+
+      const dates = items.map(i => i.date).filter(Boolean).sort();
+      if (!dates.length) continue;
+
+      const existingTxs = await getTransactions(apiKey, {
+        startDate: dates[0],
+        endDate:   dates[dates.length - 1],
+        assetId:   assetIdStr,
+      });
+
+      const classified = classifyImportRows(items, existingTxs);
+      classified.forEach((c, i) => { results[items[i].idx] = c; });
+    }
+
+    return { success: true, data: results };
+  } catch (err) {
+    console.warn('[classify-import] error:', err.message);
+    // Fail open as 'new' — never block an upload. If LM is unreachable here,
+    // the upload itself would fail too, so the duplication hazard is moot.
+    return { success: true, data: asNew() };
   }
 });
 

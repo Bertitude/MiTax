@@ -159,15 +159,25 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 
   let allTransactions = [];
 
+  // A tax report silently rendered from zero transactions looks identical to a
+  // correct one — record WHY the data is empty so the report can say so.
+  let dataWarning = null;
+
   // Fetch from LunchMoney if API key provided
   if (apiKey) {
     try {
       const startDate = `${year}-01-01`;
       const endDate = `${year}-12-31`;
       allTransactions = await getTransactions(apiKey, { startDate, endDate });
+      if (!allTransactions.length) {
+        dataWarning = `LunchMoney returned no transactions for ${year} — every income and expense figure below is $0. If you expect data, check that the connected budget is the right one and that this year's statements were uploaded.`;
+      }
     } catch (err) {
       console.warn('Could not fetch from LunchMoney:', err.message);
+      dataWarning = `Could not fetch transactions from LunchMoney (${err.message}) — this report was generated WITHOUT transaction data and every figure derived from it is $0.`;
     }
+  } else {
+    dataWarning = 'Not connected to LunchMoney — this report was generated WITHOUT transaction data.';
   }
 
   // ─── Categorize transactions ─────────────────────────────────────────────
@@ -317,6 +327,7 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     generatedAt: new Date().toISOString(),
     taxParams: params,
     taxParamsFallback: fallback,   // non-null when requested year has no exact match
+    dataWarning,                   // non-null when the report was built without/with empty transaction data
 
     // Part A: Income
     income: {
@@ -400,6 +411,7 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 
     // Notes / Disclaimers
     notes: [
+      ...(dataWarning ? [`⚠ ${dataWarning}`] : []),
       `Tax year: January 1 – December 31, ${year}`,
       ...(fallback ? [
         `⚠ WARNING: No tax parameters are defined for ${fallback.requestedYear}. Using ${fallback.usedYear} values as a fallback. File src/tax/s04.js::TAX_PARAMS needs an entry for ${fallback.requestedYear} before this return is filed.`,
