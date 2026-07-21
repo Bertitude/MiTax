@@ -20,15 +20,19 @@ jobs:
     name: Ensure version tag
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Create and push v<version> tag if missing
+        id: compute
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           TAG="v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag ${TAG} already exists on the remote — nothing to do."
           else
@@ -39,12 +43,62 @@ jobs:
             echo "Created and pushed ${TAG}."
           fi
 
+  release:
+    name: Ensure clean GitHub Release
+    needs: [tag]
+    if: always() && needs.tag.result != 'failure'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve tag name
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ needs.tag.outputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # electron-builder auto-creates the GitHub Release if it doesn't see one
+      # for the tag — but each OS build below runs `--publish always` in its
+      # own job/process, and macOS additionally builds x64 + arm64 in parallel
+      # within that one job. When more than one of these independently checks
+      # "does the release exist?" at nearly the same instant, more than one
+      # tries to create it; the loser gets `422 already_exists` and its whole
+      # job dies, taking any assets it hadn't uploaded yet with it (this is
+      # exactly what broke the v1.3.2 run: mac's arm64 build lost the race,
+      # crashed, and its failure fail-fast-cancelled the Windows build mid-
+      # upload). Creating (or, on a re-run, recreating from scratch) the
+      # release here — once, before any build job starts — removes the race
+      # entirely: every build job below only ever uploads to an already-
+      # existing release. Deleting first (rather than skipping if present)
+      # also means a re-run after a partial failure starts from a clean slate
+      # instead of leaving stale/missing assets from the broken attempt.
+      - name: Delete existing release for this tag, if any, then create fresh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — deleting for a clean re-publish."
+            # No --cleanup-tag: that flag deletes the underlying git tag too,
+            # which we want to keep (it points at the correct release commit).
+            gh release delete "$TAG" --repo "$REPO" --yes
+          fi
+          gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes
+          echo "Created clean release $TAG."
+
   build:
     name: Build (${{ matrix.os }})
-    needs: [tag]
-    # Run after the tag job on a manual dispatch (needs = success), and also on a
-    # direct tag push where the tag job is skipped (needs = skipped).
-    if: always() && needs.tag.result != 'failure'
+    needs: [tag, release]
+    # Run after tag/release on a manual dispatch, and also on a direct tag push
+    # where the tag job is skipped (needs = skipped).
+    if: always() && needs.tag.result != 'failure' && needs.release.result == 'success'
     runs-on: ${{ matrix.os }}
 
     strategy:
