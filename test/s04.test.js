@@ -231,3 +231,19 @@ test('taxParamsStatus: stale when nothing was verified since the latest April 1'
     Object.values(TAX_PARAMS).forEach((p, i) => { p.verifiedAt = saved[i]; });
   }
 });
+
+test('generateS04: no API key sets a dataWarning and surfaces it in the notes', async () => {
+  const r = await generateS04({
+    year: 2024,
+    apiKey: null,
+    manualData: { businessIncome: 1_000_000 },
+  });
+
+  assert.ok(r.dataWarning, 'dataWarning should be set when not connected');
+  assert.match(r.dataWarning, /Not connected/i);
+  assert.ok(r.notes.some(n => n.includes(r.dataWarning)), 'warning should appear in report notes');
+
+  // The manual figures still flow through — the warning is about missing
+  // transaction data, not a refusal to compute.
+  assert.equal(r.income.grossIncome, 1_000_000);
+});

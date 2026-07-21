@@ -4,6 +4,30 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Import-time sign correction.** Re-importing a statement now detects rows
+  that match an existing LunchMoney entry with the *opposite* sign (the
+  pre-v1.2.22 flipped-sign uploads) and converts them from inserts into
+  in-place corrections. The validate modal badges these rows ("⇄ FIXES SIGN"),
+  the upload button shows the split ("Upload N new · Fix M signs"), and a
+  confirmation summarises what will be corrected. This closes a duplication
+  hazard: LunchMoney's `skip_duplicates` matches *signed* amounts, so a plain
+  re-upload over flipped data inserted a second copy beside the bad entry.
+  Same-sign matches are flagged as duplicates and pre-unchecked, as before.
+- **Double-flip protection across features.** When signs are corrected via
+  re-import or the Reconcile modal, upload-history records whose transactions
+  are fully covered are stamped `signs_fixed_at` (partially covered records get
+  an explanatory note), so the History "Fix Signs" action can no longer re-flip
+  already-corrected entries.
+- **S04 empty-data warning.** The S04 report now carries an explicit banner
+  (screen + notes/PDF) when it was generated with no transaction data — not
+  connected, fetch failed, or LunchMoney returned zero transactions for the
+  year — instead of silently rendering an all-zero return.
+
+---
+
 ## [1.3.1] — 2026-07-09
 
 Follow-up fix release completing the v1.3.0 audit remediation (see `AUDIT.md`).

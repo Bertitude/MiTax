@@ -976,7 +976,11 @@ async function openValidateModal() {
     categoryId: tx.categoryId || null,
   }));
 
-  // ── Duplicate check against LunchMoney ───────────────────────────────────
+  // ── Duplicate + sign-correction check against LunchMoney ─────────────────
+  // 'duplicate' rows are pre-unchecked (same-sign twin already in LM).
+  // 'signflip' rows stay checked but are converted from inserts into
+  // corrections of the existing flipped entry — LM's skip_duplicates matches
+  // signed amounts, so inserting would add a copy beside the flipped one.
   if (state.connected && state.validateRows.length) {
     try {
       toast('Checking for existing transactions…', 'info', 2500);
@@ -984,20 +988,25 @@ async function openValidateModal() {
         assetId: r._assetId,
         date:    r.date,
         amount:  r.amount,
+        payee:   r.payee,
       }));
-      const dupeRes = await window.electronAPI.checkDuplicates({
+      const clsRes = await window.electronAPI.classifyImport({
         transactions: checkPayload,
       });
-      if (dupeRes.success && dupeRes.data) {
-        dupeRes.data.forEach((isDupe, i) => {
-          if (isDupe) {
+      if (clsRes.success && Array.isArray(clsRes.data)) {
+        clsRes.data.forEach((c, i) => {
+          if (!c) return;
+          if (c.status === 'duplicate') {
             state.validateRows[i]._isDupe   = true;
             state.validateRows[i]._include  = false;  // pre-uncheck
+          } else if (c.status === 'signflip') {
+            state.validateRows[i]._flipLmId    = c.lmId;
+            state.validateRows[i]._flipLmAmount = c.lmAmount;
           }
         });
       }
     } catch (e) {
-      console.warn('[openValidateModal] duplicate check error:', e);
+      console.warn('[openValidateModal] classify error:', e);
     }
   }
 
@@ -1007,6 +1016,11 @@ async function openValidateModal() {
   if (dupeBtn) {
     dupeBtn.style.display = dupeCount ? '' : 'none';
     if (dupeCnt) dupeCnt.textContent = `(${dupeCount})`;
+  }
+
+  const flipCount = state.validateRows.filter(r => r._flipLmId).length;
+  if (flipCount) {
+    toast(`⇄ ${flipCount} row${flipCount === 1 ? '' : 's'} match existing LunchMoney entries with flipped signs — uploading will correct those entries instead of inserting copies.`, 'info', 6000);
   }
 
   renderValidateTable(state.validateRows);
@@ -1037,6 +1051,7 @@ function renderValidateTable(rows) {
                value="${escAttr(row.payee)}" style="width:100%;min-width:140px;" />
         ${row._matched ? '<span title="Matched existing LM payee" style="font-size:10px;color:var(--accent2);margin-left:3px;">✓matched</span>' : ''}
         ${row._isDupe  ? '<span class="dupe-badge" title="Already exists in LunchMoney">DUPE</span>' : ''}
+        ${row._flipLmId ? `<span class="flip-badge" title="An entry with the opposite sign (${Number(row._flipLmAmount).toLocaleString('en', {minimumFractionDigits:2})}) already exists in LunchMoney — uploading corrects its sign instead of inserting a copy">⇄ FIXES SIGN</span>` : ''}
       </td>
       <td class="${row.amount >= 0 ? 'amount-pos' : 'amount-neg'}" style="text-align:right;">
         <input class="val-cell" data-idx="${i}" data-field="amount" type="number"
@@ -1083,8 +1098,9 @@ function renderValidateTable(rows) {
   const total   = rows.length;
   const credits = rows.filter(r => r.amount < 0).length;
   const debits  = rows.filter(r => r.amount >= 0).length;
+  const flips   = rows.filter(r => r._flipLmId).length;
   document.getElementById('validate-counts').textContent =
-    `${total} total · ${credits} credits · ${debits} debits`;
+    `${total} total · ${credits} credits · ${debits} debits` + (flips ? ` · ${flips} sign fix${flips === 1 ? '' : 'es'}` : '');
   updateSelectedCount();
 }
 
@@ -1093,6 +1109,18 @@ function updateSelectedCount() {
   const checked = visible.filter(tr => tr.querySelector('.val-row-check')?.checked).length;
   document.getElementById('val-selected-count').textContent =
     `${checked} of ${state.validateRows.length} selected`;
+
+  // Split the upload button label into inserts vs sign corrections so the
+  // user sees, before clicking, that some rows repair existing LM entries.
+  const btn = document.getElementById('validate-upload-btn');
+  if (btn && !btn.disabled) {
+    const sel   = state.validateRows.filter(r => r._include);
+    const fixes = sel.filter(r => r._flipLmId).length;
+    const inserts = sel.length - fixes;
+    btn.innerHTML = fixes
+      ? `☁️ Upload ${inserts} new · ⇄ Fix ${fixes} sign${fixes === 1 ? '' : 's'}`
+      : '☁️ Upload Selected to LunchMoney';
+  }
 }
 
 function setAllChecked(checked) {
@@ -1121,23 +1149,74 @@ async function uploadValidated() {
   const selected = state.validateRows.filter(r => r._include);
   if (!selected.length) { toast('No transactions selected.', 'info'); return; }
 
+  // Rows matching an opposite-sign LM twin become in-place sign corrections;
+  // everything else is a plain insert.
+  const flipRows   = selected.filter(r => r._flipLmId);
+  const insertRows = selected.filter(r => !r._flipLmId);
+
+  if (flipRows.length) {
+    const ok = confirm(
+      `${flipRows.length} of the selected row${flipRows.length === 1 ? ' matches an' : 's match'} existing LunchMoney ` +
+      `entr${flipRows.length === 1 ? 'y' : 'ies'} with a flipped sign (from an upload made before v1.2.22).\n\n` +
+      `Instead of inserting duplicates, those entries will have their signs corrected in place. Continue?`
+    );
+    if (!ok) return;
+  }
+
   const btn     = document.getElementById('validate-upload-btn');
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Uploading…';
 
   try {
-  // Group by assetId
+  const prefs          = getPrefs();
+  let totalUp          = 0;
+  let totalFixed       = 0;
+  const allErrors      = [];
+  const processedFiles = new Set(selected.map(r => r._source));
+
+  // Per-source-file outcome, so history records cover flip-only re-imports too.
+  const fileAgg = new Map();
+  const aggFor  = (f) => {
+    if (!fileAgg.has(f)) fileAgg.set(f, { insertedIds: [], insertFailedMsg: null, insertSkipNote: null, flippedIds: [], flipFailed: 0 });
+    return fileAgg.get(f);
+  };
+
+  // ── 1. Sign corrections — repair the existing LM entries in place ────────
+  if (flipRows.length) {
+    let flipData = null;
+    try {
+      const flipRes = await window.electronAPI.applyReconciliation({
+        flipIds:   flipRows.map(r => r._flipLmId),
+        deleteIds: [],
+      });
+      if (flipRes.success) flipData = flipRes.data;
+      else allErrors.push(`Sign corrections failed: ${flipRes.error || 'unknown error'}`);
+    } catch (err) {
+      allErrors.push(`Sign corrections failed: ${err.message || err}`);
+    }
+
+    const notOk = new Set([
+      ...((flipData?.failedFlips) || []).map(f => Number(f.id)),
+      ...((flipData?.skipped)     || []).map(Number),
+    ]);
+    for (const r of flipRows) {
+      const agg = aggFor(r._source);
+      const id  = Number(r._flipLmId);
+      if (flipData && !notOk.has(id)) { agg.flippedIds.push(id); totalFixed++; }
+      else agg.flipFailed++;
+    }
+    if (flipData && notOk.size) {
+      allErrors.push(`${notOk.size} sign correction${notOk.size === 1 ? '' : 's'} failed or the entry no longer exists in LunchMoney`);
+    }
+  }
+
+  // ── 2. Inserts, grouped by assetId ───────────────────────────────────────
   const byAsset = {};
-  for (const row of selected) {
+  for (const row of insertRows) {
     const key = row._assetId || '__none__';
     if (!byAsset[key]) byAsset[key] = { assetId: row._assetId, assetName: row._assetName, rows: [] };
     byAsset[key].rows.push(row);
   }
-
-  const prefs          = getPrefs();
-  let totalUp          = 0;
-  const allErrors      = [];
-  const processedFiles = new Set();
 
   for (const group of Object.values(byAsset)) {
     const txs = group.rows.map(r => ({
@@ -1156,81 +1235,65 @@ async function uploadValidated() {
       applyRules:     prefs.applyRules,
     });
 
-    // Track which queue files are covered by this group
     const sources = [...new Set(group.rows.map(r => r._source))];
-    sources.forEach(f => processedFiles.add(f));
 
     if (result.success && result.data) {
       const uploaded = result.data.uploaded || 0;
       totalUp += uploaded;
 
-      for (const filename of sources) {
-        const qItem      = state.queue.find(q => q.name === filename);
-        if (!qItem?.parsed) continue;
-        const fileTxCount = group.rows.filter(r => r._source === filename).length;
-
-        if (uploaded > 0) {
-          // Transactions actually landed in LunchMoney
-          await window.electronAPI.saveUpload({
-            institution: qItem.parsed.institution,
-            accountName: qItem.parsed.accountName,
-            accountType: qItem.parsed.accountType,
-            currency:    qItem.parsed.currency,
-            lmAssetId:   group.assetId || null,
-            filename,
-            period:      qItem.parsed.period,
-            txCount:     fileTxCount,
-            lmIds:       result.data.ids,
-            status:      'uploaded',
-          });
-          qItem.status = 'uploaded';
-        } else {
-          // LunchMoney accepted the request but uploaded 0 — all duplicates / rejected
-          const lmErrors = (result.data.errors || []).filter(Boolean).join('; ');
-          const skipNote = lmErrors
-            ? `No transactions uploaded. LunchMoney error: ${lmErrors}`
-            : 'No transactions uploaded — all may be duplicates or were rejected by LunchMoney';
-          await window.electronAPI.saveUpload({
-            institution: qItem.parsed.institution,
-            accountName: qItem.parsed.accountName,
-            accountType: qItem.parsed.accountType,
-            currency:    qItem.parsed.currency,
-            lmAssetId:   group.assetId || null,
-            filename,
-            period:      qItem.parsed.period,
-            txCount:     fileTxCount,
-            lmIds:       null,
-            status:      'skipped',
-            notes:       skipNote,
-          });
-          qItem.status = 'skipped';
-          allErrors.push(`${group.assetName || filename}: ${skipNote}`);
-        }
+      if (uploaded > 0) {
+        // NB: ids are per-group; a multi-file group shares the full id list.
+        for (const f of sources) aggFor(f).insertedIds.push(...(result.data.ids || []));
+      } else {
+        const lmErrors = (result.data.errors || []).filter(Boolean).join('; ');
+        const skipNote = lmErrors
+          ? `No transactions uploaded. LunchMoney error: ${lmErrors}`
+          : 'No transactions uploaded — all may be duplicates or were rejected by LunchMoney';
+        for (const f of sources) aggFor(f).insertSkipNote = skipNote;
+        allErrors.push(`${group.assetName || sources.join(', ')}: ${skipNote}`);
       }
     } else {
       // Request itself failed — log to history and surface the error
       const msg = result.error || (result.data?.errors || []).join(', ') || 'Unknown error';
       allErrors.push(`${group.assetName || 'Upload'}: ${msg}`);
-
-      for (const filename of sources) {
-        const qItem = state.queue.find(q => q.name === filename);
-        if (!qItem?.parsed) continue;
-        await window.electronAPI.saveUpload({
-          institution: qItem.parsed.institution,
-          accountName: qItem.parsed.accountName,
-          accountType: qItem.parsed.accountType,
-          currency:    qItem.parsed.currency,
-          lmAssetId:   group.assetId || null,
-          filename,
-          period:      qItem.parsed.period,
-          txCount:     group.rows.filter(r => r._source === filename).length,
-          lmIds:       null,
-          status:      'failed',
-          notes:       msg,
-        });
-        qItem.status = 'failed';
-      }
+      for (const f of sources) aggFor(f).insertFailedMsg = msg;
     }
+  }
+
+  // ── 3. One tracker record per source file, covering inserts + corrections ─
+  for (const filename of processedFiles) {
+    const qItem = state.queue.find(q => q.name === filename);
+    if (!qItem?.parsed) continue;
+
+    const agg      = aggFor(filename);
+    const fileRows = selected.filter(r => r._source === filename);
+    const lmIds    = [...agg.insertedIds, ...agg.flippedIds];
+    const landed   = lmIds.length > 0;
+
+    const noteParts = [];
+    if (agg.flippedIds.length)  noteParts.push(`⇄ Corrected flipped signs on ${agg.flippedIds.length} existing LunchMoney entr${agg.flippedIds.length === 1 ? 'y' : 'ies'} (re-import).`);
+    if (agg.flipFailed)         noteParts.push(`${agg.flipFailed} sign correction${agg.flipFailed === 1 ? '' : 's'} failed.`);
+    if (agg.insertSkipNote)     noteParts.push(agg.insertSkipNote);
+    if (agg.insertFailedMsg)    noteParts.push(agg.insertFailedMsg);
+
+    const status = landed ? 'uploaded'
+      : (agg.insertFailedMsg || agg.flipFailed) ? 'failed'
+      : 'skipped';
+
+    await window.electronAPI.saveUpload({
+      institution: qItem.parsed.institution,
+      accountName: qItem.parsed.accountName,
+      accountType: qItem.parsed.accountType,
+      currency:    qItem.parsed.currency,
+      lmAssetId:   fileRows.find(r => r._assetId)?._assetId || null,
+      filename,
+      period:      qItem.parsed.period,
+      txCount:     fileRows.length,
+      lmIds:       landed ? lmIds : null,
+      status,
+      notes:       noteParts.join('\n') || null,
+    });
+    qItem.status = status;
   }
 
   // Always close the modal and remove processed files from the queue
@@ -1241,8 +1304,11 @@ async function uploadValidated() {
   refreshTracker();
   initTrackerYearSelect();
 
-  if (totalUp > 0) {
-    toast(`✓ Uploaded ${totalUp} transaction${totalUp !== 1 ? 's' : ''} to LunchMoney!`, 'success');
+  if (totalUp > 0 || totalFixed > 0) {
+    const parts = [];
+    if (totalUp)    parts.push(`Uploaded ${totalUp} transaction${totalUp !== 1 ? 's' : ''}`);
+    if (totalFixed) parts.push(`corrected ${totalFixed} flipped sign${totalFixed !== 1 ? 's' : ''}`);
+    toast(`✓ ${parts.join(' · ')}`, 'success');
   } else if (!allErrors.length) {
     toast('No new transactions were uploaded.', 'info');
   }
@@ -2286,6 +2352,10 @@ function renderTaxReport(report) {
 
   wrap.innerHTML = `
     <div class="card">
+      ${report.dataWarning ? `
+        <div style="padding:10px 12px;margin-bottom:14px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">
+          ⚠ ${escHtml(report.dataWarning)}
+        </div>` : ''}
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
         <div>
           <div style="font-size:18px;font-weight:700;">S04 — Self Employed Income Tax Return</div>

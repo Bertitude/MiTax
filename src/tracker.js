@@ -186,6 +186,45 @@ function markSignsFixed(uploadId, timestamp) {
     .run(timestamp || new Date().toISOString(), uploadId);
 }
 
+/**
+ * After signs were corrected outside the per-upload "Fix Signs" action (via
+ * reconcile or an import-time sign correction), stamp any upload whose entire
+ * lm_ids set is covered by `flippedLmIds` as signs-fixed, so the History
+ * action can't re-flip the now-correct entries. Partially covered uploads
+ * keep their badge but get a note recording which entries were already fixed.
+ */
+function markSignsFixedForLmIds(flippedLmIds, timestamp) {
+  const flipped = new Set((flippedLmIds || []).map(Number).filter(Number.isFinite));
+  if (!flipped.size) return { fullyFixed: 0, partiallyFixed: 0 };
+
+  const db  = getDB();
+  const ts  = timestamp || new Date().toISOString();
+  const rows = db.prepare(
+    `SELECT id, lm_ids, notes FROM uploads WHERE signs_fixed_at IS NULL AND lm_ids IS NOT NULL`
+  ).all();
+
+  let fullyFixed = 0, partiallyFixed = 0;
+  for (const r of rows) {
+    let ids = [];
+    try { ids = JSON.parse(r.lm_ids) || []; } catch { continue; }
+    if (!Array.isArray(ids) || !ids.length) continue;
+
+    const covered = ids.filter(id => flipped.has(Number(id)));
+    if (!covered.length) continue;
+
+    if (covered.length === ids.length) {
+      db.prepare(`UPDATE uploads SET signs_fixed_at = ? WHERE id = ?`).run(ts, r.id);
+      fullyFixed++;
+    } else {
+      const note = `${covered.length} of ${ids.length} entries had their signs corrected elsewhere (${ts.slice(0, 10)}) — "Fix Signs" here would re-flip them.`;
+      db.prepare(`UPDATE uploads SET notes = ? WHERE id = ?`)
+        .run(r.notes ? `${r.notes}\n${note}` : note, r.id);
+      partiallyFixed++;
+    }
+  }
+  return { fullyFixed, partiallyFixed };
+}
+
 // ─── Missing months ─────────────────────────────────────────────────────────
 
 /**
@@ -282,4 +321,4 @@ function getDbCoverageForAsset(lmAssetId, year) {
   return new Set(rows.map(r => r.month));
 }
 
-module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getUpload, markSignsFixed, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };
+module.exports = { upsertAccount, getAllAccounts, getAccount, saveUpload, getAllUploads, getUploadsForAccount, getUpload, markSignsFixed, markSignsFixedForLmIds, getMissingMonths, getYearCoverage, markMonthCovered, getOldestUploadYear, getDbCoverageForAsset };

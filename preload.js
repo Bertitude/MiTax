@@ -70,6 +70,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Duplicate detection (pre-upload check)
   checkDuplicates: (payload) => ipcRenderer.invoke('check-duplicates', payload),
+  // Duplicate + sign-correction classification (supersedes checkDuplicates in
+  // the validate modal; see classify-import in main.js)
+  classifyImport: (payload) => ipcRenderer.invoke('classify-import', payload),
 
   // S04 Tax
   generateS04:  (payload) => ipcRenderer.invoke('generate-s04',  payload),

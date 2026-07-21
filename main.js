@@ -455,6 +455,16 @@ handle('apply-reconciliation', async (event, { flipIds, deleteIds }) => {
       result.flipped = flipResult.ok || 0;
       if (flipResult.failed)  result.failedFlips = flipResult.failed;         // [{id, error}]
       if (flipResult.skipped) result.skipped     = flipResult.skipped;        // 404 in LM
+
+      // Stamp tracker uploads covered by these corrections as signs-fixed so
+      // the History "Fix Signs" action can't re-flip the now-correct entries.
+      if (result.flipped > 0) {
+        try {
+          const { markSignsFixedForLmIds } = require('./src/tracker');
+          const notOk = new Set([...result.failedFlips.map(f => f.id), ...result.skipped].map(Number));
+          markSignsFixedForLmIds(flips.filter(id => !notOk.has(id)));
+        } catch (e) { logError('apply-reconciliation:mark-signs-fixed', e); }
+      }
     }
 
     for (const id of deletes) {
@@ -754,6 +764,60 @@ handle('check-duplicates', async (event, { transactions }) => {
     console.warn('[check-duplicates] error:', err.message);
     // Fail open — never block the user from uploading
     return { success: true, data: new Array(transactions.length).fill(false) };
+  }
+});
+
+// ─── IPC: Classify Import — duplicate / sign-correction detection ────────────
+// Supersedes check-duplicates in the validate modal: for each incoming row,
+// reports whether a same-sign LM twin exists ('duplicate'), an opposite-sign
+// twin exists ('signflip' — the row should correct that entry rather than be
+// inserted, since LM's skip_duplicates matches signed amounts and a plain
+// re-upload would add a second copy), or no match ('new').
+handle('classify-import', async (event, { transactions }) => {
+  const asNew = () => new Array((transactions || []).length).fill(null).map(() => ({ status: 'new' }));
+  try {
+    const { getTransactions }    = require('./src/lunchmoney');
+    const { classifyImportRows } = require('./src/reconcile');
+    const apiKey = activeApiKey();
+
+    if (!apiKey || !transactions || !transactions.length) {
+      return { success: true, data: asNew() };
+    }
+
+    // One API call per asset, matching within that asset's date window.
+    const byAsset = {};
+    transactions.forEach((tx, idx) => {
+      const key = tx.assetId != null ? String(tx.assetId) : '__none__';
+      if (!byAsset[key]) byAsset[key] = [];
+      byAsset[key].push({ idx, date: tx.date, amount: tx.amount, payee: tx.payee });
+    });
+
+    const results = asNew();
+
+    for (const [assetIdStr, items] of Object.entries(byAsset)) {
+      // Rows mapped to "No account" can't be compared against an asset's
+      // ledger — leave them 'new' (same policy as check-duplicates).
+      if (assetIdStr === '__none__') continue;
+
+      const dates = items.map(i => i.date).filter(Boolean).sort();
+      if (!dates.length) continue;
+
+      const existingTxs = await getTransactions(apiKey, {
+        startDate: dates[0],
+        endDate:   dates[dates.length - 1],
+        assetId:   assetIdStr,
+      });
+
+      const classified = classifyImportRows(items, existingTxs);
+      classified.forEach((c, i) => { results[items[i].idx] = c; });
+    }
+
+    return { success: true, data: results };
+  } catch (err) {
+    console.warn('[classify-import] error:', err.message);
+    // Fail open as 'new' — never block an upload. If LM is unreachable here,
+    // the upload itself would fail too, so the duplication hazard is moot.
+    return { success: true, data: asNew() };
   }
 });
 
