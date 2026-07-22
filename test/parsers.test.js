@@ -44,6 +44,56 @@ test('Scotiabank savings: coordinate parse, sign convention, year boundary', () 
   assert.equal(credit.category, 'Income');
 });
 
+test('Scotiabank savings: unmarked amounts are signed by the running-balance delta (credits not dropped)', () => {
+  // Statement variant with NO +/- markers — amounts must be signed by the
+  // balance delta. The old parser silently dropped every such row.
+  const fullText = 'Scotiabank The Bank of Nova Scotia Jamaica\nAccount Number: 00012345\n05DEC20  to  05JAN21\nSavings Account';
+  const pages = [[
+    { str: '05DEC', x: 40, y: 621 }, { str: 'Beginning Balance', x: 120, y: 621 }, { str: '10,000.00', x: 470, y: 621 },
+    { str: '07DEC', x: 40, y: 600 }, { str: 'POS PURCHASE HI-LO', x: 120, y: 600 }, { str: '4,025.00', x: 400, y: 600 }, { str: '5,975.00', x: 470, y: 600 },
+    { str: '03JAN', x: 40, y: 579 }, { str: 'SALARY DIRECT DEPOSIT', x: 120, y: 579 }, { str: '300.00', x: 400, y: 579 }, { str: '6,275.00', x: 470, y: 579 },
+  ]];
+  const res = scotiabank.parseFromPageItems(pages, fullText);
+
+  assert.equal(res.transactions.length, 2);
+  const [debit, credit] = res.transactions;
+  assert.equal(debit.amount, -4025);   // falling balance → debit → negative user-facing
+  assert.equal(debit.type, 'debit');
+  assert.equal(credit.amount, 300);    // rising balance → credit → positive user-facing
+  assert.equal(credit.type, 'credit');
+  // Beginning-balance row became a sentinel, not a transaction
+  assert.deepEqual(res.balanceSentinels, [{ date: '2020-12-05', amount: 10000 }]);
+  assert.ok(!res.warnings.some(w => /SKIPPED/.test(w)));
+});
+
+test('Scotiabank savings: an unparseable amount row is WARNED about, not silently dropped', () => {
+  const fullText = 'Scotiabank\nAccount Number: 00012345\n05DEC20  to  05JAN21\nSavings Account';
+  const pages = [[
+    // Single unsigned number with no prior balance — sign cannot be determined
+    { str: '07DEC', x: 40, y: 600 }, { str: 'MYSTERY ROW', x: 120, y: 600 }, { str: '4,025.00', x: 430, y: 600 },
+  ]];
+  const res = scotiabank.parseFromPageItems(pages, fullText);
+  assert.equal(res.transactions.length, 0);
+  assert.ok(res.warnings.some(w => /SKIPPED/.test(w) && /MYSTERY ROW/.test(w)));
+});
+
+test('Scotiabank CC: split $/sign items fall back to the loose amount parse (payments not dropped)', () => {
+  // Extractor split "$-16,000.00" into separate items — the strict per-item
+  // pattern misses it and the old parser dropped the payment row silently.
+  const fullText = 'Scotiabank Credit Card Statement\nPOSTING DATE  REFERENCE NO\nCard ****1234';
+  const pages = [[
+    { str: '23-Jul-2024', x: 30,  y: 600 },
+    { str: '0895886321',  x: 250, y: 600 },
+    { str: 'PAYMENT THANK YOU', x: 300, y: 600 },
+    { str: '$',           x: 516, y: 600 },
+    { str: '-16,000.00',  x: 524, y: 600 },
+  ]];
+  const res = scotiabank.parseCCFromPageItems(pages, fullText);
+  assert.equal(res.transactions.length, 1);
+  assert.equal(res.transactions[0].amount, 16000);  // payment = credit → positive user-facing
+  assert.equal(res.transactions[0].type, 'credit');
+});
+
 test('Scotiabank: missing period header emits a warning and does not throw', () => {
   const fx  = fixture('scotiabank-savings.json');
   const res = scotiabank.parseFromPageItems(fx.pages, 'Scotiabank\nSavings Account'); // no period line

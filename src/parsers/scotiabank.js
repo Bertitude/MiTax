@@ -14,7 +14,7 @@
 
 const fs       = require('fs');
 const { extractPageItems } = require('../pdf/extract');
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta } = require('./utils');
 
 // Month abbreviation → number
 const MONTH_MAP = {
@@ -120,6 +120,7 @@ function parseFromPageItems(allPageItems, fullText) {
   // ── Per-page transaction extraction ──────────────────────────────────────
   const transactions = [];
   const balanceSentinels = [];
+  const droppedRows = [];   // dated rows whose amount couldn't be parsed
   const datePat = /^\d{2}[A-Z]{3}$/;
 
   for (const pageItems of allPageItems) {
@@ -138,6 +139,20 @@ function parseFromPageItems(allPageItems, fullText) {
     const sortedYKeys = Array.from(rowMap.keys()).sort((a, b) => b - a);
 
     let currentTx = null;
+    // Running balance threaded row-to-row so unmarked amounts can be signed
+    // by the balance delta. Seeded by balance-sentinel lines below.
+    let prevBalance = null;
+
+    // Commit (or count as dropped) the in-flight transaction.
+    const commitCurrent = () => {
+      if (!currentTx) return;
+      if (currentTx.amount !== null) {
+        transactions.push(finaliseTx(currentTx, currency));
+      } else {
+        droppedRows.push(`${currentTx.date} ${currentTx.desc || '(no description)'}`.trim());
+      }
+      currentTx = null;
+    };
 
     for (const yKey of sortedYKeys) {
       const row    = rowMap.get(yKey).sort((a, b) => a.x - b.x);
@@ -147,25 +162,29 @@ function parseFromPageItems(allPageItems, fullText) {
       const amountItems = row.filter(w => w.x >= COL_AMT_MIN);
 
       if (dateItems.length) {
-        // Commit previous transaction
-        if (currentTx && currentTx.amount !== null) {
-          transactions.push(finaliseTx(currentTx, currency));
-        }
+        commitCurrent();
 
         const ddmmm  = dateItems[0].str;
         const date   = parseDdmmm(ddmmm, periodStart, periodEnd, warnings);
         const desc   = descItems.map(w => w.str).join(' ').trim();
 
         if (BALANCE_LINE.test(desc)) {
-          const bal = parseAmount(amountItems);
-          if (date && bal !== null) balanceSentinels.push({ date, amount: Math.abs(bal) });
-          currentTx = null;
+          // Balance lines carry a single (usually unsigned) figure — take the
+          // last numeric token, record the sentinel, and seed the running
+          // balance for delta-based signing of following rows.
+          const balToks = [...amountItems.map(w => w.str).join(' ').matchAll(/([\d,]+\.\d{2})/g)];
+          if (balToks.length) {
+            const bal = parseFloat(balToks[balToks.length - 1][1].replace(/,/g, ''));
+            if (date) balanceSentinels.push({ date, amount: Math.abs(bal) });
+            prevBalance = bal;
+          }
           continue;
         }
 
-        if (!date) { currentTx = null; continue; }  // unrecognized month token — skip row
+        if (!date) continue;  // unrecognized month token — skip row
 
-        const amount = parseAmount(amountItems);
+        const { amount, balance } = parseAmountBlock(amountItems, prevBalance);
+        if (balance !== null) prevBalance = balance;
 
         currentTx = { date, desc, amount, continuation: [] };
 
@@ -179,15 +198,24 @@ function parseFromPageItems(allPageItems, fullText) {
         }
         // Amount might appear on a separate row
         if (amountItems.length && currentTx.amount === null) {
-          currentTx.amount = parseAmount(amountItems);
+          const { amount, balance } = parseAmountBlock(amountItems, prevBalance);
+          currentTx.amount = amount;
+          if (balance !== null) prevBalance = balance;
         }
       }
     }
 
     // End of page — commit last transaction
-    if (currentTx && currentTx.amount !== null) {
-      transactions.push(finaliseTx(currentTx, currency));
-    }
+    commitCurrent();
+  }
+
+  if (droppedRows.length) {
+    warnings.push(
+      `${droppedRows.length} transaction row(s) were SKIPPED because no amount could be parsed ` +
+      `(no +/- marker and no usable running balance): ${droppedRows.slice(0, 5).join('; ')}` +
+      `${droppedRows.length > 5 ? ` + ${droppedRows.length - 5} more` : ''}. ` +
+      `If these are deposits, credits will be missing from the import — please report this statement layout.`
+    );
   }
 
   // Derive period from the actual transaction dates
@@ -245,6 +273,8 @@ function parseCCFromPageItems(allPageItems, fullText) {
 
   // ── Per-page transaction extraction ──────────────────────────────────────
   const transactions = [];
+  const warnings = [];
+  const droppedRows = [];   // dated tx rows whose amount couldn't be parsed
 
   for (const pageItems of allPageItems) {
     if (!pageItems.length) continue;
@@ -282,7 +312,12 @@ function parseCCFromPageItems(allPageItems, fullText) {
         // Full or partial transaction row (date + reference number present)
         const date   = parseCCDate(txDateItems[0].str);
         const desc   = descItems.map(w => w.str).join(' ').trim();
-        const amount = amtItems.length ? parseCCAmount(amtItems[0].str) : null;
+        // Strict single-item match first; fall back to a loose parse over the
+        // joined amount zone — the extractor sometimes splits "$" or "-" into
+        // separate items, and the strict pattern would drop the row silently.
+        const amount = amtItems.length
+          ? parseCCAmount(amtItems[0].str)
+          : parseCCAmountLoose(row.filter(w => w.x >= CC_AMT_MIN));
         if (date) classifiedRows.push({ type: 'tx', date, desc, amount });
 
       } else if (descItems.length && !txDateItems.length && !amtItems.length && !refItems.length && !hasAmtZoneItem) {
@@ -313,6 +348,8 @@ function parseCCFromPageItems(allPageItems, fullText) {
       }
       if (currentTx.date && currentTx.amount !== null) {
         transactions.push(finaliseCCTx(currentTx, currency));
+      } else if (currentTx.date) {
+        droppedRows.push(`${currentTx.date} ${currentTx.desc || '(no description)'}`.trim());
       }
       currentTx = null;
     }
@@ -351,6 +388,14 @@ function parseCCFromPageItems(allPageItems, fullText) {
     ? { start: txDates[0], end: txDates[txDates.length - 1] }
     : { start: '', end: '' };
 
+  if (droppedRows.length) {
+    warnings.push(
+      `${droppedRows.length} transaction row(s) were SKIPPED because no amount could be parsed: ` +
+      `${droppedRows.slice(0, 5).join('; ')}${droppedRows.length > 5 ? ` + ${droppedRows.length - 5} more` : ''}. ` +
+      `Payments/credits may be missing from the import — please report this statement layout.`
+    );
+  }
+
   applySignConvention(transactions);
   return {
     institution:  'Scotiabank',
@@ -360,6 +405,7 @@ function parseCCFromPageItems(allPageItems, fullText) {
     currency,
     period,
     transactions,
+    warnings,
   };
 }
 
@@ -422,6 +468,20 @@ function parseCCAmount(str) {
   return parseFloat(m[1].replace(/,/g, ''));
 }
 
+/**
+ * Loose CC amount parse over ALL items in the amount zone, joined. Handles
+ * extractors that split "$", "-", and the number into separate items — the
+ * strict single-item pattern misses those and the row would be dropped.
+ */
+function parseCCAmountLoose(amtZoneItems) {
+  if (!amtZoneItems || !amtZoneItems.length) return null;
+  const text = amtZoneItems.map(w => w.str).join('');
+  const m = text.replace(/\s+/g, '').match(/\$?(-?)([\d,]+\.\d{2})/);
+  if (!m) return null;
+  const val = parseFloat(m[2].replace(/,/g, ''));
+  return m[1] === '-' ? -val : val;
+}
+
 function finaliseCCTx(tx, currency) {
   const payee = cleanPayee(tx.desc) || 'Scotiabank CC Transaction';
   return {
@@ -442,6 +502,50 @@ function parseAmount(amountItems) {
   if (!m) return null;
   const val = parseFloat(m[1].replace(/,/g, ''));
   return m[2] === '+' ? -val : val; // '+' = credit (negative internally); '-' = debit (positive internally)
+}
+
+/**
+ * Robust amount-block parser for the savings/chequing layout. The block
+ * (x ≥ COL_AMT_MIN) can contain the transaction amount, the running balance,
+ * or both, and the +/- sign marker Scotia prints after the amount may be
+ * missing or extracted as a displaced item. The old signed-only parseAmount
+ * returned null in those cases and the row was silently dropped — which
+ * disproportionately loses credits when a statement variant only marks
+ * debits.
+ *
+ * Strategy, in order:
+ *   1. A token with a trailing +/- marker is the transaction amount
+ *      ('-' = debit → positive internal, '+' = credit → negative internal).
+ *   2. Otherwise, with ≥2 unsigned tokens (amount + running balance) and a
+ *      known previous balance, sign the first token by the balance delta —
+ *      a falling balance is a debit, a rising one a credit.
+ *   3. Otherwise the amount is unknown (caller warns instead of dropping
+ *      silently).
+ *
+ * Returns { amount, balance } — balance is the last token when the block
+ * holds more than one number (Scotia prints the running balance rightmost),
+ * so the caller can thread it into the next row's delta.
+ */
+function parseAmountBlock(amountItems, prevBalance) {
+  const text   = amountItems.map(w => w.str).join(' ');
+  const tokens = [...text.matchAll(/([\d,]+\.\d{2})\s*([-+])?/g)]
+    .map(m => ({ value: parseFloat(m[1].replace(/,/g, '')), sign: m[2] || null }));
+
+  if (!tokens.length) return { amount: null, balance: null };
+
+  const signed  = tokens.find(t => t.sign);
+  const balance = tokens.length >= 2 ? tokens[tokens.length - 1].value : null;
+
+  if (signed) {
+    return { amount: signed.sign === '+' ? -signed.value : signed.value, balance };
+  }
+
+  if (tokens.length >= 2) {
+    return { amount: signedByBalanceDelta(tokens[0].value, prevBalance, balance), balance };
+  }
+
+  // A single unsigned number is ambiguous (amount-only or balance-only row).
+  return { amount: null, balance: null };
 }
 
 function finaliseTx(tx, currency) {

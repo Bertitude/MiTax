@@ -4,6 +4,28 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Scotiabank parsers no longer silently drop transactions whose amount
+  lacks a +/- marker — which disproportionately lost credits/deposits.** The
+  savings/chequing parser required a trailing `+`/`-` after the amount; any
+  row without one (unmarked deposits, or the sign glyph extracted as a
+  separate/displaced PDF item) was skipped with no trace. Amounts without a
+  marker are now signed by the running-balance delta (falling balance =
+  debit, rising = credit), with the balance seeded from Beginning/Opening
+  Balance lines; the credit-card parser gains a loose fallback for `$`/sign
+  glyphs split across PDF items. Any row that still can't be parsed is
+  surfaced as a loud parse warning naming the rows — never dropped silently.
+- **Validate-modal credit/debit controls were inverted.** "Credits only"
+  showed debits (and vice versa), and the "N credits · M debits" counts were
+  swapped — an artifact of the pre-v1.2.22 sign convention. Anyone curating
+  an upload by transaction type was shown the opposite of what the label
+  said. Labels, filters, and counts now follow the final convention
+  (positive = credit/income).
+
+---
+
 ## [1.3.3] — 2026-07-21
 
 ### Added

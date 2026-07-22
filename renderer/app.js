@@ -1102,8 +1102,9 @@ function renderValidateTable(rows) {
   });
 
   const total   = rows.length;
-  const credits = rows.filter(r => r.amount < 0).length;
-  const debits  = rows.filter(r => r.amount >= 0).length;
+  // Final sign convention: positive = credit/income, negative = debit/expense.
+  const credits = rows.filter(r => r.amount > 0).length;
+  const debits  = rows.filter(r => r.amount <= 0).length;
   const flips   = rows.filter(r => r._flipLmId).length;
   document.getElementById('validate-counts').textContent =
     `${total} total · ${credits} credits · ${debits} debits` + (flips ? ` · ${flips} sign fix${flips === 1 ? '' : 'es'}` : '');
@@ -1137,11 +1138,13 @@ function setAllChecked(checked) {
 }
 
 function filterRows(type) {
+  // Rows arrive in the final (LunchMoney) sign convention:
+  // positive = credit / money in, negative = debit / money out.
   state.validateRows.forEach((row, i) => {
     const tr = document.querySelector(`#validate-tbody tr[data-idx="${i}"]`);
     if (!tr) return;
-    if (type === 'credit')  tr.style.display = row.amount <  0 ? '' : 'none';
-    else if (type === 'debit') tr.style.display = row.amount >= 0 ? '' : 'none';
+    if (type === 'credit')  tr.style.display = row.amount >  0 ? '' : 'none';
+    else if (type === 'debit') tr.style.display = row.amount <= 0 ? '' : 'none';
     else tr.style.display = '';
   });
   updateSelectedCount();
