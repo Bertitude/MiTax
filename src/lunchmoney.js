@@ -26,6 +26,47 @@ const RETRYABLE_NET_CODES = new Set([
   'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
 ]);
 
+/**
+ * Classify a LunchMoney API failure into a short, actionable hint. Every
+ * lmRequest() throw site appends this to the raw error message, so every
+ * consumer — IPC handler responses, error banners, toasts — gets the same
+ * useful context automatically instead of a bare "failed" that sends the
+ * user (and us) hunting for the actual cause.
+ */
+function describeLmFailure(err) {
+  if (!err) return null;
+  const status = err.status;
+  const code   = err.code;
+  const msg    = String(err.message || '');
+
+  if (status === 401 || status === 403) {
+    return 'Your LunchMoney API key may be invalid, expired, or revoked — reconnect it in Settings.';
+  }
+  if (status === 429) {
+    return 'LunchMoney is rate-limiting requests — wait a moment and try again.';
+  }
+  if (typeof status === 'number' && status >= 500) {
+    return "LunchMoney's servers returned an error — this is usually temporary; try again shortly.";
+  }
+  if ((code && RETRYABLE_NET_CODES.has(code)) || /premature close|timed out/i.test(msg)) {
+    return 'This looks like a network problem between this device and LunchMoney (unstable connection, VPN, or firewall) rather than a problem with your data — try again, or check your connection.';
+  }
+  if (/non-JSON response|no "transactions" array/i.test(msg)) {
+    return 'LunchMoney returned an unexpected response — this may be a temporary server issue; try again, and if it persists this is worth reporting.';
+  }
+  return null;
+}
+
+/** Append describeLmFailure's hint to an error's message, in place, and return it. */
+function appendFailureHint(err) {
+  if (!err) return err;
+  const hint = describeLmFailure(err);
+  if (hint && !String(err.message || '').includes(hint)) {
+    err.message = `${err.message} — ${hint}`;
+  }
+  return err;
+}
+
 function isRetryableNetworkError(err) {
   if (!err) return false;
   if (err.code && RETRYABLE_NET_CODES.has(err.code)) return true;
@@ -97,8 +138,8 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
       await sleep(delayMs);
       return lmRequest(method, endpoint, apiKey, body, attempt + 1);
     }
-    if (isTimeout) throw new Error(`LunchMoney request timed out after ${REQUEST_TIMEOUT_MS}ms`);
-    throw err;
+    if (isTimeout) throw appendFailureHint(new Error(`LunchMoney request timed out after ${REQUEST_TIMEOUT_MS}ms`));
+    throw appendFailureHint(err);
   } finally {
     clearTimeout(timer);
   }
@@ -142,7 +183,7 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
       `(HTTP ${res.status}) after ${attempt} retr${attempt === 1 ? 'y' : 'ies'}: ${err.message}`
     );
     wrapped.status = res.status;
-    throw wrapped;
+    throw appendFailureHint(wrapped);
   }
 
   let data;
@@ -154,14 +195,14 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
       `(HTTP ${res.status}): ${rawText ? rawText.slice(0, 300) : '(empty body)'}`
     );
     err.status = res.status;
-    throw err;
+    throw appendFailureHint(err);
   }
 
   if (!res.ok) {
     const msg = data.error || data.message || `HTTP ${res.status}`;
     const err = new Error(`LunchMoney API error: ${msg}`);
     err.status = res.status;   // let callers distinguish auth (401/403) from other failures
-    throw err;
+    throw appendFailureHint(err);
   }
 
   // LunchMoney v1 returns HTTP 200 with an `error` field in the body when it
@@ -171,14 +212,11 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   // Surface it as a real error so the UI shows LunchMoney's actual message.
   if (data && data.error) {
     const msg = Array.isArray(data.error) ? data.error.join('; ') : String(data.error);
-    throw new Error(`LunchMoney API error (${method} ${endpoint.split('?')[0]}): ${msg}`);
+    const err = new Error(`LunchMoney API error (${method} ${endpoint.split('?')[0]}): ${msg}`);
+    err.status = res.status;
+    throw appendFailureHint(err);
   }
   return data;
-}
-
-// An auth failure (bad/revoked API key) must not be swallowed as "no data".
-function isAuthError(err) {
-  return err && (err.status === 401 || err.status === 403);
 }
 
 // ─── User / Me ───────────────────────────────────────────────────────────────
@@ -292,22 +330,22 @@ async function getCategories(apiKey) {
 async function getPayees(apiKey) {
   const end = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  try {
-    const txs = await getTransactions(apiKey, { startDate, endDate: end });
-    const seen = new Set();
-    const payees = [];
-    for (const tx of txs) {
-      const p = (tx.payee || '').trim();
-      if (p && !seen.has(p.toLowerCase())) {
-        seen.add(p.toLowerCase());
-        payees.push(p);
-      }
+  // No fail-open here: a genuinely empty payee list (200 with 0 transactions)
+  // never throws — anything that throws is a real failure (auth, network,
+  // malformed response) and must propagate so the caller can tell the user
+  // payee matching is degraded, rather than silently importing with an
+  // empty list that looks identical to "you have no recent transactions".
+  const txs = await getTransactions(apiKey, { startDate, endDate: end });
+  const seen = new Set();
+  const payees = [];
+  for (const tx of txs) {
+    const p = (tx.payee || '').trim();
+    if (p && !seen.has(p.toLowerCase())) {
+      seen.add(p.toLowerCase());
+      payees.push(p);
     }
-    return payees.sort();
-  } catch (err) {
-    if (isAuthError(err)) throw err;   // don't hide a bad key as "no payees"
-    return [];                         // tolerate transient/empty for this optional feature
   }
+  return payees.sort();
 }
 
 // ─── Transactions ────────────────────────────────────────────────────────────
@@ -395,13 +433,12 @@ async function getAssetMonthCoverage(apiKey, accountRef, year) {
     ? accountRef
     : { assetId: accountRef };
 
-  let txs = [];
-  try {
-    txs = await getTransactions(apiKey, { startDate, endDate, ...ref });
-  } catch (err) {
-    if (isAuthError(err)) throw err;   // surface a bad key rather than showing "no coverage"
-    // Otherwise the asset may simply have no transactions — return empty coverage.
-  }
+  // No fail-open here: getTransactions() only ever returns [] for a
+  // GENUINELY empty result — anything it throws (auth, network, malformed
+  // response) is a real failure and must propagate. Swallowing it here used
+  // to render as an all-months-missing coverage grid identical in appearance
+  // to an account that really has no statements uploaded.
+  const txs = await getTransactions(apiKey, { startDate, endDate, ...ref });
 
   // Group by month
   const months = Array.from({ length: 12 }, (_, i) => ({
@@ -631,6 +668,7 @@ module.exports = {
   createAsset,
   getCategories,
   getPayees,
+  describeLmFailure,
   getTransactions,
   getTransactionsByYear,
   getPlaidAccounts,

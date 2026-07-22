@@ -818,8 +818,10 @@ handle('check-duplicates', async (event, { transactions }) => {
     return { success: true, data: isDuplicate };
   } catch (err) {
     console.warn('[check-duplicates] error:', err.message);
-    // Fail open — never block the user from uploading
-    return { success: true, data: new Array(transactions.length).fill(false) };
+    // Fail open — never block the user from uploading. But "open" must not
+    // mean "silent": the renderer surfaces `warning` so the user knows
+    // duplicate detection was skipped rather than trusting an unchecked list.
+    return { success: true, data: new Array(transactions.length).fill(false), warning: err.message };
   }
 });
 
@@ -873,7 +875,10 @@ handle('classify-import', async (event, { transactions }) => {
     console.warn('[classify-import] error:', err.message);
     // Fail open as 'new' — never block an upload. If LM is unreachable here,
     // the upload itself would fail too, so the duplication hazard is moot.
-    return { success: true, data: asNew() };
+    // But "open" must not mean "silent": the renderer surfaces `warning` so
+    // the user knows sign-correction/duplicate detection was skipped rather
+    // than assuming every row was genuinely checked and found new.
+    return { success: true, data: asNew(), warning: err.message };
   }
 });
 

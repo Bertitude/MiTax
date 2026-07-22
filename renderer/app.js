@@ -417,6 +417,13 @@ async function connectAPI(showFeedback = true) {
       document.getElementById('settings-success').style.display = 'block';
       toast('Connected to LunchMoney!', 'success');
     }
+    // Assets/categories loaded fine (else the throw above would have fired),
+    // but payees are fetched separately and can fail independently — an
+    // empty payee list here looks IDENTICAL to "you have no recent
+    // transactions to derive payees from" unless we say otherwise.
+    if (!payeesRes.success) {
+      toast(`Connected, but couldn't load existing payees from LunchMoney — payee-matching suggestions will be less accurate. ${payeesRes.error || ''}`, 'error', 10000);
+    }
     return true;
   } catch (err) {
     dot.className     = 'status-dot error';
@@ -1011,8 +1018,16 @@ async function openValidateModal() {
           }
         });
       }
+      // The handler fails open (every row defaults to 'new') rather than
+      // blocking the upload — but "open" must not mean "silent": tell the
+      // user duplicate/sign-correction detection didn't actually run, so an
+      // unusually clean-looking list isn't mistaken for a verified one.
+      if (clsRes.warning) {
+        toast(`Could not check LunchMoney for duplicates/sign corrections — proceeding without that check. ${clsRes.warning}`, 'error', 10000);
+      }
     } catch (e) {
       console.warn('[openValidateModal] classify error:', e);
+      toast(`Could not check LunchMoney for duplicates/sign corrections — proceeding without that check: ${e.message || e}`, 'error', 10000);
     }
   }
 
@@ -1415,10 +1430,15 @@ async function refreshTracker() {
     const isExcluded = excluded.has(accountKey(asset));
 
     let monthData = Array.from({ length: 12 }, (_, i) => ({ month: i+1, year, hasTxns: false, count: 0, earliestDate: null, latestDate: null }));
+    let coverageError = null;
 
     if (state.connected) {
       const cov = await window.electronAPI.getAssetCoverage({ ...accountRefParams(asset), year });
       if (cov.success) monthData = cov.data;
+      // A failed fetch must not render as an all-missing grid — that's
+      // indistinguishable from "genuinely nothing uploaded" and is exactly
+      // the pattern that made real data disappear elsewhere in this app.
+      else coverageError = cov.error || 'Unknown error';
     }
 
     // Fetch which months have an uploaded statement in the local DB for this
@@ -1495,9 +1515,11 @@ async function refreshTracker() {
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
           ${isExcluded
             ? `<span class="badge badge-gray" style="flex-shrink:0;">Hidden</span>`
-            : missingIdxs.length > 0
-              ? `<span class="badge badge-red">⚠ ${missingIdxs.length} month${missingIdxs.length!==1?'s':''} missing</span>`
-              : `<span class="badge badge-green">✓ ${coveredCount}/${maxMonth} months</span>`}
+            : coverageError
+              ? `<span class="badge badge-red" title="${escAttr(coverageError)}">⚠ Error loading coverage</span>`
+              : missingIdxs.length > 0
+                ? `<span class="badge badge-red">⚠ ${missingIdxs.length} month${missingIdxs.length!==1?'s':''} missing</span>`
+                : `<span class="badge badge-green">✓ ${coveredCount}/${maxMonth} months</span>`}
           <button class="btn btn-ghost btn-xs tracker-exclude-btn"
                   data-asset-id="${asset.id}"
                   title="${isExcluded ? 'Add back to coverage tracker' : 'Exclude from coverage tracker'}"
@@ -1510,12 +1532,16 @@ async function refreshTracker() {
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
         ${year} coverage · Live from LunchMoney · Overlapping periods handled per transaction date
       </div>
-      <div class="coverage-grid">${cells}</div>
+      ${coverageError
+        ? `<div style="padding:10px 12px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">
+             ⚠ Could not load coverage from LunchMoney for this account. This does NOT mean months are actually missing — try refreshing.<br>${escHtml(coverageError)}
+           </div>`
+        : `<div class="coverage-grid">${cells}</div>
       ${missingIdxs.length > 0
         ? `<div style="margin-top:8px;font-size:12px;color:var(--warn);">
              Missing: ${missingIdxs.slice(0,6).map(i => `${MONTHS[i]} ${year}${staleIdxs.includes(i) ? ' (uploaded, now empty in LM)' : ''}`).join(', ')}${missingIdxs.length>6?' + '+(missingIdxs.length-6)+' more':''}
            </div>`
-        : ''}
+        : ''}`}
       `}
     `;
 

@@ -6,7 +6,34 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Added
+- **General-purpose LunchMoney error classification, applied everywhere.**
+  Every API failure — auth, rate limit, server error, network/connection
+  problem, or an unexpected response shape — is now classified once, at the
+  single `lmRequest()` choke point, into a short actionable hint appended to
+  the raw error ("Your LunchMoney API key may be invalid... — reconnect it in
+  Settings", "This looks like a network problem... — check your connection",
+  etc.). Every consumer (IPC handlers, error banners, toasts) gets this
+  automatically with no per-call-site work, so a failure always explains
+  itself instead of requiring a debugging session like the one that led here.
+
 ### Fixed
+- **Two more silent "API failure → looks like empty data" sites, the same
+  disease as the $0 transaction views, found by auditing for the pattern:**
+  - `getPayees()` swallowed any non-auth error into an empty payee list —
+    identical in appearance to "you have no recent transactions to derive
+    payees from." It now propagates; a failed fetch shows a toast ("payee-
+    matching suggestions will be less accurate") instead of silently
+    degrading import quality with no signal.
+  - `getAssetMonthCoverage()` swallowed any non-auth error into an
+    all-months-empty coverage grid — identical in appearance to "nothing was
+    ever uploaded for this account." The Coverage Tracker now shows a
+    dedicated "⚠ Error loading coverage" card state instead of a fabricated
+    all-missing grid.
+  - The intentional fail-open paths in duplicate/sign-correction detection
+    (`check-duplicates`, `classify-import` — which must never block an
+    upload) now surface a toast when they degrade, so "every row came back
+    clean" isn't mistaken for "every row was actually checked."
 - **Root cause found (via the v1.3.8 diagnostic): transaction fetches can fail
   with a "Premature close" body-stream error, and it was going completely
   unretried.** The existing retry logic only wraps the initial connection
