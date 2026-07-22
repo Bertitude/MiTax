@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.7] — 2026-07-22
 
 ### Fixed
 - **LunchMoney 200-with-error responses are no longer silently treated as "no
