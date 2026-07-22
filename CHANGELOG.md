@@ -4,6 +4,20 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **The 200-with-error diagnostic (v1.3.7) itself swallowed the real response
+  body.** `.json().catch(() => ({}))` silently turned any non-JSON body — an
+  HTML error page, a truncated response, an empty body — into `{}`, so the
+  "no transactions array in body" error reported the symptom with no way to
+  see the actual cause. The response is now read as text first; a JSON parse
+  failure throws with the raw body (truncated) verbatim, and a body that
+  parses but still lacks a `transactions` array throws with its actual keys
+  and a content snippet.
+
+---
+
 ## [1.3.7] — 2026-07-22
 
 ### Fixed

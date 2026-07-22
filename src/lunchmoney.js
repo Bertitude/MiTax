@@ -102,7 +102,22 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
     return lmRequest(method, endpoint, apiKey, body, attempt + 1);
   }
 
-  const data = await res.json().catch(() => ({}));
+  // Read as text first (not .json()) so a non-JSON body — an HTML error page
+  // from a proxy/WAF, an empty body, a truncated response — can be shown
+  // verbatim in the thrown error instead of being silently swallowed into
+  // `{}` and misread downstream as "the request succeeded with no data".
+  const rawText = await res.text();
+  let data;
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch (_parseErr) {
+    const err = new Error(
+      `LunchMoney returned a non-JSON response for ${method} ${endpoint.split('?')[0]} ` +
+      `(HTTP ${res.status}): ${rawText ? rawText.slice(0, 300) : '(empty body)'}`
+    );
+    err.status = res.status;
+    throw err;
+  }
 
   if (!res.ok) {
     const msg = data.error || data.message || `HTTP ${res.status}`;
@@ -282,9 +297,16 @@ async function getTransactions(apiKey, { startDate, endDate, assetId, plaidAccou
 
     const data = await lmRequest('GET', `/transactions?${params}`, apiKey);
     // A missing array is a response-shape problem, not "no transactions" —
-    // never let it masquerade as an empty ledger.
+    // never let it masquerade as an empty ledger. Include the actual body
+    // shape (keys + a snippet) so a genuinely unexpected shape is visible
+    // rather than just its absence.
     if (!Array.isArray(data.transactions)) {
-      throw new Error('Unexpected LunchMoney response for /transactions: no transactions array in body');
+      const keys = Object.keys(data || {});
+      const snippet = JSON.stringify(data).slice(0, 300);
+      throw new Error(
+        `Unexpected LunchMoney response for GET /transactions: no "transactions" array in body ` +
+        `(keys present: [${keys.join(', ')}]). Body: ${snippet}`
+      );
     }
     const batch = data.transactions;
     all.push(...batch);
