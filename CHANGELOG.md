@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.9] — 2026-07-22
 
 ### Added
 - **General-purpose LunchMoney error classification, applied everywhere.**
