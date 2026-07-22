@@ -529,14 +529,26 @@ handle('apply-reconciliation', async (event, { flipIds, deleteIds }) => {
 // ─── IPC: Account Transactions (for account summary view) ───────────────────
 handle('get-account-transactions', async (event, { assetId, plaidAccountId, year }) => {
   try {
-    const { getTransactions } = require('./src/lunchmoney');
-    const txs = await getTransactions(activeApiKey(), {
+    const { getTransactions, getTransactionYearSummary } = require('./src/lunchmoney');
+    const apiKey = activeApiKey();
+    const txs = await getTransactions(apiKey, {
       startDate: `${year}-01-01`,
       endDate:   `${year}-12-31`,
       assetId,
       plaidAccountId,
     });
-    return { success: true, data: txs };
+
+    // Empty year: scan the account's full history so the UI can say WHICH
+    // years hold data — distinguishes "nothing uploaded" from "uploaded with
+    // wrong transaction years" (the old parsers defaulted the year when a
+    // statement's period header didn't parse).
+    let yearsWithData = null;
+    if (!txs.length) {
+      try { yearsWithData = await getTransactionYearSummary(apiKey, { assetId, plaidAccountId }); }
+      catch (_) { /* diagnostic only */ }
+    }
+
+    return { success: true, data: txs, yearsWithData };
   } catch (err) {
     return { success: false, error: err.message };
   }

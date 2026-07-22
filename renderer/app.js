@@ -3450,10 +3450,10 @@ async function loadAccountSummary(asset) {
   }
 
   const txs = res.data || [];
-  renderAccountSummary(asset, year, txs);
+  renderAccountSummary(asset, year, txs, res.yearsWithData || null);
 }
 
-function renderAccountSummary(asset, year, txs) {
+function renderAccountSummary(asset, year, txs, yearsWithData = null) {
   const fmt     = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
   const cur     = (asset.currency || 'JMD').toUpperCase();
   const MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -3502,7 +3502,20 @@ function renderAccountSummary(asset, year, txs) {
   const maxBar = Math.max(...months.map(m => m.income + m.expenses), 1);
   const monthEl = document.getElementById('account-monthly-wrap');
   if (!txs.length) {
-    monthEl.innerHTML = `<div class="empty-state" style="padding:24px 0;"><div class="empty-icon">📭</div><p>No transactions found for ${year}.</p></div>`;
+    // Distinguish "this account is empty" from "this account HAS data, just
+    // not in the selected year" — the latter is the signature of statements
+    // uploaded with wrong transaction years (old parsers defaulted the year
+    // when a statement's period header didn't parse).
+    const yearEntries = Object.entries(yearsWithData || {}).sort((a, b) => b[0].localeCompare(a[0]));
+    const yearsHint = yearEntries.length
+      ? `<div style="max-width:520px;margin:10px auto 0;padding:10px 12px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;text-align:left;">
+           ⚠ This account is <strong>not empty</strong> — LunchMoney has transactions for it in:
+           ${yearEntries.map(([y, n]) => `<strong>${escHtml(y)}</strong> (${n})`).join(', ')}.
+           If those should belong to ${year}, the statement was uploaded with wrong transaction dates —
+           switch the year selector to check, and re-import the statement to correct it.
+         </div>`
+      : '';
+    monthEl.innerHTML = `<div class="empty-state" style="padding:24px 0;"><div class="empty-icon">📭</div><p>No transactions found for ${year}.</p>${yearsHint}</div>`;
   } else {
     monthEl.innerHTML = `
       <table class="acct-monthly-table">

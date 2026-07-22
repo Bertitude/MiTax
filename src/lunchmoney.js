@@ -283,6 +283,28 @@ async function getTransactions(apiKey, { startDate, endDate, assetId, plaidAccou
 }
 
 /**
+ * Diagnostic: which years actually contain transactions (optionally scoped to
+ * one account)? Used when a year-scoped query returns nothing so the UI can
+ * say "this account has data in 2025/2026" instead of a bare empty state —
+ * the signature of statements uploaded with wrong transaction years.
+ * Returns { "2026": 37, "2025": 12, ... }.
+ */
+async function getTransactionYearSummary(apiKey, { assetId, plaidAccountId } = {}) {
+  const txs = await getTransactions(apiKey, {
+    startDate: '1990-01-01',
+    endDate:   '2100-12-31',
+    assetId,
+    plaidAccountId,
+  });
+  const byYear = {};
+  for (const t of txs) {
+    const y = (t.date || '').slice(0, 4);
+    if (/^\d{4}$/.test(y)) byYear[y] = (byYear[y] || 0) + 1;
+  }
+  return byYear;
+}
+
+/**
  * For the Coverage Tracker: returns a 12-month coverage map for a given asset + year.
  * Each month: { month, year, count, hasTxns, dates: [] }
  *
@@ -538,6 +560,7 @@ module.exports = {
   getTransactionsByYear,
   getPlaidAccounts,
   getAllLmAccounts,
+  getTransactionYearSummary,
   getAssetMonthCoverage,
   getAllAssetsCoverage,
   uploadTransactions,

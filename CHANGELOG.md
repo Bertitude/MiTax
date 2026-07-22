@@ -6,6 +6,16 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Empty-year views now say which years DO have data.** When an account
+  summary (or the S04 report) finds zero transactions for the selected year,
+  the app scans the account's (or budget's) full history and reports where
+  transactions actually sit — e.g. "this account is not empty: 2026 (37),
+  2025 (12)". An empty target year next to populated other years is the
+  signature of statements uploaded with wrong transaction dates (older
+  parsers defaulted the year when a statement's period header didn't parse),
+  and this makes that visible instead of a bare $0 screen.
+
 ### Fixed
 - **Reconcile's "on statement but not in LunchMoney" list is no longer a dead
   end.** The list was informational-only, yet the "Apply Selected Fixes"

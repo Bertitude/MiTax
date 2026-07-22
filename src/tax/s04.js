@@ -8,7 +8,7 @@
  * against the portal before filing season.
  */
 
-const { getTransactions } = require('../lunchmoney');
+const { getTransactions, getTransactionYearSummary } = require('../lunchmoney');
 
 // ─── Tax Rates & Thresholds ─────────────────────────────────────────────────
 //
@@ -171,6 +171,17 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       allTransactions = await getTransactions(apiKey, { startDate, endDate });
       if (!allTransactions.length) {
         dataWarning = `LunchMoney returned no transactions for ${year} — every income and expense figure below is $0. If you expect data, check that the connected budget is the right one and that this year's statements were uploaded.`;
+        // Which years DO have data? An empty target year next to populated
+        // other years is the signature of statements uploaded with wrong
+        // transaction dates (old parsers defaulted the year when a statement's
+        // period header didn't parse).
+        try {
+          const byYear = await getTransactionYearSummary(apiKey, {});
+          const entries = Object.entries(byYear).sort((a, b) => b[0].localeCompare(a[0]));
+          if (entries.length) {
+            dataWarning += ` NOTE: this budget is not empty — it has transactions in ${entries.map(([y, n]) => `${y} (${n})`).join(', ')}. If those should belong to ${year}, the statements were uploaded with wrong transaction dates; re-import them to correct it.`;
+          }
+        } catch (_) { /* diagnostic only */ }
       }
     } catch (err) {
       console.warn('Could not fetch from LunchMoney:', err.message);
