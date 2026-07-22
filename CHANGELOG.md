@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.8] — 2026-07-22
 
 ### Fixed
 - **The 200-with-error diagnostic (v1.3.7) itself swallowed the real response
