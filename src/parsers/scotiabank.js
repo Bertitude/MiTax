@@ -27,6 +27,11 @@ const COL_DATE_MAX = 80;   // date token  :  x < 80
 const COL_AMT_MIN  = 390;  // amount block : x ≥ 390
 //                           description   : 80 ≤ x < 390
 
+// A text item that IS a monetary value: "8,300.00", "J$ 8,300.00",
+// "4,025.00 -", "J$ 300.00 +". Used to rescue amount columns that sit left of
+// COL_AMT_MIN on some statement layouts (e.g. the DEPOSITS column).
+const MONEY_ITEM = /^(?:J?\$)?\s*[\d,]+\.\d{2}\s*[-+]?$/;
+
 // ── Credit Card statement column boundaries ───────────────────────────────────
 // Verified against pdfplumber on Scotia CC e-statement
 const CC_TX_DATE_MAX   = 130;   // transaction date : x >= 25 && x < 130
@@ -158,43 +163,47 @@ function parseFromPageItems(allPageItems, fullText) {
       const row    = rowMap.get(yKey).sort((a, b) => a.x - b.x);
 
       const dateItems   = row.filter(w => w.x < COL_DATE_MAX && datePat.test(w.str));
-      const descItems   = row.filter(w => w.x >= COL_DATE_MAX && w.x < COL_AMT_MIN);
-      const amountItems = row.filter(w => w.x >= COL_AMT_MIN);
+      // Money-shaped tokens join the amount stream regardless of x-position:
+      // on some Scotia layouts the DEPOSITS column sits LEFT of COL_AMT_MIN,
+      // so the fixed x-cut classified deposit amounts as description text and
+      // the row was reported as unparseable — every credit skipped. Items in
+      // x-order keeps [.. amount .. balance] ordering for the delta logic.
+      const amountItems = row.filter(w => w.x >= COL_DATE_MAX && (w.x >= COL_AMT_MIN || MONEY_ITEM.test(w.str)));
+      const descItems   = row.filter(w => w.x >= COL_DATE_MAX && w.x < COL_AMT_MIN && !MONEY_ITEM.test(w.str));
+
+      // Seed the running balance from balance-sentinel lines. Some layouts
+      // print "Beginning/Ending Balance" rows WITHOUT a date token, so this
+      // must be checked for date-less rows too (previously such a line could
+      // leak into the previous transaction's continuation/amount).
+      const descStr = descItems.map(w => w.str).join(' ').trim();
+      if (BALANCE_LINE.test(descStr)) {
+        commitCurrent();
+        const balToks = [...amountItems.map(w => w.str).join(' ').matchAll(/([\d,]+\.\d{2})/g)];
+        if (balToks.length) {
+          const bal  = parseFloat(balToks[balToks.length - 1][1].replace(/,/g, ''));
+          const date = dateItems.length ? parseDdmmm(dateItems[0].str, periodStart, periodEnd, warnings) : null;
+          if (date) balanceSentinels.push({ date, amount: Math.abs(bal) });
+          prevBalance = bal;
+        }
+        continue;
+      }
 
       if (dateItems.length) {
         commitCurrent();
 
         const ddmmm  = dateItems[0].str;
         const date   = parseDdmmm(ddmmm, periodStart, periodEnd, warnings);
-        const desc   = descItems.map(w => w.str).join(' ').trim();
-
-        if (BALANCE_LINE.test(desc)) {
-          // Balance lines carry a single (usually unsigned) figure — take the
-          // last numeric token, record the sentinel, and seed the running
-          // balance for delta-based signing of following rows.
-          const balToks = [...amountItems.map(w => w.str).join(' ').matchAll(/([\d,]+\.\d{2})/g)];
-          if (balToks.length) {
-            const bal = parseFloat(balToks[balToks.length - 1][1].replace(/,/g, ''));
-            if (date) balanceSentinels.push({ date, amount: Math.abs(bal) });
-            prevBalance = bal;
-          }
-          continue;
-        }
-
         if (!date) continue;  // unrecognized month token — skip row
 
         const { amount, balance } = parseAmountBlock(amountItems, prevBalance);
         if (balance !== null) prevBalance = balance;
 
-        currentTx = { date, desc, amount, continuation: [] };
+        currentTx = { date, desc: descStr, amount, continuation: [] };
 
       } else if (currentTx) {
         // Continuation description line (no date)
-        if (descItems.length) {
-          const cont = descItems.map(w => w.str).join(' ').trim();
-          if (cont && !SKIP_LINE.test(cont)) {
-            currentTx.continuation.push(cont);
-          }
+        if (descStr && !SKIP_LINE.test(descStr)) {
+          currentTx.continuation.push(descStr);
         }
         // Amount might appear on a separate row
         if (amountItems.length && currentTx.amount === null) {

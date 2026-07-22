@@ -4,6 +4,22 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [1.3.5] — 2026-07-22
+
+### Fixed
+- **Scotiabank layout with the DEPOSITS column left of the amount zone now
+  parses (user-reported via the v1.3.4 skip warnings).** On these statements
+  the deposit amount ("J$ 8,300.00", no +/- marker) sits left of the parser's
+  x≥390 amount boundary, was classified as description text, and every
+  deposit row was reported as unparseable. Money-shaped tokens now join the
+  amount stream from any position right of the date column (in x-order, so
+  amount-before-balance is preserved) and are signed by the running-balance
+  delta. Date-less "Beginning/Ending Balance" lines — another trait of this
+  layout — now seed the balance delta instead of leaking into the previous
+  transaction's description.
+
+---
+
 ## [1.3.4] — 2026-07-22
 
 ### Fixed

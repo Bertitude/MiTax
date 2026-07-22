@@ -66,6 +66,35 @@ test('Scotiabank savings: unmarked amounts are signed by the running-balance del
   assert.ok(!res.warnings.some(w => /SKIPPED/.test(w)));
 });
 
+test('Scotiabank savings: deposit amounts printed LEFT of the amount column are rescued (user-reported layout)', () => {
+  // Real-world layout where the DEPOSITS column sits left of x=390: the
+  // amount token ("J$ 8,300.00", no +/- marker) was classified as description
+  // text and the row reported as unparseable. Money-shaped tokens now join
+  // the amount stream from any x-position and are signed by the balance delta.
+  const fullText = 'Scotiabank The Bank of Nova Scotia Jamaica\nAccount Number: 00012345\n01OCT21  to  31OCT21\nSavings Account';
+  const pages = [[
+    // Date-less beginning-balance line (also a layout variant) seeds the delta
+    { str: 'Beginning Balance', x: 120, y: 642 }, { str: '10,000.00', x: 470, y: 642 },
+    // Deposit: amount at x=340 (desc zone), balance at x=470
+    { str: '06OCT', x: 40, y: 621 }, { str: 'THIRD PARTY TRANSFER', x: 120, y: 621 }, { str: 'J$ 8,300.00', x: 340, y: 621 }, { str: '18,300.00', x: 470, y: 621 },
+    // Marked debit in the normal amount zone still works
+    { str: '08OCT', x: 40, y: 600 }, { str: 'POS PURCHASE HI-LO', x: 120, y: 600 }, { str: 'J$ 4,025.00 -', x: 430, y: 600 }, { str: '14,275.00', x: 470, y: 600 },
+    // Unmarked deposit with a bare number, also left of the cut
+    { str: '12OCT', x: 40, y: 579 }, { str: 'ABM DEPOSIT', x: 120, y: 579 }, { str: '65,000.00', x: 350, y: 579 }, { str: '79,275.00', x: 470, y: 579 },
+  ]];
+  const res = scotiabank.parseFromPageItems(pages, fullText);
+
+  assert.equal(res.transactions.length, 3);
+  const [transfer, pos, abm] = res.transactions;
+  assert.equal(transfer.amount, 8300);     // rising balance → credit
+  assert.equal(transfer.type, 'credit');
+  assert.equal(transfer.payee, 'THIRD PARTY TRANSFER');   // amount no longer pollutes payee
+  assert.equal(pos.amount, -4025);         // trailing '-' → debit
+  assert.equal(abm.amount, 65000);         // rising balance → credit
+  assert.equal(abm.type, 'credit');
+  assert.ok(!res.warnings.some(w => /SKIPPED/.test(w)));
+});
+
 test('Scotiabank savings: an unparseable amount row is WARNED about, not silently dropped', () => {
   const fullText = 'Scotiabank\nAccount Number: 00012345\n05DEC20  to  05JAN21\nSavings Account';
   const pages = [[
