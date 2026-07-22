@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.3] — 2026-07-21
 
 ### Added
 - **Plaid-synced (bank-linked) LunchMoney accounts are now visible.** The app
