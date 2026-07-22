@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.10] — 2026-07-22
 
 ### Fixed
 - **"Premature close" on GET /transactions now fails DETERMINISTICALLY (all 3
