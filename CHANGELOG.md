@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.6] — 2026-07-22
 
 ### Added
 - **Empty-year views now say which years DO have data.** When an account
