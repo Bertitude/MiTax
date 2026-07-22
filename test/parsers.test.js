@@ -170,6 +170,43 @@ test('NCB parser: balance delta signs deposits vs withdrawals (N2)', () => {
   assert.equal(atm.type, 'debit');
 });
 
+test('NCB parser: mixed 2- and 3-number rows all parse (deposits no longer dropped)', () => {
+  // The old all-or-nothing regex captured only the 3-number rows and then
+  // skipped the fallback — every 2-number row (deposits with a blank debit
+  // cell) was silently dropped.
+  const text = [
+    'National Commercial Bank Jamaica Limited',
+    'Account Number: 001234567',
+    'Opening Balance: 10,000.00',
+    '05/01/2024 SALARY PAYMENT 500.00 10,500.00',            // 2 numbers: credit + balance
+    '06/01/2024 UTILITY BILL 300.00 0.00 10,200.00',         // 3 numbers: debit, credit, balance
+    '07/01/2024 REMITTANCE RECEIVED 0.00 700.00 10,900.00',  // 3 numbers: credit
+  ].join('\n');
+  const res = ncb.parse(text);
+  assert.equal(res.transactions.length, 3);
+  assert.deepEqual(res.transactions.map(t => t.amount), [500, -300, 700]);
+  assert.deepEqual(res.transactions.map(t => t.type), ['credit', 'debit', 'credit']);
+  assert.ok(!(res.warnings || []).some(w => /SKIPPED/.test(w)));
+});
+
+test('Scotiabank regex fallback: 2-number deposit rows are credits, not withdrawals', () => {
+  // The old Pattern A regex used \s* separators, so a deposit row's amount
+  // landed in the WITHDRAWAL capture group — every credit was mis-signed.
+  const text = [
+    'Scotiabank Jamaica',
+    'Account Number: 12345678',
+    'Opening Balance: 10,000.00',
+    '01/02/2024 POS PURCHASE PHARMACY 1,500.00 8,500.00',
+    '02/02/2024 SALARY DEPOSIT 5,000.00 13,500.00',
+  ].join('\n');
+  const res = scotiabank.regexParse(text);
+  assert.equal(res.transactions.length, 2);
+  assert.equal(res.transactions[0].amount, -1500);   // falling balance → debit
+  assert.equal(res.transactions[0].type, 'debit');
+  assert.equal(res.transactions[1].amount, 5000);    // rising balance → credit
+  assert.equal(res.transactions[1].type, 'credit');
+});
+
 test('Wise parser: money in is a credit, money out a debit (N2)', () => {
   const res = wise.parse(textFixture('wise-usd.txt'));
   assert.equal(res.transactions.length, 2);

@@ -1,7 +1,7 @@
 /**
  * JMMB Bank/Securities Statement Parser
  */
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta, resolveRowAmount } = require('./utils');
 
 function parse(text, filePath) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -59,7 +59,7 @@ function parse(text, filePath) {
     });
   }
 
-  if (transactions.length === 0) fallbackParse(lines, transactions, currency);
+  if (transactions.length === 0) fallbackParse(lines, transactions, currency, prevBalance);
 
   const period = derivePeriodFromTransactions(transactions);
 
@@ -73,9 +73,10 @@ function looksLikeCredit(payee) {
   return /salary|payroll|interest|dividend|deposit|refund|credit|received|transfer\s*in/i.test(payee || '');
 }
 
-function fallbackParse(lines, transactions, currency) {
+function fallbackParse(lines, transactions, currency, openingBalance = null) {
   const dateRe = /(\d{2}[\/\-]\d{2}[\/\-]\d{4})/;
   const amountRe = /([\d,]+\.\d{2})/g;
+  let prevBalance = openingBalance;
 
   for (const line of lines) {
     if (!dateRe.test(line)) continue;
@@ -85,7 +86,13 @@ function fallbackParse(lines, transactions, currency) {
 
     const rest = line.replace(dateRe, '').trim();
     const payee = rest.split(/\s{2,}/)[0] || 'JMMB Transaction';
-    const amount = amounts[0];
+
+    // The old fallback pushed the raw (positive) first number, which the
+    // boundary sign-flip turned into an across-the-board debit — every credit
+    // mis-signed. Resolve properly: balance delta → keyword guess.
+    const { amount, balance } = resolveRowAmount(amounts, prevBalance, looksLikeCredit(payee));
+    if (balance != null) prevBalance = balance;
+    if (amount == null) continue;
 
     transactions.push({
       date: normalizeDate(dateStr),

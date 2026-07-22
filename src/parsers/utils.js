@@ -101,4 +101,51 @@ function signedByBalanceDelta(amount, prevBalance, thisBalance) {
   return thisBalance < prevBalance ? mag : -mag;
 }
 
-module.exports = { normalizeDate, parseMDY, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta };
+/**
+ * Resolve a statement row's transaction amount (INTERNAL convention:
+ * positive = debit / money out) from the bare numbers on the row.
+ *
+ * `numbers` are the row's monetary values in print order; the running balance
+ * is conventionally the last. Resolution order:
+ *
+ *   1. Balance delta, when a previous balance is known AND the delta's
+ *      magnitude matches one of the row's printed non-balance numbers —
+ *      the most reliable signal, immune to blank-column ambiguity.
+ *   2. Column interpretation for full rows (≥3 numbers = debit, credit,
+ *      balance): whichever of the first two is non-zero wins.
+ *   3. First number signed by the caller's keyword guess (`looksCredit`).
+ *
+ * Returns { amount, balance } — amount null when the row carries no usable
+ * transaction value (e.g. a 0.00/0.00 column row); callers should surface
+ * such rows in a warning rather than dropping them silently.
+ */
+function resolveRowAmount(numbers, prevBalance, looksCredit) {
+  if (!numbers || !numbers.length) return { amount: null, balance: null };
+
+  const balance = numbers.length >= 2 ? numbers[numbers.length - 1] : null;
+  const cents   = (v) => Math.round(v * 100);
+
+  // 1. Balance delta, validated against the printed amounts
+  if (balance != null && prevBalance != null) {
+    const deltaCents = cents(balance) - cents(prevBalance);   // user conv: credit positive
+    if (deltaCents !== 0 &&
+        numbers.slice(0, -1).some(n => cents(n) === Math.abs(deltaCents))) {
+      return { amount: -deltaCents / 100, balance };          // internal: debit positive
+    }
+  }
+
+  // 2. Full debit/credit/balance rows
+  if (numbers.length >= 3) {
+    const debit = numbers[0], credit = numbers[1];
+    if (debit  !== 0) return { amount: debit,   balance };
+    if (credit !== 0) return { amount: -credit, balance };
+    return { amount: null, balance };
+  }
+
+  // 3. Amount(+balance) with no usable delta — keyword guess
+  const first = numbers[0];
+  if (first === 0) return { amount: null, balance };
+  return { amount: looksCredit ? -Math.abs(first) : Math.abs(first), balance };
+}
+
+module.exports = { normalizeDate, parseMDY, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta, resolveRowAmount };

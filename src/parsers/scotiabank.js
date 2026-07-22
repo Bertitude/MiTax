@@ -14,7 +14,7 @@
 
 const fs       = require('fs');
 const { extractPageItems } = require('../pdf/extract');
-const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta } = require('./utils');
+const { normalizeDate, derivePeriodFromTransactions, applySignConvention, signedByBalanceDelta, resolveRowAmount } = require('./utils');
 
 // Month abbreviation → number
 const MONTH_MAP = {
@@ -584,20 +584,42 @@ function regexParse(text) {
 
   const transactions = [];
 
-  // Pattern A: DD/MM/YYYY  date  + debit/credit columns
-  const txPat = /(\d{2}[\/\-]\d{2}[\/\-]\d{4})\s+(.*?)\s+([\d,]+\.\d{2})?\s*([\d,]+\.\d{2})?\s*([\d,]+\.\d{2})/g;
-  let m;
-  while ((m = txPat.exec(text)) !== null) {
-    const [, dateStr, desc, wStr, dStr] = m;
-    const date = normalizeDate(dateStr);
+  // Pattern A: DD/MM/YYYY rows with Withdrawal/Deposit/Balance columns. In
+  // extracted text a blank column vanishes, so a deposit row carries only two
+  // numbers (deposit + balance) — positionally identical to a withdrawal row.
+  // The old regex (`\s*` separators) captured such deposits in the WITHDRAWAL
+  // slot, mis-signing every credit. Resolve per line instead: balance-delta
+  // first, column interpretation for full rows, keyword guess last.
+  const openingA = text.match(/(?:opening|previous|beginning|brought\s+forward|b\/f)\s+balance[:\s]*([\d,]+\.\d{2})/i);
+  let prevBalance = openingA ? parseFloat(openingA[1].replace(/,/g, '')) : null;
+
+  const dateReA   = /(\d{2}[\/\-]\d{2}[\/\-]\d{4})/;
+  const amountReA = /([\d,]+\.\d{2})/g;
+
+  for (const line of lines) {
+    const dm = line.match(dateReA);
+    if (!dm) continue;
+    const date = normalizeDate(dm[1]);
     if (!date) continue;
-    if (BALANCE_LINE.test(desc)) continue;
-    const withdrawal = wStr ? parseFloat(wStr.replace(/,/g, '')) : 0;
-    const deposit    = dStr ? parseFloat(dStr.replace(/,/g, '')) : 0;
-    if (!withdrawal && !deposit) continue;
-    // LunchMoney convention: positive = expense/debit, negative = income/credit
-    const amount = withdrawal > 0 ? withdrawal : -deposit;
-    const payee  = cleanPayee(desc || 'Scotia Transaction');
+
+    const numbers = [...line.matchAll(amountReA)].map(x => parseFloat(x[1].replace(/,/g, '')));
+    if (!numbers.length) continue;
+
+    if (BALANCE_LINE.test(line)) {
+      prevBalance = numbers[numbers.length - 1];
+      continue;
+    }
+
+    const desc  = line.replace(dateReA, '').replace(/[\d,]+\.\d{2}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    const payee = cleanPayee(desc || 'Scotia Transaction');
+
+    const { amount, balance } = resolveRowAmount(
+      numbers, prevBalance,
+      /salary|payroll|wage|deposit|refund|credit|interest|dividend|received|transfer\s*in/i.test(payee)
+    );
+    if (balance != null) prevBalance = balance;
+    if (amount == null) continue;
+
     transactions.push({ date, payee, amount, currency, notes: '',
       category: categorize(payee, amount), type: amount < 0 ? 'credit' : 'debit' });
   }

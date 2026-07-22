@@ -7,6 +7,26 @@ All notable changes to MiTax are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **Cross-parser audit: the remaining silent-drop / credit-mis-sign paths are
+  closed.** A shared row resolver (`resolveRowAmount`) now signs statement rows
+  by, in order: the running-balance delta (validated against the row's printed
+  amounts), debit/credit column interpretation for full rows, then a payee
+  keyword guess — and rows that still can't be resolved produce a loud parse
+  warning instead of vanishing. Specifically:
+  - **NCB**: the all-or-nothing 3-number regex plus fallback-only-when-empty
+    meant mixed statements silently dropped every 2-number row — i.e. deposits
+    with a blank debit cell. All dated rows now flow through one unified pass.
+  - **Scotiabank regex fallback**: `\s*` separators let a 2-number deposit row
+    match with the deposit captured in the *withdrawal* slot — every credit
+    mis-signed as a debit. Now line-based with the shared resolver.
+  - **JMMB fallback**: pushed raw positive amounts, which the boundary sign
+    flip turned into across-the-board debits. Now delta/keyword signed.
+  - **JN Bank**: a dated row whose amounts sat outside the hardcoded
+    debit/credit x-zones was skipped with no trace; such rows are now counted
+    and reported in a parse warning.
+  - Verified clean: generic (DR/CR → columns → delta → keyword), UNFCU
+    (delta-based), Wise/Stripe/PayPal (natively signed), CSV import (non-zero
+    column preference + skip warning).
 - **Scotiabank parsers no longer silently drop transactions whose amount
   lacks a +/- marker — which disproportionately lost credits/deposits.** The
   savings/chequing parser required a trailing `+`/`-` after the amount; any

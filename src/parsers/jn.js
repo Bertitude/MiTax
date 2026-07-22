@@ -104,6 +104,8 @@ function parseFromPageItems(allPageItems, fullText) {
 
   // ── Per-page transaction extraction ──────────────────────────────────────
   const transactions = [];
+  const warnings = [];
+  const droppedRows = [];   // dated rows with amounts outside the expected columns
 
   for (const pageItems of allPageItems) {
     if (!pageItems.length) continue;
@@ -150,7 +152,18 @@ function parseFromPageItems(allPageItems, fullText) {
       const debitVal  = debitItems.length  ? parseFloat(debitItems[0].str.replace(/,/g, ''))  : 0;
       const creditVal = creditItems.length ? parseFloat(creditItems[0].str.replace(/,/g, '')) : 0;
 
-      if (debitVal === 0 && creditVal === 0) continue; // no amount found, skip
+      if (debitVal === 0 && creditVal === 0) {
+        // The column boundaries are hardcoded x-positions; if a layout
+        // variant shifts the credit column, its amounts land outside the
+        // expected zones and the row would vanish. Surface it instead:
+        // does this dated row carry an amount-looking token ANYWHERE
+        // outside the (ignored) balance zone?
+        const strayAmount = row.some(w => w.x < JN_BAL_MIN && w.x >= JN_DESC_MIN && AMT_PAT.test(w.str));
+        if (strayAmount || row.some(w => w.x >= JN_AMT_MIN && w.x < JN_BAL_MIN && /[\d]/.test(w.str))) {
+          droppedRows.push(`${date} ${typeStr || descStr || '(no description)'}`.trim());
+        }
+        continue; // no usable amount — skip (with warning above if suspicious)
+      }
 
       // In LunchMoney convention: positive = expense/debit, negative = income/credit
       const amount = debitVal > 0 ? debitVal : -creditVal;
@@ -177,6 +190,15 @@ function parseFromPageItems(allPageItems, fullText) {
       ? { start: headerPeriodStart, end: headerPeriodEnd || headerPeriodStart }
       : { start: '', end: '' };
 
+  if (droppedRows.length) {
+    warnings.push(
+      `${droppedRows.length} transaction row(s) were SKIPPED because their amounts sat outside the ` +
+      `expected debit/credit columns: ${droppedRows.slice(0, 5).join('; ')}` +
+      `${droppedRows.length > 5 ? ` + ${droppedRows.length - 5} more` : ''}. ` +
+      `Deposits/credits may be missing from the import — please report this statement layout.`
+    );
+  }
+
   applySignConvention(transactions);
   return {
     institution:  'JN Bank',
@@ -186,6 +208,7 @@ function parseFromPageItems(allPageItems, fullText) {
     currency,
     period,
     transactions,
+    warnings,
   };
 }
 
