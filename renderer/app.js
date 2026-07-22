@@ -3104,9 +3104,12 @@ async function startReconcile() {
     return;
   }
 
-  const { signMismatches, phantomBalances, suspectedPhantoms = [], missingInLM = [], warning } = res.data;
+  const { signMismatches, phantomBalances, suspectedPhantoms = [], missingInLM = [], statement = null, warning } = res.data;
 
   const cur = (asset.currency || 'JMD').toUpperCase();
+  // Missing rows can be uploaded straight from this modal — but only into
+  // manually-managed assets (the API can't insert into Plaid-synced accounts).
+  const canUploadMissing = asset.source !== 'plaid';
 
   // Banner shown above results: a period-mismatch warning, or an all-clear only
   // when there is genuinely nothing outstanding (including nothing missing).
@@ -3122,21 +3125,32 @@ async function startReconcile() {
   let html = warnHtml;
 
   if (missingInLM.length) {
+    const shown = missingInLM.slice(0, 200);
     html += `
       <div style="margin-bottom:16px;">
         <div style="font-weight:600;font-size:13px;margin-bottom:4px;">
           ⬆ On statement but not in LunchMoney <span class="badge badge-yellow">${missingInLM.length}</span>
+          ${canUploadMissing ? `
+          <label style="font-weight:400;font-size:11px;margin-left:12px;cursor:pointer;">
+            <input type="checkbox" id="reconcile-missing-all" checked> Select all
+          </label>` : ''}
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Likely not uploaded yet — import this statement to add them.</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">
+          ${canUploadMissing
+            ? 'Select rows to upload them into this account when you apply. Untick anything you can see in LunchMoney under a different account — uploading those would create duplicates.'
+            : 'This is a bank-synced account — transactions arrive via sync and cannot be uploaded here.'}
+        </div>
         <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
           <table style="width:100%;font-size:12px;border-collapse:collapse;">
             <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+              ${canUploadMissing ? '<th style="padding:6px;width:30px;"></th>' : ''}
               <th style="padding:6px;text-align:left;">Date</th>
               <th style="padding:6px;text-align:left;">Payee</th>
               <th style="padding:6px;text-align:right;">Amount</th>
             </tr></thead>
-            <tbody>${missingInLM.slice(0, 200).map(m => `
+            <tbody>${shown.map((m, i) => `
               <tr>
+                ${canUploadMissing ? `<td style="padding:4px 6px;"><input type="checkbox" class="reconcile-missing-cb" data-idx="${i}" checked></td>` : ''}
                 <td style="padding:4px 6px;">${escHtml(m.date || '')}</td>
                 <td style="padding:4px 6px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(m.payee || '')}</td>
                 <td style="padding:4px 6px;text-align:right;">${cur} ${Number(m.amount).toLocaleString('en', {minimumFractionDigits:2})}</td>
@@ -3144,6 +3158,9 @@ async function startReconcile() {
             `).join('')}</tbody>
           </table>
         </div>
+        ${missingInLM.length > shown.length
+          ? `<div style="font-size:11px;color:var(--warn);margin-top:4px;">Only the first ${shown.length} rows are shown/selectable — use Import Statements for the full set.</div>`
+          : ''}
       </div>`;
   }
 
@@ -3245,7 +3262,11 @@ async function startReconcile() {
   }
 
   body.innerHTML = html;
-  applyBtn.disabled = false;
+  // Only enable Apply when something is actually actionable — an enabled
+  // button over a purely informational list is a dead end ("Nothing selected").
+  applyBtn.disabled = !body.querySelector(
+    '.reconcile-flip-cb, .reconcile-delete-cb, .reconcile-suspected-cb, .reconcile-missing-cb'
+  );
 
   // Select-all toggles
   const flipAll = document.getElementById('reconcile-flip-all');
@@ -3256,6 +3277,10 @@ async function startReconcile() {
   if (deleteAll) deleteAll.addEventListener('change', () => {
     body.querySelectorAll('.reconcile-delete-cb').forEach(cb => { cb.checked = deleteAll.checked; });
   });
+  const missingAll = document.getElementById('reconcile-missing-all');
+  if (missingAll) missingAll.addEventListener('change', () => {
+    body.querySelectorAll('.reconcile-missing-cb').forEach(cb => { cb.checked = missingAll.checked; });
+  });
 
   // Apply handler (remove old listeners by replacing the button)
   const newApply = applyBtn.cloneNode(true);
@@ -3263,51 +3288,104 @@ async function startReconcile() {
   newApply.addEventListener('click', async () => {
     const flipIds   = [...body.querySelectorAll('.reconcile-flip-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
     const deleteIds = [...body.querySelectorAll('.reconcile-delete-cb:checked, .reconcile-suspected-cb:checked')].map(cb => parseInt(cb.dataset.lmId, 10));
+    const uploadRows = [...body.querySelectorAll('.reconcile-missing-cb:checked')]
+      .map(cb => missingInLM[parseInt(cb.dataset.idx, 10)])
+      .filter(Boolean);
 
-    if (!flipIds.length && !deleteIds.length) { toast('Nothing selected', 'error'); return; }
+    if (!flipIds.length && !deleteIds.length && !uploadRows.length) { toast('Nothing selected', 'error'); return; }
 
     const msg = [];
-    if (flipIds.length)   msg.push(`flip ${flipIds.length} sign${flipIds.length !== 1 ? 's' : ''}`);
-    if (deleteIds.length) msg.push(`delete ${deleteIds.length} phantom${deleteIds.length !== 1 ? 's' : ''}`);
+    if (uploadRows.length) msg.push(`upload ${uploadRows.length} missing transaction${uploadRows.length !== 1 ? 's' : ''} into "${asset.display_name || asset.name}"`);
+    if (flipIds.length)    msg.push(`flip ${flipIds.length} sign${flipIds.length !== 1 ? 's' : ''}`);
+    if (deleteIds.length)  msg.push(`delete ${deleteIds.length} phantom${deleteIds.length !== 1 ? 's' : ''}`);
     if (!confirm(`This will ${msg.join(' and ')} in LunchMoney. Proceed?`)) return;
 
     newApply.disabled    = true;
     newApply.textContent = 'Applying…';
 
-    let result;
+    const parts = [];
+    const errRows = [];
+    let errorCount = 0;
+
     try {
-      result = await window.electronAPI.applyReconciliation({ flipIds, deleteIds });
-    } catch (err) {
-      // The main process may have mutated some rows before failing — tell the
-      // user to re-run reconcile (which safely recomputes) rather than leaving
-      // a stuck "Applying…" button.
-      toast(`Apply failed: ${err.message || err}. Re-run reconcile to see current state.`, 'error');
-      return;
+      // ── Flips + phantom deletions ─────────────────────────────────────────
+      if (flipIds.length || deleteIds.length) {
+        let result;
+        try {
+          result = await window.electronAPI.applyReconciliation({ flipIds, deleteIds });
+        } catch (err) {
+          // The main process may have mutated some rows before failing — tell
+          // the user to re-run reconcile (which safely recomputes) rather than
+          // leaving a stuck "Applying…" button.
+          toast(`Apply failed: ${err.message || err}. Re-run reconcile to see current state.`, 'error');
+          return;
+        }
+        if (!result.success) { toast(`Error: ${result.error}`, 'error'); return; }
+        const d = result.data;
+        if (d.flipped)  parts.push(`${d.flipped} flipped`);
+        if (d.deleted)  parts.push(`${d.deleted} deleted`);
+        errorCount += d.errorCount || 0;
+        errRows.push(
+          ...d.failedDeletes.map(f => `Delete #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
+          ...d.failedFlips.map(f => `Flip #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
+          ...d.skipped.map(id => `Flip #${escHtml(String(id))}: not found in LunchMoney (skipped)`),
+        );
+      }
+
+      // ── Upload missing statement rows into this asset ─────────────────────
+      if (uploadRows.length) {
+        const prefs = getPrefs();
+        const upRes = await window.electronAPI.uploadTransactions({
+          transactions: uploadRows.map(m => ({
+            date: m.date, payee: m.payee, amount: m.amount,
+            currency: m.currency || asset.currency, notes: m.notes || '', categoryId: null,
+          })),
+          assetId:        asset.id,
+          skipDuplicates: prefs.skipDuplicates,
+          applyRules:     prefs.applyRules,
+        });
+
+        const up = (upRes.success && upRes.data) ? upRes.data : null;
+        const uploaded = up ? (up.uploaded || 0) : 0;
+        if (uploaded) parts.push(`${uploaded} uploaded`);
+        const upErrors = up ? (up.errors || []).filter(Boolean) : [upRes.error || 'upload failed'];
+        if (!uploaded && !upErrors.length) parts.push('0 uploaded (all duplicates?)');
+        errorCount += upErrors.length;
+        errRows.push(...upErrors.map(e => `Upload: ${escHtml(String(e))}`));
+
+        // Record it in upload history like a normal import
+        if (statement) {
+          try {
+            await window.electronAPI.saveUpload({
+              institution: statement.institution,
+              accountName: statement.accountName,
+              accountType: statement.accountType,
+              currency:    statement.currency,
+              lmAssetId:   asset.id,
+              filename:    statement.filename,
+              period:      statement.period,
+              txCount:     uploadRows.length,
+              lmIds:       uploaded ? up.ids : null,
+              status:      uploaded ? 'uploaded' : 'failed',
+              notes:       `Uploaded via Reconcile.${upErrors.length ? `\n${upErrors.join('; ')}` : ''}`,
+            });
+            refreshHistory();
+            refreshTracker();
+          } catch { /* history record is best-effort */ }
+        }
+      }
     } finally {
       newApply.disabled    = false;
       newApply.textContent = 'Apply Selected Fixes';
     }
 
-    if (!result.success) { toast(`Error: ${result.error}`, 'error'); return; }
-
-    const d = result.data;
-    const parts = [];
-    if (d.flipped)  parts.push(`${d.flipped} flipped`);
-    if (d.deleted)  parts.push(`${d.deleted} deleted`);
-    const errorCount = d.errorCount || 0;
-    if (errorCount) parts.push(`${errorCount} failed`);
     toast(parts.join(', ') || 'Done', errorCount ? 'error' : 'success');
 
     if (errorCount) {
       // Keep the modal open and list exactly which rows failed (esp. deletes).
       const errBox = document.getElementById('reconcile-apply-errors');
       if (errBox) {
-        const rows = [
-          ...d.failedDeletes.map(f => `Delete #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
-          ...d.failedFlips.map(f => `Flip #${escHtml(String(f.id))}: ${escHtml(f.error || 'failed')}`),
-          ...d.skipped.map(id => `Flip #${escHtml(String(id))}: not found in LunchMoney (skipped)`),
-        ];
-        errBox.innerHTML = `<strong>${errorCount} operation(s) failed:</strong><ul>${rows.map(r => `<li>${r}</li>`).join('')}</ul>`;
+        errBox.innerHTML = `<strong>${errorCount} operation(s) failed:</strong><ul>${errRows.map(r => `<li>${r}</li>`).join('')}</ul>`;
         errBox.style.display = 'block';
       }
       if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);

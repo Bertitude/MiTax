@@ -4,6 +4,22 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Reconcile's "on statement but not in LunchMoney" list is no longer a dead
+  end.** The list was informational-only, yet the "Apply Selected Fixes"
+  button stayed enabled with nothing selectable and could only report
+  "Nothing selected". Missing rows now have checkboxes (with select-all) and
+  applying uploads the selected rows straight into the account being
+  reconciled — recorded in upload history like a normal import — with a
+  caution to untick anything already present under a different LunchMoney
+  account. On bank-synced (Plaid) accounts the list stays read-only with an
+  explanation, and Apply now disables itself whenever nothing on screen is
+  actionable.
+
+---
+
 ## [1.3.5] — 2026-07-22
 
 ### Fixed

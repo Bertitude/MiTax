@@ -447,6 +447,18 @@ handle('reconcile-statement', async (event, { assetId, plaidAccountId, filePath,
 
     const data = reconcile(parsedTxs, lmTxs, balanceSentinels);
 
+    // Statement metadata so the renderer can record an upload-history entry
+    // if the user chooses to upload missing rows from the reconcile modal.
+    const first = results[0] || {};
+    data.statement = {
+      filename:    path.basename(filePath),
+      institution: first.institution  || 'Unknown',
+      accountName: first.accountName  || 'Account',
+      accountType: first.accountType  || 'unknown',
+      currency:    first.currency     || 'JMD',
+      period:      first.period       || null,
+    };
+
     // Warn when the statement's own period doesn't fall in the selected year —
     // the comparison window then has no overlap and a clean "all match" result
     // would be misleading.

@@ -102,7 +102,12 @@ function reconcile(parsedTxs, lmTxs, balanceSentinels = []) {
   const missingInLM = [];
   for (const bucket of buckets.values()) {
     for (const { tx } of bucket) {
-      missingInLM.push({ date: tx.date, amount: tx.amount, payee: tx.payee || '' });
+      // Carry the full parsed row so the caller can offer to upload it
+      // directly (currency/notes/category come from the statement parser).
+      missingInLM.push({
+        date: tx.date, amount: tx.amount, payee: tx.payee || '',
+        currency: tx.currency || null, notes: tx.notes || '', category: tx.category || '',
+      });
     }
   }
   missingInLM.sort((a, b) => (a.date || '').localeCompare(b.date || '') || Math.abs(a.amount) - Math.abs(b.amount));
