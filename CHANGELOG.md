@@ -4,6 +4,28 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **"Premature close" on GET /transactions now fails DETERMINISTICALLY (all 3
+  retries, every time) while GET /assets (a small, fast request) never fails
+  — a real problem the v1.3.9 retry logic cannot fix, since retrying an
+  identical request gets an identical result.** Three independent,
+  low-risk mitigations, applied together rather than guessed one at a time:
+  - Requests are now sent uncompressed (`Accept-Encoding: identity`,
+    `compress: false`). A gzip stream whose trailer bytes get truncated by a
+    network intermediary (proxy/antivirus/CDN) produces exactly this failure
+    signature in Node's strict zlib decoder — even though the actual JSON
+    payload arrived intact. Uncompressed responses remove that failure mode.
+  - `Connection: close` on every request, ruling out a stale pooled
+    keep-alive socket (closed server-side, silently reused client-side).
+  - Transaction pagination page size reduced from 500 to 100 rows — a
+    smaller response is less likely to trip either a size-sensitive network
+    intermediary or a slow server-side query on a heavily active account;
+    the existing pagination loop makes the extra requests fully transparent.
+
+---
+
 ## [1.3.9] — 2026-07-22
 
 ### Added

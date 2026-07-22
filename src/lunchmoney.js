@@ -120,7 +120,20 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      // Mitigations for "Premature close" on larger responses (e.g. a full
+      // year of transactions), never seen on small ones (e.g. /assets):
+      //  - Accept-Encoding: identity + compress:false — a common cause of
+      //    this exact failure signature is a gzip stream whose final
+      //    trailer bytes get truncated by an intermediary (proxy/AV/CDN);
+      //    Node's zlib decoder is strict and throws even though the actual
+      //    JSON payload arrived intact. Requesting uncompressed responses
+      //    removes that failure mode entirely.
+      //  - Connection: close — rules out a stale pooled keep-alive socket
+      //    (closed server-side, silently reused client-side) as a cause.
+      'Accept-Encoding': 'identity',
+      Connection: 'close',
     },
+    compress: false,
     signal: controller.signal,
   };
   if (body) opts.body = JSON.stringify(body);
@@ -352,9 +365,15 @@ async function getPayees(apiKey) {
 
 async function getTransactions(apiKey, { startDate, endDate, assetId, plaidAccountId } = {}) {
   // LunchMoney paginates with `limit`/`offset`; we fetch every page and
-  // concatenate. Loop cap is defensive — 500 pages × 500 = 250,000 rows.
-  const PAGE_SIZE = 500;
-  const MAX_PAGES = 500;
+  // concatenate. PAGE_SIZE is deliberately well under LunchMoney's 500 max —
+  // a smaller response is less likely to trip a "Premature close" on a
+  // response-size-sensitive network intermediary or a slow server-side query
+  // for a heavily active account/date range; the offset loop below already
+  // makes this fully transparent to every caller regardless of page count.
+  // Loop cap is defensive — 2500 pages × 100 = 250,000 rows (same ceiling as
+  // before the page size was reduced).
+  const PAGE_SIZE = 100;
+  const MAX_PAGES = 2500;
 
   const all = [];
   for (let page = 0; page < MAX_PAGES; page++) {
