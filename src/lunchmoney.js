@@ -110,6 +110,16 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
     err.status = res.status;   // let callers distinguish auth (401/403) from other failures
     throw err;
   }
+
+  // LunchMoney v1 returns HTTP 200 with an `error` field in the body when it
+  // rejects a request (e.g. an invalid parameter). Treating that as success
+  // let `data.transactions || []` silently turn rejections into "no
+  // transactions" — every list-based view showed $0 while balances worked.
+  // Surface it as a real error so the UI shows LunchMoney's actual message.
+  if (data && data.error) {
+    const msg = Array.isArray(data.error) ? data.error.join('; ') : String(data.error);
+    throw new Error(`LunchMoney API error (${method} ${endpoint.split('?')[0]}): ${msg}`);
+  }
   return data;
 }
 
@@ -271,7 +281,12 @@ async function getTransactions(apiKey, { startDate, endDate, assetId, plaidAccou
     params.append('offset', String(page * PAGE_SIZE));
 
     const data = await lmRequest('GET', `/transactions?${params}`, apiKey);
-    const batch = data.transactions || [];
+    // A missing array is a response-shape problem, not "no transactions" —
+    // never let it masquerade as an empty ledger.
+    if (!Array.isArray(data.transactions)) {
+      throw new Error('Unexpected LunchMoney response for /transactions: no transactions array in body');
+    }
+    const batch = data.transactions;
     all.push(...batch);
 
     // Prefer explicit has_more flag if server returns one; otherwise fall

@@ -4,6 +4,21 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **LunchMoney 200-with-error responses are no longer silently treated as "no
+  transactions".** LunchMoney's v1 API can reject a request with HTTP 200 and
+  an `error` field in the body; the client only threw on non-2xx, so
+  `data.transactions || []` converted such rejections into an empty list —
+  every list-based view (account summaries, S04, reconcile, coverage) showed
+  $0 while balances (a different endpoint) kept working. Body errors now
+  throw with LunchMoney's own message, and a missing `transactions` array is
+  treated as a response-shape error rather than an empty ledger, so the UI
+  surfaces the real cause instead of confident zeros.
+
+---
+
 ## [1.3.6] — 2026-07-22
 
 ### Added
