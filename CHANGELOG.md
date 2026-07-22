@@ -4,6 +4,24 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Root cause found (via the v1.3.8 diagnostic): transaction fetches can fail
+  with a "Premature close" body-stream error, and it was going completely
+  unretried.** The existing retry logic only wraps the initial connection
+  (`fetch()`); a response whose BODY stream closes mid-read — a proxy/VPN/
+  keep-alive hiccup after headers already arrived — happens later, in
+  `res.text()`/`res.json()`, and was never covered. Before v1.3.7 this was
+  silently swallowed by `.json().catch(() => ({}))` into a fake empty
+  `{transactions: []}`, which is what made real transactions vanish as "no
+  data" while balances (a different, smaller endpoint) kept working. Body-read
+  failures now retry with the same backoff as connection failures (idempotent
+  GETs only — by this point the request was already sent, so a POST is not
+  retried to avoid resubmitting) before surfacing an error.
+
+---
+
 ## [1.3.8] — 2026-07-22
 
 ### Fixed

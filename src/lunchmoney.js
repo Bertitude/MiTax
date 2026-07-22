@@ -39,6 +39,21 @@ function isRetryableNetworkError(err) {
   return false;
 }
 
+// A response body stream can fail AFTER headers arrive and connection-phase
+// errors have already passed — the connection closes (proxy/VPN/keep-alive
+// hiccup, server-side timeout on a larger response) mid-read. Node surfaces
+// this as ERR_STREAM_PREMATURE_CLOSE / "Premature close", which is a
+// completely different failure point from isRetryableNetworkError above (that
+// only covers the initial fetch() call) and was previously going unhandled —
+// worse, a naive `.json().catch(() => ({}))` swallowed it into a fake empty
+// success, which is what made real transactions disappear as "no data".
+function isRetryableBodyError(err) {
+  if (!err) return false;
+  if (err.code === 'ERR_STREAM_PREMATURE_CLOSE') return true;
+  if (/premature close/i.test(String(err.message || ''))) return true;
+  return isRetryableNetworkError(err);
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -106,7 +121,30 @@ async function lmRequest(method, endpoint, apiKey, body = null, attempt = 0) {
   // from a proxy/WAF, an empty body, a truncated response — can be shown
   // verbatim in the thrown error instead of being silently swallowed into
   // `{}` and misread downstream as "the request succeeded with no data".
-  const rawText = await res.text();
+  let rawText;
+  try {
+    rawText = await res.text();
+  } catch (err) {
+    // Body-stream failure (e.g. "Premature close") — a different failure
+    // point from the connection-phase retry above, since it only surfaces
+    // once headers have already arrived and reading the body begins. Retry
+    // like any other transient network error, but only for idempotent GETs:
+    // the request itself was already fully sent by this point, so retrying
+    // a POST risks re-submitting (e.g. duplicating an upload batch).
+    if (isIdempotent && isRetryableBodyError(err) && attempt < MAX_RETRIES) {
+      const delayMs = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
+      console.warn(`[LunchMoney] ${method} ${endpoint} → body read failed (${err.message}); retrying in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await sleep(delayMs);
+      return lmRequest(method, endpoint, apiKey, body, attempt + 1);
+    }
+    const wrapped = new Error(
+      `LunchMoney response body could not be read for ${method} ${endpoint.split('?')[0]} ` +
+      `(HTTP ${res.status}) after ${attempt} retr${attempt === 1 ? 'y' : 'ies'}: ${err.message}`
+    );
+    wrapped.status = res.status;
+    throw wrapped;
+  }
+
   let data;
   try {
     data = rawText ? JSON.parse(rawText) : {};
