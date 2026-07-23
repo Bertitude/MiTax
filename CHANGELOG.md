@@ -4,6 +4,19 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Removed
+- **"How Your Money Was Classified" table removed from the S04 report.**
+  With LunchMoney's settings as the sole classification authority the
+  report simply mirrors the user's own configuration, so the per-category
+  audit table was redundant. The safety-net warning remains in the report
+  notes: any credits that were NOT counted because their category isn't
+  flagged as income in LunchMoney are still totalled, with guidance on
+  how to fix the category.
+
+---
+
 ## [1.3.14] — 2026-07-23
 
 ### Changed

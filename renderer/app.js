@@ -2507,81 +2507,6 @@ async function generateTax() {
   renderTaxReport(result.data);
 }
 
-// Human labels for the classification transparency table.
-const CLASSIFY_BUCKET_LABELS = {
-  'income:business':   'Income — Business',
-  'income:foreign':    'Income — Foreign',
-  'income:investment': 'Income — Investment',
-  'income:rental':     'Income — Rental',
-  'income:other':      'Income — Other',
-  'expense':           'Deductible Expense',
-  'excluded':          'Excluded',
-  'ignored':           'Ignored (your mapping)',
-  'unclassified':      'Not counted',
-};
-const CLASSIFY_SOURCE_LABELS = {
-  'mapping': 'Your mapping',
-  'lm-flag': 'LunchMoney setting',
-  'keyword': '⚠ Keyword guess (deduction)',
-  'none':    '—',
-};
-
-/**
- * "How your money was classified" — per-category audit table so income/expense
- * treatment is verifiable instead of trusted. Amber rows = keyword guesses and
- * unclassified money; both deserve a mapping in the Category Mapping panel.
- */
-function buildClassificationSection(report) {
-  const c = report.classification;
-  if (!c || !c.rows || !c.rows.length) return '';
-  const fmt = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
-
-  const rows = c.rows.map(r => {
-    const flagged = r.source === 'keyword' || r.bucket === 'unclassified';
-    return `<tr${flagged ? ' style="background:rgba(210,153,34,0.08);"' : ''}>
-      <td style="padding:5px 8px;">${escHtml(r.category)}</td>
-      <td style="padding:5px 8px;white-space:nowrap;">${escHtml(CLASSIFY_BUCKET_LABELS[r.bucket] || r.bucket)}</td>
-      <td style="padding:5px 8px;white-space:nowrap;color:${r.source === 'keyword' ? 'var(--warn)' : 'var(--text-muted)'};">${escHtml(CLASSIFY_SOURCE_LABELS[r.source] || r.source)}</td>
-      <td style="padding:5px 8px;text-align:right;">${r.credits ? fmt(r.credits) : '—'}</td>
-      <td style="padding:5px 8px;text-align:right;">${r.debits ? fmt(r.debits) : '—'}</td>
-      <td style="padding:5px 8px;text-align:right;color:var(--text-muted);">${r.count}</td>
-    </tr>`;
-  }).join('');
-
-  const warnBits = [];
-  if (c.unclassifiedCredits > 0) warnBits.push(`${fmt(c.unclassifiedCredits)} in credits was NOT counted — its categories aren't flagged as income in LunchMoney`);
-  if (!c.categoriesLoaded)      warnBits.push('LunchMoney category flags were unavailable — only your mappings could classify income');
-
-  return `
-    <div class="tax-section">
-      <div class="card-title">How Your Money Was Classified</div>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
-        Income and exclusions come straight from your LunchMoney settings: categories flagged as
-        <em>income</em> count as income, categories excluded from totals (transfers, groups) are skipped —
-        MiTax never guesses income from bank text. Your Category Mapping overrides either, and picks the
-        S04 income line. Highlighted rows are uncounted money or keyword-guessed deductions — fix them in
-        LunchMoney or map them here. Refunds in expense categories reduce the expense; they are not income.
-      </div>
-      ${warnBits.length ? `<div style="padding:8px 12px;margin-bottom:10px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">⚠ ${escHtml(warnBits.join(' · '))}</div>` : ''}
-      <div style="overflow-x:auto;max-height:320px;overflow-y:auto;">
-        <table style="width:100%;border-collapse:collapse;font-size:12px;">
-          <thead>
-            <tr style="color:var(--text-muted);border-bottom:1px solid var(--border);text-align:left;">
-              <th style="padding:5px 8px;">Category</th>
-              <th style="padding:5px 8px;">Treated as</th>
-              <th style="padding:5px 8px;">Why</th>
-              <th style="padding:5px 8px;text-align:right;">Credits</th>
-              <th style="padding:5px 8px;text-align:right;">Debits</th>
-              <th style="padding:5px 8px;text-align:right;">Txns</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      ${c.excludedTotal > 0 ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Excluded by LunchMoney flags (transfers, groups): ${fmt(c.excludedTotal)} · Ignored by your mappings: ${fmt(c.ignoredTotal)}</div>` : ''}
-    </div>`;
-}
-
 function renderTaxReport(report) {
   const wrap = document.getElementById('tax-report-wrap');
   wrap.style.display = 'block';
@@ -2638,7 +2563,6 @@ function renderTaxReport(report) {
         <div class="tax-row"><span>Chargeable Income</span><span class="tax-amount">${fmt(report.chargeableIncome)}</span></div>
         <div class="tax-row"><span>Income Tax (25%/30%)</span><span class="tax-amount">${fmt(report.tax.incomeTax)}</span></div>
       </div>
-      ${buildClassificationSection(report)}
       ${report.p24 ? `
       <div class="tax-section">
         <div class="card-title">Part E — P24 Withholdings (Already Paid via PAYE)</div>
