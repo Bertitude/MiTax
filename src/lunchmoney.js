@@ -334,6 +334,22 @@ async function getCategories(apiKey) {
   return data.categories || [];
 }
 
+/**
+ * Create a category in LunchMoney. `is_income` marks credits in it as income;
+ * `exclude_from_totals` makes LunchMoney (and MiTax) skip it entirely —
+ * used for the Transfers category in the S04 starter pack.
+ * Returns the new category id.
+ */
+async function createCategory(apiKey, { name, description = null, isIncome = false, excludeFromTotals = false }) {
+  const data = await lmRequest('POST', '/categories', apiKey, {
+    name,
+    description,
+    is_income: !!isIncome,
+    exclude_from_totals: !!excludeFromTotals,
+  });
+  return data.category_id;
+}
+
 // ─── Payees ──────────────────────────────────────────────────────────────────
 
 /**
@@ -713,6 +729,7 @@ module.exports = {
   getAssets,
   createAsset,
   getCategories,
+  createCategory,
   getPayees,
   describeLmFailure,
   resolveTxAmount,

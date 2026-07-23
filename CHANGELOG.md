@@ -4,6 +4,42 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Expenditure-related credits no longer masquerade as taxable income.**
+  The old classifier substring-matched income keywords against the raw
+  payee/bank text — 'Rent' matched "CURRENT ACCOUNT", 'Interest' matched
+  "PINTEREST", and every refund or cashback was counted as Other Income by
+  design. Classification is rebuilt (src/tax/classify.js) with a strict
+  priority order: your Category Mapping → LunchMoney's own category flags
+  (`is_income`, `exclude_from_totals`, `is_group`) → word-boundary keyword
+  match against the CATEGORY NAME only (payee/notes are consulted only for
+  uncategorized transactions, and flagged as guesses). Refunds in expense
+  categories now net against that category's expenses; debits in income
+  categories (chargebacks) reduce that income; transfers and excluded
+  categories are skipped entirely.
+- **Dashboard and S04A YTD income now use the same classifier as the S04
+  report** instead of counting every positive transaction — transfers,
+  refunds, and unclassifiable credits no longer inflate the headline income
+  or the quarterly estimate trend.
+
+### Added
+- **"How Your Money Was Classified" audit table on the S04 report** — every
+  category with its treatment (income type / deductible / excluded /
+  ignored / not counted), the reason (your mapping, LunchMoney flag, or
+  keyword guess), and totals. Keyword-guessed income and uncounted credits
+  are highlighted and totalled in the report warnings.
+- **One-click S04 category pack for LunchMoney.** A "Create S04 Categories
+  in LunchMoney" button (Category Mapping panel) creates a tax-ready set in
+  your budget via the LunchMoney API — 5 income categories flagged
+  `is_income`, 11 deductible business expense categories, and a Transfers
+  category flagged `exclude_from_totals` — skipping any that already exist,
+  and auto-maps them all to their S04 treatment so categorizing in
+  LunchMoney is all a new user ever has to do.
+
+---
+
 ## [1.3.12] — 2026-07-23
 
 ### Added

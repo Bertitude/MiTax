@@ -665,7 +665,7 @@ handle('export-csv', async (event, { transactions, filename }) => {
 });
 
 // ─── IPC: Dashboard Data ─────────────────────────────────────────────────────
-handle('get-dashboard-data', async (event, { year, quarter }) => {
+handle('get-dashboard-data', async (event, { year, quarter, userCategoryMappings }) => {
   const qMonthsByQ = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
   const qMonths    = qMonthsByQ[(quarter || 1) - 1];
   const apiKey     = activeApiKey();
@@ -680,8 +680,9 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
   // ── LunchMoney: assets + YTD income + quarterly tax estimate ────────────
   if (apiKey) {
     try {
-      const { getAllLmAccounts, getTransactions, resolveTxAmount } = require('./src/lunchmoney');
+      const { getAllLmAccounts, getTransactions, getCategories, resolveTxAmount } = require('./src/lunchmoney');
       const { getTaxParams, estimateAnnualTax } = require('./src/tax/s04');
+      const { buildClassifier } = require('./src/tax/classify');
 
       result.assets = await getAllLmAccounts(apiKey);
 
@@ -692,11 +693,16 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
         endDate:   ytdEnd,
       });
 
-      // YTD income = sum of credits (positive amounts) in primary currency
-      result.ytdIncome = ytdTxs.reduce((sum, tx) => {
-        const amount = resolveTxAmount(tx);
-        return amount > 0 ? sum + amount : sum;
-      }, 0);
+      // YTD income = CLASSIFIED income (same engine as the S04 report), not
+      // every positive amount — transfers, refunds, and unclassified credits
+      // no longer inflate the headline number.
+      let categories = [];
+      try { categories = await getCategories(apiKey); } catch (_) { /* keyword fallback */ }
+      const classify = buildClassifier({ categories, userCategoryMappings: userCategoryMappings || {} });
+      result.ytdIncome = Math.max(0, ytdTxs.reduce((sum, tx) => {
+        const { bucket } = classify(tx);
+        return bucket.startsWith('income:') ? sum + resolveTxAmount(tx) : sum;
+      }, 0));
 
       // Quarterly tax estimate — extrapolate YTD income to annual, apply S04 rates.
       // getTaxParams falls back to the nearest-earlier defined year (not a hard-
@@ -899,6 +905,37 @@ handle('generate-s04', async (event, { year, manualData, userCategoryMappings })
   }
 });
 
+// Create the S04 starter category pack in the user's LunchMoney budget.
+// Only categories that don't already exist (case-insensitive name match) are
+// created; the caller gets back id+mapping for BOTH created and pre-existing
+// pack categories so it can auto-map them all in the mapping panel.
+handle('setup-tax-categories', async () => {
+  try {
+    const apiKey = activeApiKey();
+    if (!apiKey) return { success: false, error: 'Connect your LunchMoney API key first.' };
+    const { getCategories, createCategory } = require('./src/lunchmoney');
+    const { S04_CATEGORY_PACK }             = require('./src/tax/classify');
+
+    const existing = await getCategories(apiKey);
+    const byName = new Map(existing.map(c => [String(c.name || '').trim().toLowerCase(), c]));
+
+    const created = [], skipped = [], errors = [];
+    for (const def of S04_CATEGORY_PACK) {
+      const found = byName.get(def.name.toLowerCase());
+      if (found) { skipped.push({ id: found.id, name: def.name, mapping: def.mapping }); continue; }
+      try {
+        const id = await createCategory(apiKey, def);
+        created.push({ id, name: def.name, mapping: def.mapping });
+      } catch (err) {
+        errors.push({ name: def.name, error: err.message });
+      }
+    }
+    return { success: true, data: { created, skipped, errors } };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ─── IPC: Tax Filings (history + S04A) ──────────────────────────────────────
 
 handle('save-filing', async (event, payload) => {
@@ -940,11 +977,12 @@ handle('delete-filing', async (event, id) => {
   }
 });
 
-handle('generate-s04a', async (event, { currentYear, timezone }) => {
+handle('generate-s04a', async (event, { currentYear, timezone, userCategoryMappings }) => {
   try {
     const { getMostRecentS04 }         = require('./src/filings');
     const { generateS04A }             = require('./src/tax/s04');
-    const { getTransactions, resolveTxAmount } = require('./src/lunchmoney');
+    const { getTransactions, getCategories, resolveTxAmount } = require('./src/lunchmoney');
+    const { buildClassifier }          = require('./src/tax/classify');
 
     const apiKey          = activeApiKey();
     const priorYearFiling = getMostRecentS04(currentYear - 1);
@@ -964,10 +1002,15 @@ handle('generate-s04a', async (event, { currentYear, timezone }) => {
         startDate: `${currentYear}-01-01`,
         endDate,
       });
-      currentYtdIncome = ytdTxs.reduce((sum, tx) => {
-        const amt = resolveTxAmount(tx);
-        return amt > 0 ? sum + amt : sum;
-      }, 0);
+      // Classified income only (same engine as S04/dashboard) — transfers,
+      // refunds, and unclassified credits don't inflate the trend.
+      let categories = [];
+      try { categories = await getCategories(apiKey); } catch (_) { /* keyword fallback */ }
+      const classify = buildClassifier({ categories, userCategoryMappings: userCategoryMappings || {} });
+      currentYtdIncome = Math.max(0, ytdTxs.reduce((sum, tx) => {
+        const { bucket } = classify(tx);
+        return bucket.startsWith('income:') ? sum + resolveTxAmount(tx) : sum;
+      }, 0));
     }
 
     const estimate = generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr });

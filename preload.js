@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // S04 Tax
   generateS04:  (payload) => ipcRenderer.invoke('generate-s04',  payload),
+  setupTaxCategories: () => ipcRenderer.invoke('setup-tax-categories'),
   generateS04A: (payload) => ipcRenderer.invoke('generate-s04a', payload),
   exportS04PDF: (payload) => ipcRenderer.invoke('export-s04-pdf', payload),
   taxParamsStatus: (payload) => ipcRenderer.invoke('tax-params:status', payload),

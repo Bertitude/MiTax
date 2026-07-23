@@ -8,7 +8,8 @@
  * against the portal before filing season.
  */
 
-const { getTransactions, getTransactionYearSummary, resolveTxAmount } = require('../lunchmoney');
+const { getTransactions, getTransactionYearSummary, getCategories, resolveTxAmount } = require('../lunchmoney');
+const { buildClassifier } = require('./classify');
 
 // ─── Tax Rates & Thresholds ─────────────────────────────────────────────────
 //
@@ -146,35 +147,22 @@ function taxParamsStatus(todayStr) {
   return { stale: false, reason: null };
 }
 
-// ─── Category to income-type mapping ───────────────────────────────────────
-
-const INCOME_CATEGORIES = {
-  business: ['Business Income', 'Income', 'Freelance', 'Invoice', 'Client Payment', 'Service'],
-  foreign: ['Foreign Income', 'Wise', 'PayPal', 'Stripe', 'International', 'USD', 'Remittance'],
-  investment: ['Investment Income', 'Dividend', 'Interest', 'Capital Gain', 'Mutual Fund'],
-  rental: ['Rental Income', 'Rent', 'Property', 'Tenant'],
-  other: ['Other Income', 'Refund', 'Cashback'],
-};
-
-const DEDUCTIBLE_CATEGORIES = [
-  'Office Supplies', 'Travel', 'Auto & Transport', 'Internet', 'Phone', 'Software',
-  'Professional Services', 'Bank Fees', 'Fees', 'Insurance', 'Advertising', 'Marketing',
-  'Equipment', 'Subscriptions', 'Utilities', 'Rent Paid',
-];
-
 // ─── Main generator ─────────────────────────────────────────────────────────
 
-async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings = {}, p24Totals = null }) {
+async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings = {}, p24Totals = null, transactions = null, categories = null }) {
   const { params, fallback } = getTaxParams(year);
 
-  let allTransactions = [];
+  let allTransactions = Array.isArray(transactions) ? transactions : [];
+  let lmCategories    = Array.isArray(categories)   ? categories   : [];
+  let categoriesWarning = null;
 
   // A tax report silently rendered from zero transactions looks identical to a
   // correct one — record WHY the data is empty so the report can say so.
   let dataWarning = null;
 
-  // Fetch from LunchMoney if API key provided
-  if (apiKey) {
+  // Fetch from LunchMoney if API key provided (`transactions`/`categories`
+  // params inject data directly — used by tests and offline callers).
+  if (apiKey && !Array.isArray(transactions)) {
     try {
       const startDate = `${year}-01-01`;
       const endDate = `${year}-12-31`;
@@ -197,11 +185,26 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       console.warn('Could not fetch from LunchMoney:', err.message);
       dataWarning = `Could not fetch transactions from LunchMoney (${err.message}) — this report was generated WITHOUT transaction data and every figure derived from it is $0.`;
     }
-  } else {
+  } else if (!apiKey && !Array.isArray(transactions)) {
     dataWarning = 'Not connected to LunchMoney — this report was generated WITHOUT transaction data.';
   }
 
+  // Category metadata (is_income / exclude_from_totals flags) drives the
+  // primary classification. A fetch failure here degrades to keyword
+  // fallback — noted in the report rather than silently.
+  if (apiKey && !Array.isArray(categories)) {
+    try {
+      lmCategories = await getCategories(apiKey);
+    } catch (err) {
+      categoriesWarning = `Could not load LunchMoney categories (${err.message}) — classification fell back to keyword matching for this report; income/expense typing may be less accurate.`;
+    }
+  }
+
   // ─── Categorize transactions ─────────────────────────────────────────────
+  // Priority: user mapping → LunchMoney category flags (is_income /
+  // exclude_from_totals / is_group) → word-boundary keywords. See classify.js.
+
+  const classify = buildClassifier({ categories: lmCategories, userCategoryMappings });
 
   const income = {
     business: 0,
@@ -217,6 +220,14 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   let convertedCount = 0;
   let unconvertedCount = 0;
 
+  // Classification transparency: per-category aggregation so the report can
+  // show WHAT was counted as what, and WHY. Uncategorized transactions can
+  // classify differently per transaction (payee-based), so their rows are
+  // split by resulting bucket.
+  const catRows = new Map();
+  let excludedTotal = 0, ignoredTotal = 0;
+  let unclassifiedCredits = 0, unclassifiedDebits = 0;
+
   for (const tx of allTransactions) {
     // resolveTxAmount: sign from `amount` (honors debit_as_negative), magnitude
     // from `to_base` when present (correct multi-currency conversion) — see
@@ -224,45 +235,61 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     const hasConversion = tx.to_base !== undefined && tx.to_base !== null;
     const amount = resolveTxAmount(tx);
     if (hasConversion) convertedCount++; else unconvertedCount++;
+    if (!amount) continue;
 
-    const category   = tx.category_name || tx.category || '';
-    const categoryId = tx.category_id   != null ? String(tx.category_id) : null;
-    const notes      = (tx.notes || '') + ' ' + (tx.payee || '');
+    const { bucket, source } = classify(tx);
+    const categoryLabel = tx.category_name || tx.category || 'Uncategorized';
 
-    // ── Check user-defined category mapping first ──────────────────────────
-    // userCategoryMappings: { [categoryId]: { incomeType?, isDeductible?, ignore? } }
-    const userMapping = categoryId ? (userCategoryMappings[categoryId] || null) : null;
+    const rowKey = tx.category_id != null ? String(tx.category_id) : `(uncategorized)|${bucket}`;
+    let row = catRows.get(rowKey);
+    if (!row) {
+      row = { category: categoryLabel, bucket, source, credits: 0, debits: 0, count: 0 };
+      catRows.set(rowKey, row);
+    }
+    row.count++;
+    if (amount > 0) row.credits += amount; else row.debits += Math.abs(amount);
 
-    if (userMapping && userMapping.ignore) continue;   // explicitly excluded
-
-    // Classify income (positive amounts = credits/income)
-    if (amount > 0) {
-      let incomeType = null;
-      if (userMapping && userMapping.incomeType) {
-        incomeType = userMapping.incomeType;           // user-mapped income type
-      } else {
-        incomeType = classifyIncome(category, notes);  // keyword fallback
-      }
-      if (incomeType && income[incomeType] !== undefined) income[incomeType] += amount;
+    if (bucket === 'ignored')  { ignoredTotal  += Math.abs(amount); continue; }
+    if (bucket === 'excluded') { excludedTotal += Math.abs(amount); continue; }
+    if (bucket === 'unclassified') {
+      if (amount > 0) unclassifiedCredits += amount; else unclassifiedDebits += Math.abs(amount);
+      continue;
     }
 
-    // Classify deductible expenses (negative amounts = debits/expenses)
+    if (bucket.startsWith('income:')) {
+      // Credits add; debits in an income category are income reversals
+      // (e.g. a refunded client payment) and net against that income type.
+      const type = bucket.slice('income:'.length);
+      if (income[type] !== undefined) income[type] += amount;
+      continue;
+    }
+
+    // 'expense': debits accumulate as deductible expenses; credits are
+    // REFUNDS of expenses and net against the category — they are NOT income.
     if (amount < 0) {
-      let isDeductible = false;
-      if (userMapping) {
-        isDeductible = !!userMapping.isDeductible;     // user-mapped
-      } else {
-        isDeductible = DEDUCTIBLE_CATEGORIES.some(
-          dc => category.toLowerCase().includes(dc.toLowerCase())
-        );
-      }
-      if (isDeductible) {
-        const absAmt = Math.abs(amount);
-        expenses.total += absAmt;
-        expenses.breakdown[category] = (expenses.breakdown[category] || 0) + absAmt;
-      }
+      expenses.breakdown[categoryLabel] = (expenses.breakdown[categoryLabel] || 0) + Math.abs(amount);
+    } else {
+      expenses.breakdown[categoryLabel] = (expenses.breakdown[categoryLabel] || 0) - amount;
     }
   }
+
+  // Floors: refunds can't drive a category (or an income type) below zero on
+  // the return — the remainder is simply not deductible/taxable.
+  for (const k of Object.keys(expenses.breakdown)) {
+    if (expenses.breakdown[k] < 0) expenses.breakdown[k] = 0;
+  }
+  expenses.total = Object.values(expenses.breakdown).reduce((s, v) => s + v, 0);
+  for (const k of Object.keys(income)) {
+    if (income[k] < 0) income[k] = 0;
+  }
+
+  // Classification summary for the report (sorted by money involved).
+  const classificationRows = [...catRows.values()]
+    .map(r => ({ ...r, credits: roundJMD(r.credits), debits: roundJMD(r.debits) }))
+    .sort((a, b) => (b.credits + b.debits) - (a.credits + a.debits));
+  const guessedIncome = roundJMD(classificationRows
+    .filter(r => r.bucket.startsWith('income:') && r.source === 'keyword')
+    .reduce((s, r) => s + r.credits, 0));
 
   // Apply manual data overrides/additions
   if (manualData.businessIncome) income.business += manualData.businessIncome;
@@ -464,12 +491,31 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       netIncomeAfterTax:    roundJMD(grossIncome - totalTaxPayable - p24.totalWithheld),
     },
 
+    // Classification transparency — how every category's money was treated
+    // and why (mapping / LunchMoney flag / keyword guess / unclassified).
+    classification: {
+      rows: classificationRows,
+      unclassifiedCredits: roundJMD(unclassifiedCredits),
+      unclassifiedDebits:  roundJMD(unclassifiedDebits),
+      excludedTotal:       roundJMD(excludedTotal),
+      ignoredTotal:        roundJMD(ignoredTotal),
+      guessedIncome,
+      categoriesLoaded:    lmCategories.length > 0,
+    },
+
     // Monthly breakdown
     monthlyBreakdown: buildMonthlyBreakdown(allTransactions, year),
 
     // Notes / Disclaimers
     notes: [
       ...(dataWarning ? [`⚠ ${dataWarning}`] : []),
+      ...(categoriesWarning ? [`⚠ ${categoriesWarning}`] : []),
+      ...(guessedIncome > 0 ? [
+        `⚠ $${guessedIncome.toLocaleString('en-JM', { minimumFractionDigits: 2 })} of income was classified by KEYWORD GUESSING (no user mapping and no LunchMoney income flag on the category). Review the classification table and map those categories to lock the treatment in.`,
+      ] : []),
+      ...(unclassifiedCredits > 0 ? [
+        `⚠ $${roundJMD(unclassifiedCredits).toLocaleString('en-JM', { minimumFractionDigits: 2 })} in credits could NOT be classified and was NOT counted as income. If any of it is taxable income, map its categories (or flag them as income in LunchMoney) and regenerate.`,
+      ] : []),
       `Tax year: January 1 – December 31, ${year}`,
       ...(fallback ? [
         `⚠ WARNING: No tax parameters are defined for ${fallback.requestedYear}. Using ${fallback.usedYear} values as a fallback. File src/tax/s04.js::TAX_PARAMS needs an entry for ${fallback.requestedYear} before this return is filed.`,
@@ -504,14 +550,6 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function classifyIncome(category, context) {
-  const combined = `${category} ${context}`.toLowerCase();
-  for (const [type, keywords] of Object.entries(INCOME_CATEGORIES)) {
-    if (keywords.some(kw => combined.includes(kw.toLowerCase()))) return type;
-  }
-  return null;
-}
 
 function roundJMD(amount) {
   return Math.round((amount || 0) * 100) / 100;

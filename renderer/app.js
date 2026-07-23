@@ -92,6 +92,16 @@ const CAT_MAP_OPTIONS = [
   { value: 'ignore',           label: 'Ignore (exclude from tax)' },
 ];
 
+/** Mappings ready for the main process: internal _raw display field stripped. */
+function getCleanCategoryMappings() {
+  const clean = {};
+  for (const [catId, val] of Object.entries(getCategoryMappings())) {
+    const { _raw, ...rest } = val;  // eslint-disable-line no-unused-vars
+    clean[catId] = rest;
+  }
+  return clean;
+}
+
 function renderCategoryMappings() {
   const tbody = document.getElementById('cat-map-tbody');
   if (!tbody) return;
@@ -1921,6 +1931,57 @@ function setupSettings() {
       toast('All category mappings cleared.', 'info');
     });
   }
+
+  const setupCatsBtn = document.getElementById('setup-tax-cats-btn');
+  if (setupCatsBtn) {
+    setupCatsBtn.addEventListener('click', async () => {
+      const ok = confirm(
+        'This creates a tax-ready category set in your LunchMoney budget:\n\n' +
+        '• 5 income categories (flagged as income in LunchMoney)\n' +
+        '• 11 deductible business expense categories\n' +
+        '• a Transfers category excluded from totals\n\n' +
+        'Categories that already exist are left untouched, and everything is ' +
+        'auto-mapped to its S04 treatment here. Continue?'
+      );
+      if (!ok) return;
+
+      setupCatsBtn.disabled = true;
+      setupCatsBtn.innerHTML = '<span class="spinner"></span> Creating…';
+      const res = await window.electronAPI.setupTaxCategories();
+      setupCatsBtn.disabled = false;
+      setupCatsBtn.innerHTML = '🏷 Create S04 Categories in LunchMoney';
+
+      if (!res.success) { toast(`Category setup failed: ${res.error}`, 'error'); return; }
+
+      const { created, skipped, errors } = res.data;
+      // Auto-map every pack category (created or pre-existing) to its S04
+      // treatment — without clobbering a mapping the user already set.
+      const mappings = getCategoryMappings();
+      for (const c of [...created, ...skipped]) {
+        const id = String(c.id);
+        if (mappings[id]) continue;
+        const mapping = { _raw: c.mapping };
+        if (c.mapping.startsWith('income:')) mapping.incomeType = c.mapping.split(':')[1];
+        if (c.mapping === 'expense')         mapping.isDeductible = true;
+        if (c.mapping === 'ignore')          mapping.ignore = true;
+        mappings[id] = mapping;
+      }
+      localStorage.setItem(CAT_MAPPING_KEY, JSON.stringify(mappings));
+
+      // Refresh the category list so the new ones appear in the panel.
+      try {
+        const catsRes = await window.electronAPI.getLMCategories();
+        if (catsRes.success) state.lmCategories = catsRes.data || [];
+      } catch (_) { /* panel just refreshes on next connect */ }
+      renderCategoryMappings();
+
+      if (errors && errors.length) {
+        toast(`Created ${created.length}, ${skipped.length} already existed — ${errors.length} failed (${errors[0].name}: ${errors[0].error})`, 'warn');
+      } else {
+        toast(`✓ ${created.length} categories created in LunchMoney, ${skipped.length} already existed — all mapped for S04.`, 'success');
+      }
+    });
+  }
 }
 
 // ─── Taxpayer Profile ─────────────────────────────────────────────────────────
@@ -2438,19 +2499,86 @@ async function generateTax() {
     lossesBroughtForward: parseFloat(document.getElementById('tax-losses-bf').value) || 0,
   };
 
-  // Build clean mappings for main process (strip internal _raw field)
-  const userCategoryMappings = {};
-  for (const [catId, val] of Object.entries(getCategoryMappings())) {
-    const { _raw, ...rest } = val;  // eslint-disable-line no-unused-vars
-    userCategoryMappings[catId] = rest;
-  }
-
-  const result = await window.electronAPI.generateS04({ year, manualData, userCategoryMappings });
+  const result = await window.electronAPI.generateS04({ year, manualData, userCategoryMappings: getCleanCategoryMappings() });
   btn.disabled  = false;
   btn.innerHTML = '📊 Generate S04 Report';
   if (!result.success) { toast(`Tax generation failed: ${result.error}`, 'error'); return; }
   state.taxReport = result.data;
   renderTaxReport(result.data);
+}
+
+// Human labels for the classification transparency table.
+const CLASSIFY_BUCKET_LABELS = {
+  'income:business':   'Income — Business',
+  'income:foreign':    'Income — Foreign',
+  'income:investment': 'Income — Investment',
+  'income:rental':     'Income — Rental',
+  'income:other':      'Income — Other',
+  'expense':           'Deductible Expense',
+  'excluded':          'Excluded',
+  'ignored':           'Ignored (your mapping)',
+  'unclassified':      'Not counted',
+};
+const CLASSIFY_SOURCE_LABELS = {
+  'mapping': 'Your mapping',
+  'lm-flag': 'LunchMoney flag',
+  'keyword': '⚠ Keyword guess',
+  'none':    '—',
+};
+
+/**
+ * "How your money was classified" — per-category audit table so income/expense
+ * treatment is verifiable instead of trusted. Amber rows = keyword guesses and
+ * unclassified money; both deserve a mapping in the Category Mapping panel.
+ */
+function buildClassificationSection(report) {
+  const c = report.classification;
+  if (!c || !c.rows || !c.rows.length) return '';
+  const fmt = v => `$${Number(v || 0).toLocaleString('en-JM', { minimumFractionDigits: 2 })}`;
+
+  const rows = c.rows.map(r => {
+    const flagged = r.source === 'keyword' || r.bucket === 'unclassified';
+    return `<tr${flagged ? ' style="background:rgba(210,153,34,0.08);"' : ''}>
+      <td style="padding:5px 8px;">${escHtml(r.category)}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${escHtml(CLASSIFY_BUCKET_LABELS[r.bucket] || r.bucket)}</td>
+      <td style="padding:5px 8px;white-space:nowrap;color:${r.source === 'keyword' ? 'var(--warn)' : 'var(--text-muted)'};">${escHtml(CLASSIFY_SOURCE_LABELS[r.source] || r.source)}</td>
+      <td style="padding:5px 8px;text-align:right;">${r.credits ? fmt(r.credits) : '—'}</td>
+      <td style="padding:5px 8px;text-align:right;">${r.debits ? fmt(r.debits) : '—'}</td>
+      <td style="padding:5px 8px;text-align:right;color:var(--text-muted);">${r.count}</td>
+    </tr>`;
+  }).join('');
+
+  const warnBits = [];
+  if (c.guessedIncome > 0)      warnBits.push(`${fmt(c.guessedIncome)} of income relies on keyword guesses`);
+  if (c.unclassifiedCredits > 0) warnBits.push(`${fmt(c.unclassifiedCredits)} in credits was NOT counted (unclassified)`);
+  if (!c.categoriesLoaded)      warnBits.push('LunchMoney category flags were unavailable — keyword fallback used');
+
+  return `
+    <div class="tax-section">
+      <div class="card-title">How Your Money Was Classified</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+        Priority: your Category Mapping → LunchMoney's own income/exclude flags → keyword guess.
+        Highlighted rows are guesses or uncounted money — map those categories to lock in their treatment.
+        Refunds in expense categories reduce the expense; they are not counted as income.
+      </div>
+      ${warnBits.length ? `<div style="padding:8px 12px;margin-bottom:10px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">⚠ ${escHtml(warnBits.join(' · '))}</div>` : ''}
+      <div style="overflow-x:auto;max-height:320px;overflow-y:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="color:var(--text-muted);border-bottom:1px solid var(--border);text-align:left;">
+              <th style="padding:5px 8px;">Category</th>
+              <th style="padding:5px 8px;">Treated as</th>
+              <th style="padding:5px 8px;">Why</th>
+              <th style="padding:5px 8px;text-align:right;">Credits</th>
+              <th style="padding:5px 8px;text-align:right;">Debits</th>
+              <th style="padding:5px 8px;text-align:right;">Txns</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${c.excludedTotal > 0 ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Excluded by LunchMoney flags (transfers, groups): ${fmt(c.excludedTotal)} · Ignored by your mappings: ${fmt(c.ignoredTotal)}</div>` : ''}
+    </div>`;
 }
 
 function renderTaxReport(report) {
@@ -2509,6 +2637,7 @@ function renderTaxReport(report) {
         <div class="tax-row"><span>Chargeable Income</span><span class="tax-amount">${fmt(report.chargeableIncome)}</span></div>
         <div class="tax-row"><span>Income Tax (25%/30%)</span><span class="tax-amount">${fmt(report.tax.incomeTax)}</span></div>
       </div>
+      ${buildClassificationSection(report)}
       ${report.p24 ? `
       <div class="tax-section">
         <div class="card-title">Part E — P24 Withholdings (Already Paid via PAYE)</div>
@@ -2662,6 +2791,7 @@ async function refreshDashboard() {
   const result = await window.electronAPI.getDashboardData({
     year,
     quarter,
+    userCategoryMappings: getCleanCategoryMappings(),
   });
 
   if (btn) { btn.disabled = false; btn.innerHTML = '↻ Refresh'; }
@@ -4020,7 +4150,7 @@ async function generateS04AEstimate() {
   wrap.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;"><span class="spinner"></span> Generating…</div>';
 
   const tz  = getAppTimezone();
-  const res = await window.electronAPI.generateS04A({ currentYear: year, timezone: tz === 'system' ? getSystemTimezone() : tz });
+  const res = await window.electronAPI.generateS04A({ currentYear: year, timezone: tz === 'system' ? getSystemTimezone() : tz, userCategoryMappings: getCleanCategoryMappings() });
   btn.disabled = false;
   btn.textContent = 'Generate';
 
