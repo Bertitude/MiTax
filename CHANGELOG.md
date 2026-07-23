@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.12] — 2026-07-23
 
 ### Added
 - **Loss relief on the S04 (individuals).** A new "Losses Brought Forward"
