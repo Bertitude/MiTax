@@ -680,7 +680,7 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
   // ── LunchMoney: assets + YTD income + quarterly tax estimate ────────────
   if (apiKey) {
     try {
-      const { getAllLmAccounts, getTransactions } = require('./src/lunchmoney');
+      const { getAllLmAccounts, getTransactions, resolveTxAmount } = require('./src/lunchmoney');
       const { getTaxParams, estimateAnnualTax } = require('./src/tax/s04');
 
       result.assets = await getAllLmAccounts(apiKey);
@@ -694,7 +694,7 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
 
       // YTD income = sum of credits (positive amounts) in primary currency
       result.ytdIncome = ytdTxs.reduce((sum, tx) => {
-        const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+        const amount = resolveTxAmount(tx);
         return amount > 0 ? sum + amount : sum;
       }, 0);
 
@@ -768,7 +768,7 @@ handle('get-dashboard-data', async (event, { year, quarter }) => {
 // (same asset, same date, same absolute amount).  Fails open (all false) on error.
 handle('check-duplicates', async (event, { transactions }) => {
   try {
-    const { getTransactions } = require('./src/lunchmoney');
+    const { getTransactions, resolveTxAmount } = require('./src/lunchmoney');
     const apiKey = activeApiKey();
 
     if (!apiKey || !transactions || !transactions.length) {
@@ -803,7 +803,7 @@ handle('check-duplicates', async (event, { transactions }) => {
       // Build a lookup set of "date|absAmount" strings from existing LM transactions
       const existingKeys = new Set();
       for (const tx of existingTxs) {
-        const absAmt = Math.abs(parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0);
+        const absAmt = Math.abs(resolveTxAmount(tx));
         existingKeys.add(`${tx.date}|${absAmt.toFixed(2)}`);
       }
 
@@ -944,7 +944,7 @@ handle('generate-s04a', async (event, { currentYear, timezone }) => {
   try {
     const { getMostRecentS04 }         = require('./src/filings');
     const { generateS04A }             = require('./src/tax/s04');
-    const { getTransactions }          = require('./src/lunchmoney');
+    const { getTransactions, resolveTxAmount } = require('./src/lunchmoney');
 
     const apiKey          = activeApiKey();
     const priorYearFiling = getMostRecentS04(currentYear - 1);
@@ -965,7 +965,7 @@ handle('generate-s04a', async (event, { currentYear, timezone }) => {
         endDate,
       });
       currentYtdIncome = ytdTxs.reduce((sum, tx) => {
-        const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+        const amt = resolveTxAmount(tx);
         return amt > 0 ? sum + amt : sum;
       }, 0);
     }

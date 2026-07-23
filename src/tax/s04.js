@@ -8,7 +8,7 @@
  * against the portal before filing season.
  */
 
-const { getTransactions, getTransactionYearSummary } = require('../lunchmoney');
+const { getTransactions, getTransactionYearSummary, resolveTxAmount } = require('../lunchmoney');
 
 // ─── Tax Rates & Thresholds ─────────────────────────────────────────────────
 //
@@ -208,10 +208,11 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   let unconvertedCount = 0;
 
   for (const tx of allTransactions) {
-    // Use to_base (LunchMoney's primary-currency equivalent using historic exchange rate)
-    // Fall back to amount only if to_base is absent (e.g. same-currency transactions where they are equal)
+    // resolveTxAmount: sign from `amount` (honors debit_as_negative), magnitude
+    // from `to_base` when present (correct multi-currency conversion) — see
+    // its definition in lunchmoney.js for why to_base alone isn't sign-safe.
     const hasConversion = tx.to_base !== undefined && tx.to_base !== null;
-    const amount = parseFloat(hasConversion ? tx.to_base : tx.amount) || 0;
+    const amount = resolveTxAmount(tx);
     if (hasConversion) convertedCount++; else unconvertedCount++;
 
     const category   = tx.category_name || tx.category || '';
@@ -516,8 +517,8 @@ function buildMonthlyBreakdown(transactions, year) {
     const txMonth = parseInt(tx.date.split('-')[1]) - 1;
     if (txMonth < 0 || txMonth > 11) continue;
 
-    // Use to_base for consistency with the main calculation
-    const amount = parseFloat(tx.to_base ?? tx.amount) || 0;
+    // resolveTxAmount for consistency with the main calculation above
+    const amount = resolveTxAmount(tx);
     if (amount > 0) months[txMonth].income += amount;
     else months[txMonth].expenses += Math.abs(amount);
   }

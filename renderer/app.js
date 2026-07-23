@@ -1379,6 +1379,25 @@ function accountKey(asset) {
   return asset.source === 'plaid' ? `p${asset.id}` : asset.id;
 }
 
+// Resolve a transaction's signed amount in the primary currency. Renderer-
+// local copy of src/lunchmoney.js's resolveTxAmount — this process has no
+// require() access (contextIsolation), so the two are kept in sync by hand.
+//
+// `to_base` (LunchMoney's primary-currency-converted amount) does not
+// reliably honor the `debit_as_negative` request the way `amount` does — it
+// can carry the account's own native/opposite sign convention regardless of
+// what was requested. `amount`'s SIGN is trustworthy (every fetch pins
+// debit_as_negative=true); `to_base` supplies only the MAGNITUDE, for
+// correct multi-currency conversion. Reading to_base for both sign and
+// magnitude is what silently inverted credits/debits in the account summary.
+function resolveTxAmount(tx) {
+  const amount = parseFloat(tx && tx.amount);
+  if (!Number.isFinite(amount) || amount === 0) return 0;
+  const base = tx.to_base != null ? parseFloat(tx.to_base) : NaN;
+  const magnitude = Number.isFinite(base) ? Math.abs(base) : Math.abs(amount);
+  return amount > 0 ? magnitude : -magnitude;
+}
+
 // ─── Exclusion persistence ────────────────────────────────────────────────────
 const COVERAGE_EXCLUDED_KEY = 'coverageExcluded';
 
@@ -3495,7 +3514,7 @@ function renderAccountSummary(asset, year, txs, yearsWithData = null) {
   txs.forEach(tx => {
     const m = parseInt((tx.date || '').slice(5, 7), 10) - 1;
     if (m < 0 || m > 11) return;
-    const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+    const amount = resolveTxAmount(tx);
     months[m].count++;
     if (amount > 0)  months[m].income   += amount;
     else             months[m].expenses += Math.abs(amount);
@@ -3597,7 +3616,7 @@ function renderAccountSummary(asset, year, txs, yearsWithData = null) {
 
   const sorted = [...txs].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   txEl.innerHTML = sorted.map(tx => {
-    const amount = parseFloat(tx.to_base != null ? tx.to_base : tx.amount) || 0;
+    const amount = resolveTxAmount(tx);
     // LunchMoney convention: positive = income/credit, negative = expense/debit
     // (matches the monthly totals above and the S04 tax engine).
     const isCredit = amount > 0;

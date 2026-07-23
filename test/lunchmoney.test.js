@@ -3,7 +3,7 @@
 const test   = require('node:test');
 const assert = require('node:assert/strict');
 
-const { describeLmFailure } = require('../src/lunchmoney');
+const { describeLmFailure, resolveTxAmount } = require('../src/lunchmoney');
 
 // describeLmFailure is the single point that turns a raw LunchMoney API
 // failure into an actionable hint — every lmRequest() throw site appends it,
@@ -52,4 +52,40 @@ test('describeLmFailure: unexpected response shape points at a temporary issue, 
 test('describeLmFailure: an ordinary/unrecognized error gets no hint (null)', () => {
   assert.equal(describeLmFailure({ status: 400, message: 'bad request' }), null);
   assert.equal(describeLmFailure(null), null);
+});
+
+// resolveTxAmount: `to_base` does not reliably honor the `debit_as_negative`
+// request the way `amount` does — it can carry an account's native/opposite
+// sign convention regardless of what was requested. This is what silently
+// inverted credits/debits across the account summary, S04, dashboard YTD,
+// and reconcile — every one of them preferred `to_base` for BOTH sign and
+// magnitude. The fix: sign always comes from `amount`; `to_base` supplies
+// only the magnitude, for correct multi-currency conversion.
+
+test('resolveTxAmount: to_base disagreeing in sign with amount does not flip the result', () => {
+  // The exact bug: a credit (amount > 0) whose to_base carries the opposite
+  // (native-convention) sign must still resolve as a credit.
+  assert.equal(resolveTxAmount({ amount: 100, to_base: -100 }), 100);
+  assert.equal(resolveTxAmount({ amount: -100, to_base: 100 }), -100);
+});
+
+test('resolveTxAmount: to_base still supplies the magnitude for currency conversion', () => {
+  // A foreign-currency credit of 50 USD converts to, say, 7500 JMD via
+  // to_base — the MAGNITUDE must come from to_base even though the sign
+  // comes from amount.
+  assert.equal(resolveTxAmount({ amount: 50, to_base: 7500 }), 7500);
+  assert.equal(resolveTxAmount({ amount: -50, to_base: -7500 }), -7500);
+});
+
+test('resolveTxAmount: falls back entirely to amount when to_base is absent', () => {
+  assert.equal(resolveTxAmount({ amount: 42 }), 42);
+  assert.equal(resolveTxAmount({ amount: -42, to_base: null }), -42);
+  assert.equal(resolveTxAmount({ amount: '-13.5' }), -13.5);
+});
+
+test('resolveTxAmount: zero, missing, or unparseable amounts resolve to 0', () => {
+  assert.equal(resolveTxAmount({ amount: 0, to_base: 500 }), 0);
+  assert.equal(resolveTxAmount({ amount: undefined }), 0);
+  assert.equal(resolveTxAmount({ amount: 'not-a-number' }), 0);
+  assert.equal(resolveTxAmount({}), 0);
 });

@@ -140,15 +140,36 @@ test('classifyImportRows: a fully flipped statement re-import maps every row to 
   assert.deepEqual(r.map(c => c.lmId), [1, 2]);
 });
 
-test('classifyImportRows: rows without a usable date/amount are new, and to_base is preferred', () => {
+test('classifyImportRows: rows without a usable date/amount are new', () => {
   const rows = [
     { date: null, amount: -100, payee: 'X' },
     { date: '2024-07-01', amount: -100, payee: 'FX SHOP' },
   ];
-  // amount says +100 but to_base (primary-currency) says -100 → same-sign duplicate.
-  const lmTxs = [{ id: 9, date: '2024-07-01', amount: 100, to_base: -100, payee: 'FX SHOP' }];
+  const lmTxs = [{ id: 9, date: '2024-07-01', amount: -100, payee: 'FX SHOP' }];
   const r = classifyImportRows(rows, lmTxs);
   assert.equal(r[0].status, 'new');
   assert.equal(r[1].status, 'duplicate');
   assert.equal(r[1].lmId, 9);
+});
+
+test('classifyImportRows: sign comes from `amount`, magnitude from `to_base` — to_base never overrides the sign', () => {
+  // to_base does not reliably honor debit_as_negative and can carry the
+  // account's native/opposite sign convention; `amount` is the field that
+  // honors our request, so it alone determines credit/debit classification.
+  // Here amount says +100 (credit) while to_base says -100 (looks like a
+  // debit) — the row must be treated as a CREDIT of magnitude 100, i.e. a
+  // signflip against a parsed debit of -100, NOT a same-sign duplicate.
+  const rows = [{ date: '2024-07-01', amount: -100, payee: 'FX SHOP' }];
+  const lmTxs = [{ id: 9, date: '2024-07-01', amount: 100, to_base: -100, payee: 'FX SHOP' }];
+  const r = classifyImportRows(rows, lmTxs);
+  assert.equal(r[0].status, 'signflip');
+  assert.equal(r[0].lmId, 9);
+  assert.equal(r[0].lmAmount, 100);   // magnitude from to_base, sign from amount
+});
+
+test('classifyImportRows: a row whose `amount` is unparseable is excluded even with a valid to_base', () => {
+  const rows = [{ date: '2024-07-01', amount: -50, payee: 'BAD ROW' }];
+  const lmTxs = [{ id: 5, date: '2024-07-01', amount: 'not-a-number', to_base: -50, payee: 'BAD ROW' }];
+  const r = classifyImportRows(rows, lmTxs);
+  assert.equal(r[0].status, 'new');   // the malformed LM row was never bucketed
 });

@@ -415,6 +415,33 @@ async function getTransactions(apiKey, { startDate, endDate, assetId, plaidAccou
 }
 
 /**
+ * Resolve a transaction's signed amount in the primary currency.
+ *
+ * `to_base` (LunchMoney's primary-currency-converted amount) does not
+ * reliably honor the `debit_as_negative` request parameter the way `amount`
+ * does — it appears to follow the account's own native/default sign
+ * convention regardless of what was requested. Every fetch in this app pins
+ * `debit_as_negative=true` (see getTransactions), so `amount`'s SIGN is
+ * trustworthy; `to_base` is used only for its MAGNITUDE, to get correct
+ * multi-currency conversion. Falls back entirely to `amount` when `to_base`
+ * is absent (same-currency transactions) or unparseable.
+ *
+ * This is the single point every consumer (S04, dashboard, reconcile, the
+ * account summary view) must go through — reading `to_base` directly for
+ * both sign and magnitude silently inverted credits/debits for any account
+ * whose native convention disagreed with ours.
+ */
+function resolveTxAmount(tx) {
+  const amount = parseFloat(tx && tx.amount);
+  if (!Number.isFinite(amount) || amount === 0) return 0;
+
+  const base = tx.to_base != null ? parseFloat(tx.to_base) : NaN;
+  const magnitude = Number.isFinite(base) ? Math.abs(base) : Math.abs(amount);
+
+  return amount > 0 ? magnitude : -magnitude;
+}
+
+/**
  * Diagnostic: which years actually contain transactions (optionally scoped to
  * one account)? Used when a year-scoped query returns nothing so the UI can
  * say "this account has data in 2025/2026" instead of a bare empty state —
@@ -688,6 +715,7 @@ module.exports = {
   getCategories,
   getPayees,
   describeLmFailure,
+  resolveTxAmount,
   getTransactions,
   getTransactionsByYear,
   getPlaidAccounts,

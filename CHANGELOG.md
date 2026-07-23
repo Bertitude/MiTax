@@ -4,6 +4,29 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Credits/debits displayed with flipped signs in the Account Summary
+  transaction list, dashboard YTD income, S04 income/expense totals, and
+  duplicate-detection matching — despite LunchMoney itself showing the
+  correct sign for every one of those transactions.** All four call sites
+  computed the displayed amount from `to_base` (LunchMoney's
+  primary-currency-converted amount) whenever it was present, but `to_base`
+  does not reliably honor the `debit_as_negative=true` request the way
+  `amount` does — it can carry an account's native/opposite sign convention
+  regardless of what was requested. Fixed with a single shared helper,
+  `resolveTxAmount(tx)`: the sign always comes from `amount` (which does
+  honor `debit_as_negative`), while `to_base` supplies only the magnitude,
+  preserving correct multi-currency conversion. Applied in
+  `src/lunchmoney.js`, `main.js` (dashboard YTD, duplicate-check matching,
+  S04A YTD), `src/tax/s04.js` (income/expense classification and monthly
+  breakdown), `src/reconcile.js` (`classifyImportRows`), and a
+  renderer-local copy in `renderer/app.js` (monthly breakdown and the
+  per-transaction list).
+
+---
+
 ## [1.3.10] — 2026-07-22
 
 ### Fixed

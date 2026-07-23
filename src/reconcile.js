@@ -15,6 +15,8 @@
 
 'use strict';
 
+const { resolveTxAmount } = require('./lunchmoney');
+
 const BALANCE_RE = /\b(beginning\s+balance|opening\s+balance|ending\s+balance|closing\s+balance|balance\s+forward|balance\s+brought\s+forward|balance\s+carried\s+forward)\b/i;
 
 function normPayee(s) {
@@ -135,12 +137,12 @@ function classifyImportRows(parsedRows, lmTxs) {
   // LM transactions bucketed by date|abs → [{ id, amount, np }], sorted for
   // deterministic pairing regardless of API ordering.
   const buckets = new Map();
+  // Exclude rows with no valid `amount` BEFORE resolving — resolveTxAmount
+  // returns 0 for both a genuinely-zero amount and an unparseable one, so
+  // filtering on its output can't tell "no amount at all" from "zero".
   const prepared = (lmTxs || [])
-    .map(tx => {
-      const amt = parseFloat(tx.to_base != null ? tx.to_base : tx.amount);
-      return { id: tx.id, amount: amt, date: tx.date, np: normPayee(tx.payee || tx.original_name) };
-    })
-    .filter(t => t.date && Number.isFinite(t.amount))
+    .filter(tx => tx && tx.date && Number.isFinite(parseFloat(tx.amount)))
+    .map(tx => ({ id: tx.id, amount: resolveTxAmount(tx), date: tx.date, np: normPayee(tx.payee || tx.original_name) }))
     .sort((a, b) => a.np.localeCompare(b.np) || signOf(a.amount) - signOf(b.amount) || (a.id || 0) - (b.id || 0));
   for (const t of prepared) {
     const key = amtKey(t.date, t.amount);
