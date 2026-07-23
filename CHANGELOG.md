@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.14] — 2026-07-23
 
 ### Changed
 - **LunchMoney's settings are now the sole authority on what counts as
