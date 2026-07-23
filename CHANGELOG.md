@@ -4,6 +4,29 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Loss relief on the S04 (individuals).** A new "Losses Brought Forward"
+  input on the tax form takes the user's OFFICIAL brought-forward figure
+  (from their prior S04 filings / TAJ records) and applies the S04
+  loss-claim rule: claimable in full when gross business receipts are under
+  $3,000,000, otherwise capped at 50% of net profit before loss relief
+  (S04 form instructions, Lines 41/54). The claim reduces chargeable income
+  for income tax only — NIS and NHT stay on gross income, and Education Tax
+  is conservatively computed on statutory income before loss relief (prior-
+  year loss deductibility against the Ed Tax base is not clearly documented
+  for individuals; the report notes state this assumption). The report,
+  TAJ field guide, and PDF export all show the brought-forward amount, the
+  allowable claim, statutory income after relief, and the balance to carry
+  forward to next year.
+- **Current-year net losses are now surfaced instead of silently discarded.**
+  When allowable expenses exceed gross income, the report shows the net
+  loss, explains it cannot reduce this year's figures below zero, and adds
+  it to the losses-to-carry-forward figure for next year's return.
+
+---
+
 ## [1.3.11] — 2026-07-23
 
 ### Added

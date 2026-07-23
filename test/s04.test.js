@@ -73,6 +73,85 @@ test('generateS04: P24 employment income with withholding credits (2024)', async
   assert.equal(r.p24.totalGrossLiability, 1_365_977.5);
 });
 
+// ─── Loss relief (individuals, S04 loss-claim rule) ─────────────────────────
+// Losses brought forward are USER-ENTERED (official figure from prior S04
+// filings); MiTax computes only the allowable claim: full claim when gross
+// business receipts < $3M, else capped at 50% of net profit before relief.
+
+test('generateS04: no losses entered → lossRelief is null and nothing changes', async () => {
+  const r = await generateS04({
+    year: 2023,
+    apiKey: null,
+    manualData: { businessIncome: 10_000_000 },
+  });
+  assert.equal(r.lossRelief, null);
+  assert.equal(r.statutoryIncomeAfterLoss, r.statutoryIncome);
+});
+
+test('generateS04: gross receipts under $3M → losses claimable in full, down to zero statutory income', async () => {
+  const r = await generateS04({
+    year: 2023,
+    apiKey: null,
+    manualData: { businessIncome: 2_000_000, lossesBroughtForward: 5_000_000 },
+  });
+
+  assert.equal(r.statutoryIncome, 1_600_000);              // 2M − 20% standard
+  assert.equal(r.lossRelief.capApplied, false);            // gross receipts < $3M
+  assert.equal(r.lossRelief.lossApplied, 1_600_000);       // full claim, limited by income
+  assert.equal(r.statutoryIncomeAfterLoss, 0);
+  assert.equal(r.lossRelief.lossCarriedForward, 3_400_000);// 5M − 1.6M
+  assert.equal(r.chargeableIncome, 0);
+  assert.equal(r.tax.incomeTax, 0);
+  // Levies unaffected by loss relief: NIS/NHT on gross, Ed Tax on PRE-loss statutory
+  assert.equal(r.contributions.nis, 60_000);               // 2M × 3%
+  assert.equal(r.contributions.nht, 40_000);               // 2M × 2%
+  assert.equal(r.contributions.educationTax, 36_000);      // 1.6M × 2.25%
+  assert.equal(r.totalTaxPayable, 136_000);
+});
+
+test('generateS04: gross receipts ≥ $3M → claim capped at 50% of net profit before relief', async () => {
+  const r = await generateS04({
+    year: 2023,
+    apiKey: null,
+    manualData: { businessIncome: 10_000_000, lossesBroughtForward: 5_000_000 },
+  });
+
+  assert.equal(r.statutoryIncome, 8_000_000);
+  assert.equal(r.lossRelief.capApplied, true);
+  assert.equal(r.lossRelief.lossApplied, 4_000_000);       // 50% of 8M < 5M available
+  assert.equal(r.statutoryIncomeAfterLoss, 4_000_000);
+  assert.equal(r.lossRelief.lossCarriedForward, 1_000_000);
+  assert.equal(r.chargeableIncome, 2_349_904);             // 4M − 1,500,096 − 150,000
+  assert.equal(r.tax.incomeTax, 587_476);                  // all in the 25% band
+  assert.equal(r.contributions.educationTax, 180_000);     // still 8M × 2.25% (pre-loss)
+  assert.equal(r.totalTaxPayable, 1_117_476);
+});
+
+test('generateS04: capped claim smaller than the cap → only the available loss is used', async () => {
+  const r = await generateS04({
+    year: 2023,
+    apiKey: null,
+    manualData: { businessIncome: 10_000_000, lossesBroughtForward: 100_000 },
+  });
+  assert.equal(r.lossRelief.lossApplied, 100_000);         // min(available, 50% cap)
+  assert.equal(r.lossRelief.lossCarriedForward, 0);
+});
+
+test('generateS04: current-year net loss is surfaced and added to the carry-forward, never applied', async () => {
+  const r = await generateS04({
+    year: 2023,
+    apiKey: null,
+    manualData: { businessIncome: 1_000_000, additionalExpenses: 1_500_000, lossesBroughtForward: 200_000 },
+  });
+
+  assert.equal(r.statutoryIncome, 0);                      // floored, as before
+  assert.equal(r.lossRelief.currentYearLoss, 500_000);     // the pre-floor shortfall
+  assert.equal(r.lossRelief.lossApplied, 0);               // nothing to offset this year
+  assert.equal(r.lossRelief.lossCarriedForward, 700_000);  // 200k unused + 500k new
+  assert.equal(r.chargeableIncome, 0);
+  assert.equal(r.tax.incomeTax, 0);
+});
+
 test('estimateAnnualTax: matches the S04 core on a whole-income case', () => {
   const { estimateAnnualTax, getTaxParams } = require('../src/tax/s04');
   const { params } = getTaxParams(2023);

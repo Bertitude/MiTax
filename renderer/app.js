@@ -2435,6 +2435,7 @@ async function generateTax() {
     rentalIncome:       parseFloat(document.getElementById('tax-rental').value)      || 0,
     investmentIncome:   parseFloat(document.getElementById('tax-investment').value)  || 0,
     additionalExpenses: parseFloat(document.getElementById('tax-expenses').value)    || 0,
+    lossesBroughtForward: parseFloat(document.getElementById('tax-losses-bf').value) || 0,
   };
 
   // Build clean mappings for main process (strip internal _raw field)
@@ -2491,6 +2492,13 @@ function renderTaxReport(report) {
       <div class="tax-section"><div class="card-title">Part B — Deductions</div>
         <div class="tax-row"><span>Allowable Expenses (${report.deductions.methodUsed})</span><span class="tax-amount">− ${fmt(report.deductions.allowableBusinessExpenses)}</span></div>
         <div class="tax-row tax-row-total"><strong>Statutory Income</strong><span class="tax-amount highlight">${fmt(report.statutoryIncome)}</span></div>
+        ${report.lossRelief ? `
+        <div class="tax-row"><span>Losses Brought Forward (entered)</span><span class="tax-amount">${fmt(report.lossRelief.lossesBroughtForward)}</span></div>
+        <div class="tax-row"><span>Allowable Loss Claimed${report.lossRelief.capApplied ? ' <span class="badge badge-yellow" style="font-size:10px;vertical-align:middle;">capped at 50%</span>' : ''}</span><span class="tax-amount" style="color:var(--accent2);">− ${fmt(report.lossRelief.lossApplied)}</span></div>
+        <div class="tax-row tax-row-total"><strong>Statutory Income after Loss Relief</strong><span class="tax-amount highlight">${fmt(report.statutoryIncomeAfterLoss)}</span></div>
+        ${report.lossRelief.currentYearLoss > 0 ? `<div class="tax-row"><span>Current-Year Net Loss (new)</span><span class="tax-amount" style="color:var(--warn);">${fmt(report.lossRelief.currentYearLoss)}</span></div>` : ''}
+        <div class="tax-row"><span>Losses to Carry Forward to ${report.year + 1}</span><span class="tax-amount">${fmt(report.lossRelief.lossCarriedForward)}</span></div>
+        ` : ''}
       </div>
       <div class="tax-section"><div class="card-title">Part C — Contributions</div>
         <div class="tax-row"><span>NIS (3%)</span><span class="tax-amount">${fmt(report.contributions.nis)}</span></div>
@@ -4127,6 +4135,12 @@ function buildFieldMappingCard(report) {
         ['B7', `Allowable Business Expenses  (${report.deductions.methodUsed})`,
                fJMD(report.deductions.allowableBusinessExpenses), ''],
         ['B8', 'STATUTORY INCOME  (A6 − B7)', fJMD(report.statutoryIncome), 'total'],
+        ...(report.lossRelief ? [
+          ['B9',  'Losses Brought Forward (from prior S04 filings)', fJMD(report.lossRelief.lossesBroughtForward), ''],
+          ['B10', `Allowable Loss Claimed${report.lossRelief.capApplied ? '  (capped at 50% of net profit)' : ''}`, fJMD(report.lossRelief.lossApplied), ''],
+          ['B11', 'STATUTORY INCOME AFTER LOSS RELIEF  (B8 − B10)', fJMD(report.statutoryIncomeAfterLoss), 'total'],
+          ['B12', `Losses to Carry Forward to ${report.year + 1}`, fJMD(report.lossRelief.lossCarriedForward), ''],
+        ] : []),
       ],
     },
     {
@@ -4142,7 +4156,7 @@ function buildFieldMappingCard(report) {
       title: 'Part D — Chargeable Income & Income Tax',
       rows: [
         ['D13', 'Income Tax Threshold (Personal Allowance)', fJMD(report.personalThresholdApplied), ''],
-        ['D14', 'CHARGEABLE INCOME  (B8 − C12 − D13)',       fJMD(report.chargeableIncome),         'total'],
+        ['D14', `CHARGEABLE INCOME  (${report.lossRelief ? 'B11' : 'B8'} − C12 − D13)`, fJMD(report.chargeableIncome), 'total'],
         ['D15', 'Income Tax Payable  (25% / 30%)',            fJMD(report.tax.incomeTax),            ''],
       ],
     },
@@ -4423,6 +4437,12 @@ function buildPrintHTML(report, profile = {}) {
     ${row('B7', `Allowable Business Expenses  (${report.deductions.methodUsed})`,
           fJMD(report.deductions.allowableBusinessExpenses))}
     ${row('B8', 'STATUTORY INCOME  (A6 − B7)',  fJMD(report.statutoryIncome), true)}
+    ${report.lossRelief ? `
+    ${row('B9',  'Losses Brought Forward (from prior S04 filings)', fJMD(report.lossRelief.lossesBroughtForward))}
+    ${row('B10', `Allowable Loss Claimed${report.lossRelief.capApplied ? '  (capped at 50% of net profit)' : ''}`, fJMD(report.lossRelief.lossApplied))}
+    ${row('B11', 'STATUTORY INCOME AFTER LOSS RELIEF  (B8 − B10)', fJMD(report.statutoryIncomeAfterLoss), true)}
+    ${row('B12', `Losses to Carry Forward to ${report.year + 1}`, fJMD(report.lossRelief.lossCarriedForward))}
+    ` : ''}
   </table>
 
   <!-- Part C contributions grid -->
@@ -4449,7 +4469,7 @@ function buildPrintHTML(report, profile = {}) {
   <table>
     ${sectionHeader('PART D — CHARGEABLE INCOME & INCOME TAX')}
     ${row('D13', 'Less: Income Tax Threshold (Personal Allowance)',  fJMD(report.personalThresholdApplied))}
-    ${row('D14', 'CHARGEABLE INCOME  (B8 − C12 − D13)',             fJMD(report.chargeableIncome), true)}
+    ${row('D14', `CHARGEABLE INCOME  (${report.lossRelief ? 'B11' : 'B8'} − C12 − D13)`, fJMD(report.chargeableIncome), true)}
     ${row('D15', 'Income Tax Payable  (25% up to $6M / 30% above)', fJMD(report.tax.incomeTax))}
   </table>
 

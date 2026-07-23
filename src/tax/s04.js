@@ -82,6 +82,16 @@ const TAX_PARAMS = {
   },
 };
 
+// ─── Loss relief (individuals) ──────────────────────────────────────────────
+// Per the S04 form instructions (Lines 41/54) under the Fiscal Incentives
+// (Miscellaneous Provisions) Act 2013 rules: losses brought forward from prior
+// years are claimable IN FULL when gross sales/receipts (S04 Line 11) are
+// below $3,000,000; otherwise the claim is capped at 50% of the year's net
+// profit before loss relief. The unused balance carries forward indefinitely.
+// The user enters their OFFICIAL brought-forward figure (from prior S04
+// filings / TAJ records) — MiTax does not derive it.
+const LOSS_CLAIM_GROSS_SALES_LIMIT = 3000000;
+
 /**
  * Return the tax parameters for a given year, plus a flag indicating whether
  * those are an exact match or a fallback to the most recent defined year.
@@ -293,6 +303,25 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   const usedActualMethod = !!manualData.useActualExpenses || actualExpCents >= stdDedCents;
   const statutoryCents = Math.max(0, grossCents - allowableCents);
 
+  // ── Loss relief ──────────────────────────────────────────────────────────
+  // Current-year net loss: the pre-floor shortfall the Math.max above discards
+  // (only possible under the actual-expenses method — the 20% standard
+  // deduction can never exceed gross). Never applied this year; surfaced so
+  // the user knows they have a new loss to add to their carry-forward.
+  const currentYearLossCents = Math.max(0, allowableCents - grossCents);
+
+  const lossBfCents = Math.max(0, toCents(manualData.lossesBroughtForward || 0));
+  // The $3M full-claim test is on gross sales/receipts of the trade (S04
+  // Line 11) — business/professional income is the closest figure MiTax has,
+  // not total income.
+  const lossCapApplies = toCents(income.business) >= toCents(LOSS_CLAIM_GROSS_SALES_LIMIT);
+  // Cap basis: 50% of net profit before loss relief (S04 Line 41 analog).
+  const lossAppliedCents = lossCapApplies
+    ? Math.min(lossBfCents, Math.round(statutoryCents * 0.5))
+    : Math.min(lossBfCents, statutoryCents);
+  const statutoryAfterLossCents = statutoryCents - lossAppliedCents;
+  const lossCarriedForwardCents = lossBfCents - lossAppliedCents + currentYearLossCents;
+
   // NIS (National Insurance Scheme) — calculated on combined income, capped at nisMaxIncome.
   // P24 already withheld NIS on the employment portion; credit that and only charge
   // additional NIS on any self-employment income that remains under the cap.
@@ -304,12 +333,17 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   const totalNhtCents      = Math.round(grossCents * params.nhtRate);
   const additionalNhtCents = Math.max(0, totalNhtCents - toCents(p24.nhtDeducted));
 
-  // Education Tax
+  // Education Tax — deliberately computed on statutory income BEFORE loss
+  // relief: prior-year loss deductibility against the Education Tax base is
+  // not clearly documented for individuals, so the conservative (higher)
+  // base is used and the assumption is stated in the report notes.
   const totalEdTaxCents      = Math.round(statutoryCents * params.edTaxRate);
   const additionalEdTaxCents = Math.max(0, totalEdTaxCents - toCents(p24.edTaxDeducted));
 
-  // Chargeable Income (uses total NIS liability for the threshold deduction — per Jamaica IT Act)
-  const chargeableCents = Math.max(0, statutoryCents - toCents(params.personalThreshold) - totalNisCents);
+  // Chargeable Income (uses total NIS liability for the threshold deduction — per Jamaica IT Act).
+  // Losses brought forward reduce the income-tax base only — NIS and NHT are
+  // charged on gross income regardless.
+  const chargeableCents = Math.max(0, statutoryAfterLossCents - toCents(params.personalThreshold) - totalNisCents);
 
   // Income Tax
   const totalIncomeTaxCents      = incomeTaxCents(chargeableCents, params);
@@ -382,6 +416,18 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
 
     // Part C: Statutory Income
     statutoryIncome: roundJMD(statutoryIncome),
+    statutoryIncomeAfterLoss: roundJMD(fromCents(statutoryAfterLossCents)),
+
+    // Loss relief (individuals) — null when no losses are in play. The
+    // brought-forward figure is user-entered (official, from prior S04
+    // filings); MiTax computes only the allowable claim and the balance.
+    lossRelief: (lossBfCents > 0 || currentYearLossCents > 0) ? {
+      lossesBroughtForward: fromCents(lossBfCents),
+      lossApplied:          fromCents(lossAppliedCents),
+      capApplied:           lossCapApplies,
+      currentYearLoss:      fromCents(currentYearLossCents),
+      lossCarriedForward:   fromCents(lossCarriedForwardCents),
+    } : null,
 
     // Part D: Contributions (additional amounts still owed on S04, after P24 credits)
     contributions: {
@@ -433,6 +479,18 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       ] : []),
       `All amounts in your LunchMoney primary currency (JMD). Foreign-currency transactions converted using LunchMoney's historic exchange rates (to_base field) — consistent with how LunchMoney displays amounts in your dashboard.`,
       `${convertedCount} transaction(s) used LunchMoney's converted primary-currency amount; ${unconvertedCount} used original amount (no conversion needed).`,
+      ...(lossBfCents > 0 ? [
+        lossCapApplies
+          ? `Loss relief: $${fromCents(lossAppliedCents).toLocaleString('en-JM', { minimumFractionDigits: 2 })} of your $${fromCents(lossBfCents).toLocaleString('en-JM', { minimumFractionDigits: 2 })} losses brought forward was claimed — capped at 50% of net profit before loss relief because gross business receipts are $${LOSS_CLAIM_GROSS_SALES_LIMIT.toLocaleString()} or more (S04 loss-claim rule).`
+          : `Loss relief: $${fromCents(lossAppliedCents).toLocaleString('en-JM', { minimumFractionDigits: 2 })} of your $${fromCents(lossBfCents).toLocaleString('en-JM', { minimumFractionDigits: 2 })} losses brought forward was claimed in full (gross business receipts below $${LOSS_CLAIM_GROSS_SALES_LIMIT.toLocaleString()}, so the 50% cap does not apply).`,
+        `Loss relief reduces income tax only — NIS and NHT are charged on gross income, and Education Tax is computed on statutory income BEFORE loss relief (conservative: prior-year loss deductibility against the Education Tax base is not clearly documented for individuals — confirm with TAJ or your accountant).`,
+      ] : []),
+      ...(currentYearLossCents > 0 ? [
+        `⚠ This year shows a NET LOSS of $${fromCents(currentYearLossCents).toLocaleString('en-JM', { minimumFractionDigits: 2 })} (allowable expenses exceed gross income). It cannot reduce this year's figures below zero, but it adds to your losses available to carry forward.`,
+      ] : []),
+      ...(lossBfCents > 0 || currentYearLossCents > 0 ? [
+        `Losses to carry forward to ${year + 1}: $${fromCents(lossCarriedForwardCents).toLocaleString('en-JM', { minimumFractionDigits: 2 })} — enter this as "Losses Brought Forward" next year, but confirm the official balance against your TAJ records before filing.`,
+      ] : []),
       `Personal threshold applied: $${params.personalThreshold.toLocaleString()} JMD`,
       `NIS rate: ${params.nisRate * 100}% (max insurable income: $${params.nisMaxIncome.toLocaleString()})`,
       `NHT rate: ${params.nhtRate * 100}%`,
@@ -669,4 +727,4 @@ function generateS04A({ currentYear, priorYearFiling, currentYtdIncome, todayStr
   };
 }
 
-module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, taxParamsStatus, estimateAnnualTax };
+module.exports = { generateS04, generateS04A, TAX_PARAMS, getTaxParams, taxParamsStatus, estimateAnnualTax, LOSS_CLAIM_GROSS_SALES_LIMIT };
