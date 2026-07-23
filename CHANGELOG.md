@@ -6,6 +6,11 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Collapsible Transactions and Payee Cleanup sections on the Account
+  Summary view.** Click the section title (or its chevron) to collapse or
+  expand it; the choice is remembered per-section across restarts.
+
 ### Fixed
 - **Credits/debits displayed with flipped signs in the Account Summary
   transaction list, dashboard YTD income, S04 income/expense totals, and

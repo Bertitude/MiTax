@@ -177,24 +177,40 @@
         <!-- Transaction list -->
         <div class="card" style="margin-top:16px;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
-            <div class="card-title" style="margin-bottom:0;flex:1;">Transactions</div>
+            <div class="collapsible-toggle" id="account-tx-toggle" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer;">
+              <svg class="collapse-chevron" id="account-tx-chevron" viewBox="0 0 16 16" fill="currentColor"
+                   style="width:12px;height:12px;flex-shrink:0;opacity:.6;transition:transform .2s;">
+                <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06z"/>
+              </svg>
+              <div class="card-title" style="margin-bottom:0;">Transactions</div>
+            </div>
             <span id="account-tx-count" style="font-size:11px;color:var(--text-muted);"></span>
           </div>
-          <div id="account-tx-list"></div>
+          <div id="account-tx-body">
+            <div id="account-tx-list"></div>
+          </div>
         </div>
 
         <!-- Payee Cleanup card — hidden until candidates found -->
         <div class="card" id="payee-cleanup-card" style="margin-top:16px;display:none;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-            <div class="card-title" style="margin-bottom:0;flex:1;">🔤 Payee Cleanup</div>
+            <div class="collapsible-toggle" id="payee-cleanup-toggle" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer;">
+              <svg class="collapse-chevron" id="payee-cleanup-chevron" viewBox="0 0 16 16" fill="currentColor"
+                   style="width:12px;height:12px;flex-shrink:0;opacity:.6;transition:transform .2s;">
+                <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06z"/>
+              </svg>
+              <div class="card-title" style="margin-bottom:0;">🔤 Payee Cleanup</div>
+            </div>
             <span id="payee-cleanup-count" class="badge badge-yellow" style="display:none;"></span>
             <button class="btn btn-secondary btn-sm" id="payee-select-all-btn">Select All</button>
             <button class="btn btn-primary btn-sm" id="payee-apply-btn" disabled>Apply Selected</button>
           </div>
-          <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
-            These transactions have raw bank text as their payee name. Review the suggestions and apply the ones you want to update in LunchMoney.
-          </p>
-          <div id="payee-cleanup-body"></div>
+          <div id="payee-cleanup-content">
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
+              These transactions have raw bank text as their payee name. Review the suggestions and apply the ones you want to update in LunchMoney.
+            </p>
+            <div id="payee-cleanup-body"></div>
+          </div>
         </div>
 
       </div>

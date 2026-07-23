@@ -3091,8 +3091,43 @@ async function applyPayeeUpdates(card, body, applyBtn, countBadge) {
   if (state._accountViewAsset) loadAccountSummary(state._accountViewAsset);
 }
 
+const COLLAPSED_SECTIONS_KEY = 'mitax_collapsed_sections';
+
+function getCollapsedSections() {
+  try { return JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function setSectionCollapsed(key, collapsed) {
+  const map = getCollapsedSections();
+  if (collapsed) map[key] = true; else delete map[key];
+  localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify(map));
+}
+
+/** Wire a card section's toggle/chevron/body trio into a collapse/expand control, persisted per section key. */
+function wireCollapsible(key, toggleId, chevronId, bodyId) {
+  const toggle = document.getElementById(toggleId);
+  const chevron = document.getElementById(chevronId);
+  const body = document.getElementById(bodyId);
+  if (!toggle || !chevron || !body) return;
+
+  const collapsed = !!getCollapsedSections()[key];
+  body.style.display = collapsed ? 'none' : '';
+  chevron.classList.toggle('collapsed', collapsed);
+
+  toggle.addEventListener('click', () => {
+    const nowCollapsed = body.style.display !== 'none';
+    body.style.display = nowCollapsed ? 'none' : '';
+    chevron.classList.toggle('collapsed', nowCollapsed);
+    setSectionCollapsed(key, nowCollapsed);
+  });
+}
+
 /** Wire up the static controls on the account summary view (back btn, year change). */
 function setupAccountView() {
+  wireCollapsible('accountTxList', 'account-tx-toggle', 'account-tx-chevron', 'account-tx-body');
+  wireCollapsible('payeeCleanup', 'payee-cleanup-toggle', 'payee-cleanup-chevron', 'payee-cleanup-content');
+
   document.getElementById('account-back-btn').addEventListener('click', () => {
     navigateTo('dashboard');
   });

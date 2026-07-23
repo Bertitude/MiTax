@@ -744,6 +744,10 @@ tr.dupe-row:hover td { background: rgba(210,153,34,0.14); }
   transform: rotate(180deg);
 }
 
+/* ─── Collapsible card sections (Account Summary: Transactions, Payee Cleanup) ── */
+.collapsible-toggle:hover .card-title { color: var(--text); }
+.collapse-chevron.collapsed { transform: rotate(-90deg); }
+
 /* ─── Account-switcher popover ──────────────────────────────────────────── */
 #account-switcher-popover {
   margin: -6px 12px 10px;
