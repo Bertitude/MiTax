@@ -63,10 +63,20 @@ test('classifier: is_income categories become income, subtyped from the category
   assert.deepEqual(classify({ category_id: 2 }), { bucket: 'income:business', source: 'lm-flag' });
 });
 
-test('classifier: uncategorized transactions fall back to payee/notes as a flagged guess', () => {
-  const classify = buildClassifier({});
-  assert.deepEqual(classify({ payee: 'CLIENT PAYMENT — ACME LTD' }), { bucket: 'income:business', source: 'keyword' });
-  assert.deepEqual(classify({ payee: 'RANDOM DEPOSIT' }), { bucket: 'unclassified', source: 'none' });
+test('classifier: income is NEVER keyword-guessed — only LunchMoney flags or mappings create income', () => {
+  const classify = buildClassifier({
+    categories: [{ id: 1, name: 'Deposits' }],   // not flagged as income
+  });
+  // Income-looking payee text on an uncategorized credit: not counted.
+  assert.deepEqual(classify({ payee: 'CLIENT PAYMENT — ACME LTD' }), { bucket: 'unclassified', source: 'none' });
+  // Income-looking CATEGORY NAME without LunchMoney's income flag: not counted.
+  const classify2 = buildClassifier({ categories: [{ id: 2, name: 'Business Income' }] });   // flag missing
+  assert.deepEqual(classify2({ category_id: 2, category_name: 'Business Income' }), { bucket: 'unclassified', source: 'none' });
+});
+
+test('classifier: deductible keyword fallback still works on category names (flagged as a guess)', () => {
+  const classify = buildClassifier({ categories: [{ id: 1, name: 'Office Supplies' }] });
+  assert.deepEqual(classify({ category_id: 1, category_name: 'Office Supplies' }), { bucket: 'expense', source: 'keyword' });
 });
 
 // ─── End-to-end through generateS04 (injected data, no API) ─────────────────
@@ -126,19 +136,18 @@ test('generateS04: income reversals (debits in an income category) reduce that i
   assert.equal(r.income.businessProfessionalIncome, 80000);
 });
 
-test('generateS04: keyword-guessed income is totalled and flagged in the notes', async () => {
+test('generateS04: an uncategorized income-looking credit is NOT counted, and the report says why', async () => {
   const r = await generateS04({
     year: 2023,
     apiKey: null,
     transactions: [
-      { date: '2023-02-01', amount: 30000, payee: 'CLIENT PAYMENT — ACME' },   // uncategorized guess
+      { date: '2023-02-01', amount: 30000, payee: 'CLIENT PAYMENT — ACME' },   // uncategorized
     ],
     categories: CATS,
   });
-  assert.equal(r.classification.guessedIncome, 30000);
-  assert.ok(r.notes.some(n => n.includes('KEYWORD GUESSING')));
-  const row = r.classification.rows.find(x => x.source === 'keyword');
-  assert.equal(row.bucket, 'income:business');
+  assert.equal(r.income.grossIncome, 0);
+  assert.equal(r.classification.unclassifiedCredits, 30000);
+  assert.ok(r.notes.some(n => n.includes('not flagged as income in LunchMoney')));
 });
 
 test('S04_CATEGORY_PACK: income categories carry is_income, Transfers is excluded, mappings are valid', () => {

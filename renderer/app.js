@@ -2521,8 +2521,8 @@ const CLASSIFY_BUCKET_LABELS = {
 };
 const CLASSIFY_SOURCE_LABELS = {
   'mapping': 'Your mapping',
-  'lm-flag': 'LunchMoney flag',
-  'keyword': '⚠ Keyword guess',
+  'lm-flag': 'LunchMoney setting',
+  'keyword': '⚠ Keyword guess (deduction)',
   'none':    '—',
 };
 
@@ -2549,17 +2549,18 @@ function buildClassificationSection(report) {
   }).join('');
 
   const warnBits = [];
-  if (c.guessedIncome > 0)      warnBits.push(`${fmt(c.guessedIncome)} of income relies on keyword guesses`);
-  if (c.unclassifiedCredits > 0) warnBits.push(`${fmt(c.unclassifiedCredits)} in credits was NOT counted (unclassified)`);
-  if (!c.categoriesLoaded)      warnBits.push('LunchMoney category flags were unavailable — keyword fallback used');
+  if (c.unclassifiedCredits > 0) warnBits.push(`${fmt(c.unclassifiedCredits)} in credits was NOT counted — its categories aren't flagged as income in LunchMoney`);
+  if (!c.categoriesLoaded)      warnBits.push('LunchMoney category flags were unavailable — only your mappings could classify income');
 
   return `
     <div class="tax-section">
       <div class="card-title">How Your Money Was Classified</div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
-        Priority: your Category Mapping → LunchMoney's own income/exclude flags → keyword guess.
-        Highlighted rows are guesses or uncounted money — map those categories to lock in their treatment.
-        Refunds in expense categories reduce the expense; they are not counted as income.
+        Income and exclusions come straight from your LunchMoney settings: categories flagged as
+        <em>income</em> count as income, categories excluded from totals (transfers, groups) are skipped —
+        MiTax never guesses income from bank text. Your Category Mapping overrides either, and picks the
+        S04 income line. Highlighted rows are uncounted money or keyword-guessed deductions — fix them in
+        LunchMoney or map them here. Refunds in expense categories reduce the expense; they are not income.
       </div>
       ${warnBits.length ? `<div style="padding:8px 12px;margin-bottom:10px;border:1px solid var(--warn,#d29922);border-radius:6px;background:rgba(210,153,34,0.10);font-size:12px;">⚠ ${escHtml(warnBits.join(' · '))}</div>` : ''}
       <div style="overflow-x:auto;max-height:320px;overflow-y:auto;">

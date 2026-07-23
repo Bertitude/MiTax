@@ -7,14 +7,20 @@
  * CHARGE REFUND" — and matched against raw payee/bank text even when the
  * user had deliberately categorized the transaction.
  *
+ * LunchMoney's own settings are the SINGLE SOURCE OF TRUTH for what is
+ * income and what is excluded — MiTax never guesses income from bank text.
+ *
  * Priority order (first match wins):
  *   1. The user's explicit category mapping (ignore / income type / expense).
  *   2. LunchMoney's own category metadata: `exclude_from_totals`/`is_group`
- *      → excluded; `is_income` → income (subtype from the category NAME).
- *   3. Word-boundary keyword match against the category NAME only.
- *   4. For UNCATEGORIZED transactions only: word-boundary keywords against
- *      payee + notes (all we have) — reported as a guess.
- *   5. Otherwise: unclassified (counted nowhere, but surfaced in the report).
+ *      → excluded; `is_income` → income. Keywords are used ONLY to pick the
+ *      S04 income line (business/rental/…) from the category NAME — never to
+ *      decide whether something IS income.
+ *   3. Deductible-expense keyword match against the category NAME only —
+ *      LunchMoney has no "deductible" concept, so this fallback (flagged in
+ *      the report) survives for unmapped expense categories.
+ *   4. Everything else — including ALL uncategorized transactions — is
+ *      unclassified: counted nowhere, surfaced in the report for review.
  *
  * 'Refund' and 'Cashback' are deliberately NOT income keywords — a refund of
  * an expense is not gross income. Credits landing in an expense-classified
@@ -110,21 +116,13 @@ function buildClassifier({ categories = [], userCategoryMappings = {} } = {}) {
       }
     }
 
-    // 3. Keyword fallback against the CATEGORY NAME only — the user's
-    // categorization can no longer be overridden by junk in the bank text.
-    if (catName) {
-      const incomeType = matchIncomeType(catName);
-      if (incomeType) return { bucket: `income:${incomeType}`, source: 'keyword' };
-      if (matchDeductible(catName)) return { bucket: 'expense', source: 'keyword' };
-      return { bucket: 'unclassified', source: 'none' };
+    // 3. Deductible-expense keyword fallback against the CATEGORY NAME only.
+    // Income is NEVER keyword-guessed: a credit whose category isn't flagged
+    // as income in LunchMoney (and isn't user-mapped) is not counted — it
+    // shows up as unclassified in the report so it can be flagged properly.
+    if (catName && matchDeductible(catName)) {
+      return { bucket: 'expense', source: 'keyword' };
     }
-
-    // 4. Uncategorized: payee + notes are all we have. Word-boundary only,
-    // and the report flags these as guesses.
-    const text = `${(tx && tx.payee) || ''} ${(tx && tx.notes) || ''}`;
-    const incomeType = matchIncomeType(text);
-    if (incomeType) return { bucket: `income:${incomeType}`, source: 'keyword' };
-    if (matchDeductible(text)) return { bucket: 'expense', source: 'keyword' };
 
     return { bucket: 'unclassified', source: 'none' };
   };

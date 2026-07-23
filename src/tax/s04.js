@@ -284,12 +284,11 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
   }
 
   // Classification summary for the report (sorted by money involved).
+  // Income can only come from user mappings or LunchMoney's is_income flag —
+  // never keyword guesses — so there is no "guessed income" to total.
   const classificationRows = [...catRows.values()]
     .map(r => ({ ...r, credits: roundJMD(r.credits), debits: roundJMD(r.debits) }))
     .sort((a, b) => (b.credits + b.debits) - (a.credits + a.debits));
-  const guessedIncome = roundJMD(classificationRows
-    .filter(r => r.bucket.startsWith('income:') && r.source === 'keyword')
-    .reduce((s, r) => s + r.credits, 0));
 
   // Apply manual data overrides/additions
   if (manualData.businessIncome) income.business += manualData.businessIncome;
@@ -499,7 +498,6 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
       unclassifiedDebits:  roundJMD(unclassifiedDebits),
       excludedTotal:       roundJMD(excludedTotal),
       ignoredTotal:        roundJMD(ignoredTotal),
-      guessedIncome,
       categoriesLoaded:    lmCategories.length > 0,
     },
 
@@ -510,11 +508,8 @@ async function generateS04({ year, apiKey, manualData = {}, userCategoryMappings
     notes: [
       ...(dataWarning ? [`⚠ ${dataWarning}`] : []),
       ...(categoriesWarning ? [`⚠ ${categoriesWarning}`] : []),
-      ...(guessedIncome > 0 ? [
-        `⚠ $${guessedIncome.toLocaleString('en-JM', { minimumFractionDigits: 2 })} of income was classified by KEYWORD GUESSING (no user mapping and no LunchMoney income flag on the category). Review the classification table and map those categories to lock the treatment in.`,
-      ] : []),
       ...(unclassifiedCredits > 0 ? [
-        `⚠ $${roundJMD(unclassifiedCredits).toLocaleString('en-JM', { minimumFractionDigits: 2 })} in credits could NOT be classified and was NOT counted as income. If any of it is taxable income, map its categories (or flag them as income in LunchMoney) and regenerate.`,
+        `⚠ $${roundJMD(unclassifiedCredits).toLocaleString('en-JM', { minimumFractionDigits: 2 })} in credits was NOT counted as income because its categories are not flagged as income in LunchMoney (and are not mapped here). MiTax counts income strictly from LunchMoney's own income setting — if any of this is taxable income, mark its category as income in LunchMoney (or map it in the Category Mapping panel) and regenerate.`,
       ] : []),
       `Tax year: January 1 – December 31, ${year}`,
       ...(fallback ? [

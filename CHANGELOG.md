@@ -4,6 +4,24 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **LunchMoney's settings are now the sole authority on what counts as
+  income and what is excluded.** MiTax no longer keyword-guesses income at
+  all: a credit counts as income only when its category is flagged as
+  income in LunchMoney (or explicitly mapped in the Category Mapping
+  panel), and categories excluded from totals / category groups are always
+  skipped. Category-name keywords now serve only two narrow purposes:
+  picking which S04 income line an income-flagged category belongs to, and
+  the deductible-expense fallback for unmapped expense categories
+  (LunchMoney has no "deductible" concept). Uncategorized or unflagged
+  credits are surfaced as "not counted" in the classification table with
+  guidance to flag them in LunchMoney, instead of being silently guessed
+  into an income line.
+
+---
+
 ## [1.3.13] — 2026-07-23
 
 ### Fixed
