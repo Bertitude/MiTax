@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.11] — 2026-07-23
 
 ### Added
 - **Collapsible Transactions and Payee Cleanup sections on the Account
