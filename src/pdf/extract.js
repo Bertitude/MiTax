@@ -13,7 +13,11 @@
  *     previous Y" here, where pdf-parse concatenated — practically negligible.)
  *   - extractPageItems reproduces the old `pagerender` coordinate output
  *     ({ str, x: transform[4], y: transform[5] } per non-empty item, per page)
- *     used by the coordinate-aware Scotiabank and JN parsers.
+ *     used by the coordinate-aware Scotiabank and JN parsers, plus `w` (the
+ *     item's advance width) so a parser can derive the right edge `x + w`.
+ *     Right edges are what identify a right-aligned money column: the left edge
+ *     of "1,088,304.12" sits ~50pt further left than that of "17.77" in the
+ *     same column.
  */
 
 'use strict';
@@ -89,7 +93,10 @@ async function extractPageItems(buffer) {
       const content = await page.getTextContent();
       const items = content.items
         .filter(i => i.str && i.str.trim())
-        .map(i => ({ str: i.str.trim(), x: i.transform[4], y: i.transform[5] }));
+        // `w` is the width of the UNtrimmed string, so x + w is the right edge
+        // of the glyphs as laid out — trailing spaces would overstate it, which
+        // money tokens never carry.
+        .map(i => ({ str: i.str.trim(), x: i.transform[4], y: i.transform[5], w: i.width || 0 }));
       pages.push(items);
     }
     return pages;

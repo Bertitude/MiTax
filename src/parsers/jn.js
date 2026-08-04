@@ -5,12 +5,21 @@
  *
  * Detected by: RSV-XXXXXXXXXXXX account number format unique to JN Bank savings.
  *
- * Table column layout (PDF user units, verified with pdfplumber):
+ * Table column layout (PDF user units):
  *   Transaction Date (x < 90)   | Transaction Type (90–182)
- *   Description (183–359)       | Debit (360–439) | Credit (440–509) | Balance (x ≥ 510)
+ *   Description (183–359)       | Debit | Credit | Balance
  *
- * Date format  : "Jan 01, 2023" — three text tokens in the date column
+ * The three money columns are RIGHT-aligned, so they are identified by each
+ * token's right edge (x + w), not its left edge — see amountColumn().
+ *
+ * Date format  : "Jan 01, 2023", emitted as ONE text item by pdfjs (earlier
+ *                column measurements were taken with pdfplumber, whose
+ *                word-level segmentation splits it into three tokens — both
+ *                shapes are accepted here).
  * Amount format: plain "1,106.26" (no currency symbol)
+ *
+ * A long transaction type wraps onto a second line ("Automatic Payment" /
+ * "Withdrawal"); the continuation line is folded back into the row above it.
  *
  * Special rows to skip:
  *   - "Opening Balance" — starting balance entry, not a real transaction
@@ -23,21 +32,38 @@ const fs       = require('fs');
 const { extractPageItems } = require('../pdf/extract');
 const { derivePeriodFromTransactions, applySignConvention } = require('./utils');
 
-// Column boundaries (PDF user units, x from left edge)
+// Text column boundaries (PDF user units, x = LEFT edge). These columns are
+// left-aligned, so a left-edge test is the right one for them.
 const JN_DATE_MAX    = 90;   // date tokens  : x < 90
 const JN_TYPE_MIN    = 90;   // tx type      : 90 ≤ x < 183
 const JN_TYPE_MAX    = 183;
-const JN_DESC_MIN    = 183;  // description  : 183 ≤ x < 395
+const JN_DESC_MIN    = 183;  // description  : 183 ≤ x < 360
 const JN_DESC_MAX    = 360;
+
+// Money column boundaries (PDF user units, RIGHT edge = x + w).
+//
+// The debit/credit/balance columns are right-aligned, so only the right edge is
+// stable: measured on real statements it sits at ~420.5 / ~496.5 / ~570.0
+// regardless of magnitude, while the left edge slides left as the number grows
+// ("17.77" starts at x=398, "417,600.00" at x=375, both in the debit column).
+// Splitting at the midpoints leaves ~35pt of slack on either side of every
+// column. A left-edge split cannot: the smallest gap between a credit's left
+// edge and the debit column is ~4pt, so a 7-figure credit (left edge x≈444)
+// sits a hair from being read as a debit — i.e. a deposit booked as a
+// withdrawal.
+const JN_AMT_RIGHT_MIN    = 380;  // right edge < 380  → not a money column
+const JN_DEBIT_RIGHT_MAX  = 458;  // 380 ≤ right < 458 → debit
+const JN_CREDIT_RIGHT_MAX = 533;  // 458 ≤ right < 533 → credit
+                                  //       right ≥ 533 → balance (ignored)
+
+// Left-edge fallback, used only for coordinate items that carry no width (e.g.
+// synthetic fixtures built before `w` was captured).
 const JN_AMT_MIN     = 360;  // debit amount : 360 ≤ x < 440
 const JN_CREDIT_MIN  = 440;  // credit amount: 440 ≤ x < 510
 const JN_BAL_MIN     = 510;  // balance      : x ≥ 510  (ignored)
 
 // Matches plain amounts: "1,106.26" or "150,000.00"
 const AMT_PAT  = /^[\d,]+\.\d{2}$/;
-
-// 3-letter month abbreviation — used to identify the start of a date row
-const MONTH_PAT = /^[A-Za-z]{3}$/;
 
 const MONTHS = {
   jan:1, feb:2, mar:3, apr:4, may:5, jun:6,
@@ -121,17 +147,33 @@ function parseFromPageItems(allPageItems, fullText) {
     // Sort rows top-to-bottom (in PDF coords y increases upward → sort descending)
     const sortedYKeys = Array.from(rowMap.keys()).sort((a, b) => b - a);
 
+    // A long transaction type wraps onto its own line — "Automatic Payment"
+    // then "Withdrawal" ~11pt below it — which lands in a y bucket of its own
+    // holding nothing but type-column text. Fold each such line back into the
+    // row above so the payee reads "Automatic Payment Withdrawal" instead of a
+    // truncated "Automatic Payment".
+    const rows = [];
     for (const yKey of sortedYKeys) {
-      const row = rowMap.get(yKey).sort((a, b) => a.x - b.x);
+      const items = rowMap.get(yKey);
+      const isTypeContinuation = rows.length &&
+        items.every(w => w.x >= JN_TYPE_MIN && w.x < JN_TYPE_MAX && !AMT_PAT.test(w.str));
+      if (isTypeContinuation) rows[rows.length - 1].push(...items);
+      else rows.push(items);
+    }
 
-      // Date column: tokens at x < 90 that begin with a month abbreviation
+    for (const rowItems of rows) {
+      // Reading order: top line first, then left-to-right within each line.
+      const row = rowItems.slice().sort((a, b) => (b.y - a.y) || (a.x - b.x));
+
+      // Date column: tokens at x < 90 forming a "Jan 01, 2023" date. pdfjs
+      // emits the whole date as one item; pdfplumber-style word segmentation
+      // splits it into three. Joining first handles both.
       const dateTokens = row.filter(w => w.x < JN_DATE_MAX);
-      if (!dateTokens.length || !MONTH_PAT.test(dateTokens[0].str)) continue;
+      if (!dateTokens.length) continue;
 
-      // Reconstruct and parse "Jan 01, 2023"
       const dateStr = dateTokens.map(w => w.str).join(' ');
       const date    = parseMDY(dateStr);
-      if (!date) continue;
+      if (!date) continue;   // column header ("Transaction Date") and page furniture
 
       // Transaction type tokens (90–182)
       const typeItems = row.filter(w => w.x >= JN_TYPE_MIN && w.x < JN_TYPE_MAX);
@@ -145,21 +187,20 @@ function parseFromPageItems(allPageItems, fullText) {
       const descStr   = descItems.map(w => w.str).join(' ').trim();
 
       // Amount tokens — split into debit / credit / balance zones
-      const debitItems  = row.filter(w => w.x >= JN_AMT_MIN  && w.x < JN_CREDIT_MIN && AMT_PAT.test(w.str));
-      const creditItems = row.filter(w => w.x >= JN_CREDIT_MIN && w.x < JN_BAL_MIN  && AMT_PAT.test(w.str));
+      const amountItems = row.filter(w => AMT_PAT.test(w.str));
+      const debitItems  = amountItems.filter(w => amountColumn(w) === 'debit');
+      const creditItems = amountItems.filter(w => amountColumn(w) === 'credit');
       // Balance column amounts are intentionally ignored
 
       const debitVal  = debitItems.length  ? parseFloat(debitItems[0].str.replace(/,/g, ''))  : 0;
       const creditVal = creditItems.length ? parseFloat(creditItems[0].str.replace(/,/g, '')) : 0;
 
       if (debitVal === 0 && creditVal === 0) {
-        // The column boundaries are hardcoded x-positions; if a layout
-        // variant shifts the credit column, its amounts land outside the
-        // expected zones and the row would vanish. Surface it instead:
-        // does this dated row carry an amount-looking token ANYWHERE
-        // outside the (ignored) balance zone?
-        const strayAmount = row.some(w => w.x < JN_BAL_MIN && w.x >= JN_DESC_MIN && AMT_PAT.test(w.str));
-        if (strayAmount || row.some(w => w.x >= JN_AMT_MIN && w.x < JN_BAL_MIN && /[\d]/.test(w.str))) {
+        // The column boundaries are hardcoded coordinates; if a layout variant
+        // shifts a money column, its amounts land outside the expected zones
+        // and the row would vanish. Surface it instead: does this dated row
+        // carry an amount-looking token that fell into no column at all?
+        if (amountItems.some(w => amountColumn(w) === null)) {
           droppedRows.push(`${date} ${typeStr || descStr || '(no description)'}`.trim());
         }
         continue; // no usable amount — skip (with warning above if suspicious)
@@ -214,13 +255,39 @@ function parseFromPageItems(allPageItems, fullText) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Parse "Jan 01, 2023" or "Jan 1, 2023" → "2023-01-01" */
+/**
+ * Which money column an amount token sits in, or null if it sits in none.
+ *
+ * Prefers the right edge (stable for a right-aligned column); falls back to the
+ * left-edge zones for items carrying no width.
+ */
+function amountColumn(item) {
+  if (item.w > 0) {
+    const right = item.x + item.w;
+    if (right < JN_AMT_RIGHT_MIN)    return null;
+    if (right < JN_DEBIT_RIGHT_MAX)  return 'debit';
+    if (right < JN_CREDIT_RIGHT_MAX) return 'credit';
+    return 'balance';
+  }
+  if (item.x >= JN_BAL_MIN)                                 return 'balance';
+  if (item.x >= JN_CREDIT_MIN)                              return 'credit';
+  if (item.x >= JN_AMT_MIN)                                 return 'debit';
+  return null;
+}
+
+/**
+ * Parse "Jan 01, 2023", "Jan 1, 2023" or "January 1, 2023" → "2023-01-01".
+ * Anchored at the start so non-date column text ("Transaction Date") is
+ * rejected rather than having a date scavenged out of the middle of it.
+ */
 function parseMDY(str) {
-  const m = str.trim().match(/([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})/);
+  const m = String(str || '').trim().match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})\b/);
   if (!m) return null;
-  const mo = MONTHS[m[1].toLowerCase()];
+  const mo = MONTHS[m[1].slice(0, 3).toLowerCase()];
   if (!mo) return null;
-  return `${m[3]}-${String(mo).padStart(2, '0')}-${String(parseInt(m[2], 10)).padStart(2, '0')}`;
+  const day = parseInt(m[2], 10);
+  if (day < 1 || day > 31) return null;
+  return `${m[3]}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 /** Combine transaction type and description into a payee string. */

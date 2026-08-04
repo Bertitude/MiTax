@@ -4,6 +4,37 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **JN Bank statements no longer import as "No transactions extracted".**
+  The JN parser identified a transaction row by requiring the first token
+  in the date column to be a bare 3-letter month — true of the
+  pdfplumber word segmentation the column layout was originally measured
+  with, but not of pdfjs, which emits "Jan 01, 2021" as a single text
+  item. Every row failed that gate, so every JN statement parsed to zero
+  transactions and surfaced the generic "unsupported or scanned-image
+  PDF" warning. The date column is now joined before parsing, so both
+  tokenizations work (full month names too).
+- **JN Bank: large deposits could be booked as withdrawals.** The
+  debit/credit/balance columns are right-aligned, but were being
+  identified by each amount's *left* edge — which slides left as the
+  number grows, leaving only ~4pt between a 7-figure credit and the debit
+  column. Amounts are now placed by their right edge, which is fixed per
+  column, giving ~35pt of clearance on either side.
+- **JN Bank: wrapped transaction types are no longer truncated.** A type
+  too long for its column prints on two lines ("Automatic Payment" /
+  "Withdrawal"); the second line landed in its own row and was dropped,
+  leaving the payee as "Automatic Payment" and mis-categorizing the
+  transaction. Continuation lines are now folded back into the row above.
+
+Verified against two real JN annual savings statements: all 205
+transactions extract, and the debit, credit and per-transaction-type
+totals reconcile to the cent with the summary page printed on each
+statement.
+
+---
+
 ## [1.3.14] — 2026-07-23
 
 ### Changed

@@ -12,6 +12,7 @@ const ncb        = require('../src/parsers/ncb');
 const wise       = require('../src/parsers/wise');
 const stripe     = require('../src/parsers/stripe');
 const paypal     = require('../src/parsers/paypal');
+const jn         = require('../src/parsers/jn');
 
 const fixture = (name) =>
   JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8'));
@@ -271,4 +272,136 @@ test('parseMDY / normalizeDate: month-first vs day-first (N4)', () => {
   assert.equal(parseMDY('7/4/2024'), '2024-07-04');   // month-first
   assert.equal(normalizeDate('7/4/2024'), '2024-04-07'); // day-first (documents the trap)
   assert.equal(parseMDY('13/4/2024'), '');            // invalid month rejected
+});
+
+// ── JN Bank ───────────────────────────────────────────────────────────────────
+//
+// Coordinates below are the real values measured from a JN "Savings
+// Transactions Statement" (x/y/w in PDF user units, as pdfjs reports them).
+
+const JN_TEXT =
+  'Kaiel Eytle\nAccount number\nRSV-002094352472\nJMD\n' +
+  'Savings Transactions Statement for the Period Jan 01, 2021 - Dec 31, 2021';
+
+test('JN Bank: a whole-date text item is parsed (pdfjs emits "Jan 01, 2021" as ONE token)', () => {
+  // Regression: the date gate required the first date-column token to be a bare
+  // 3-letter month, which only holds for pdfplumber-style word segmentation.
+  // pdfjs emits the entire date as a single item, so EVERY row was skipped and
+  // the import failed with "No transactions extracted".
+  const pages = [[
+    { str: 'Transaction Date', x: 20,    y: 507,   w: 66.7 },
+    { str: 'Debit',            x: 397,   y: 507,   w: 21.4 },
+    { str: 'Jan 02, 2021',     x: 20.0,  y: 469.7, w: 50.8 },
+    { str: 'Withdrawal',       x: 99.7,  y: 469.7, w: 47.2 },
+    { str: '17.77',            x: 397.9, y: 469.7, w: 22.5 },
+    { str: '1,088,286.35',     x: 517.5, y: 469.7, w: 52.5 },
+    { str: 'Jan 25, 2021',     x: 20.0,  y: 325.7, w: 50.8 },
+    { str: 'Deposit',          x: 99.7,  y: 325.7, w: 31.1 },
+    { str: '42,200.00',        x: 456.5, y: 325.7, w: 40.0 },
+    { str: '352,382.04',       x: 525.0, y: 325.7, w: 45.0 },
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+
+  assert.equal(res.institution, 'JN Bank');
+  assert.equal(res.accountName, 'RSV-002094352472');
+  assert.equal(res.currency, 'JMD');
+  assert.equal(res.transactions.length, 2);   // the header row is not one of them
+
+  const [withdrawal, deposit] = res.transactions;
+  assert.equal(withdrawal.date, '2021-01-02');
+  assert.equal(withdrawal.amount, -17.77);    // debit column → negative user-facing
+  assert.equal(withdrawal.type, 'debit');
+  assert.equal(deposit.date, '2021-01-25');
+  assert.equal(deposit.amount, 42200);        // credit column → positive user-facing
+  assert.equal(deposit.type, 'credit');
+
+  assert.equal(res.period.start, '2021-01-02');
+  assert.equal(res.period.end, '2021-01-25');
+  assert.deepEqual(res.warnings, []);
+});
+
+test('JN Bank: a transaction type wrapped onto a second line is folded into the payee', () => {
+  // "Transfer Withdrawal" prints as "Transfer" with "Withdrawal" ~11pt below,
+  // landing in its own y bucket. Left unmerged the payee reads "Transfer",
+  // which also mis-categorizes the row.
+  const pages = [[
+    { str: 'Jan 29, 2021', x: 20.0,  y: 307.7, w: 50.8 },
+    { str: 'Transfer',     x: 99.7,  y: 307.7, w: 33.9 },
+    { str: '1,955.00',     x: 385.5, y: 307.7, w: 35.0 },
+    { str: '350,427.04',   x: 525.0, y: 307.7, w: 45.0 },
+    { str: 'Withdrawal',   x: 99.7,  y: 296.6, w: 47.2 },   // continuation line
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+
+  assert.equal(res.transactions.length, 1);
+  assert.equal(res.transactions[0].payee, 'Transfer Withdrawal');
+  assert.equal(res.transactions[0].amount, -1955);
+});
+
+test('JN Bank: opening and closing balance rows are not transactions', () => {
+  const pages = [[
+    { str: 'Jan 01, 2021',    x: 20.0, y: 487.7, w: 50.8 },
+    { str: 'Opening Balance', x: 99.7, y: 487.7, w: 69.1 },
+    { str: '1,088,304.12',    x: 444.0, y: 487.7, w: 52.5 },
+    { str: '1,088,304.12',    x: 517.5, y: 487.7, w: 52.5 },
+    { str: 'Dec 31, 2021',    x: 20.0, y: 100.0, w: 50.8 },
+    { str: 'Closing Balance', x: 99.7, y: 100.0, w: 66.0 },
+    { str: '381,742.12',      x: 451.5, y: 100.0, w: 45.0 },
+    { str: '381,742.12',      x: 525.0, y: 100.0, w: 45.0 },
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+  assert.equal(res.transactions.length, 0);
+});
+
+test('JN Bank: a 7-figure credit stays a credit (money columns split on the RIGHT edge)', () => {
+  // The money columns are right-aligned, so a large credit's LEFT edge slides
+  // into the debit column's left-edge zone — booking a deposit as a withdrawal.
+  // Here the credit's left edge (439.1) sits below the old 440 credit cutoff
+  // while its right edge (496.5) is squarely in the credit column.
+  const pages = [[
+    { str: 'Jan 25, 2021',  x: 20.0,  y: 325.7, w: 50.8 },
+    { str: 'Deposit',       x: 99.7,  y: 325.7, w: 31.1 },
+    { str: '12,345,678.90', x: 439.1, y: 325.7, w: 57.4 },
+    { str: '12,698,060.94', x: 512.6, y: 325.7, w: 57.4 },
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+
+  assert.equal(res.transactions.length, 1);
+  assert.equal(res.transactions[0].amount, 12345678.90);
+  assert.equal(res.transactions[0].type, 'credit');
+});
+
+test('JN Bank: coordinate items with no width fall back to the left-edge zones', () => {
+  const pages = [[
+    { str: 'Jan 02, 2021', x: 20,    y: 469.7 },
+    { str: 'Withdrawal',   x: 99.7,  y: 469.7 },
+    { str: '17.77',        x: 397.9, y: 469.7 },
+    { str: '1,088,286.35', x: 517.5, y: 469.7 },
+    { str: 'Jan 25, 2021', x: 20,    y: 325.7 },
+    { str: 'Deposit',      x: 99.7,  y: 325.7 },
+    { str: '42,200.00',    x: 456.5, y: 325.7 },
+    { str: '352,382.04',   x: 525.0, y: 325.7 },
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+  assert.equal(res.transactions.length, 2);
+  assert.equal(res.transactions[0].amount, -17.77);
+  assert.equal(res.transactions[1].amount, 42200);
+});
+
+test('JN Bank: a dated row whose amount misses every column is WARNED about, not silently dropped', () => {
+  const pages = [[
+    { str: 'Jan 02, 2021', x: 20.0,  y: 469.7, w: 50.8 },
+    { str: 'MYSTERY ROW',  x: 99.7,  y: 469.7, w: 55.0 },
+    { str: '4,025.00',     x: 300.0, y: 469.7, w: 35.0 },   // right edge 335 → no column
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+  assert.equal(res.transactions.length, 0);
+  assert.ok(res.warnings.some(w => /SKIPPED/.test(w) && /MYSTERY ROW/.test(w)));
+});
+
+test('JN Bank: falls back to the header period when no transactions are found', () => {
+  const res = jn.parseFromPageItems([[]], JN_TEXT);
+  assert.equal(res.transactions.length, 0);
+  assert.equal(res.period.start, '2021-01-01');
+  assert.equal(res.period.end, '2021-12-31');
 });
