@@ -405,3 +405,98 @@ test('JN Bank: falls back to the header period when no transactions are found', 
   assert.equal(res.period.start, '2021-01-01');
   assert.equal(res.period.end, '2021-12-31');
 });
+
+test('JN Bank: money columns are re-derived from the page header', () => {
+  // The Debit/Credit/Balance headings are right-aligned with the columns they
+  // label, so the boundaries can be read off the page instead of hardcoded.
+  const header = [
+    { str: 'Transaction Date',        x: 20.0,  y: 507, w: 74.2 },
+    { str: 'Transaction Type',        x: 99.7,  y: 507, w: 75.9 },
+    { str: 'Transaction Description', x: 184.8, y: 507, w: 103.6 },
+    { str: 'Debit',                   x: 397.2, y: 507, w: 23.3 },   // right 420.5
+    { str: 'Credit',                  x: 468.9, y: 507, w: 27.8 },   // right 496.7
+    { str: 'Balance',                 x: 536.1, y: 507, w: 33.9 },   // right 570.0
+  ];
+  const cols = jn.moneyColumnsFromHeader(header);
+  assert.ok(cols, 'header row should be recognized');
+  // Midpoints between the header right edges, which sit within 0.2pt of the
+  // amount right edges beneath them.
+  assert.ok(Math.abs(cols.debitMax  - 458.6) < 0.5, `debitMax ${cols.debitMax}`);
+  assert.ok(Math.abs(cols.creditMax - 533.3) < 0.5, `creditMax ${cols.creditMax}`);
+  assert.ok(cols.minRight < 420.5 && cols.minRight > 288.4,
+    'lower bound sits between the description column and the debit column');
+});
+
+test('JN Bank: the summary page headings are NOT mistaken for the table header', () => {
+  // The summary page prints "Debit"/"Credit" one column further right and with
+  // no "Balance". Adopting those offsets would shift every column by one, so
+  // the full triplet is required.
+  const summaryHeadings = [
+    { str: 'Transaction Summary', x: 20.0,  y: 636, w: 115.7 },
+    { str: 'Debit',               x: 473.3, y: 639, w: 23.3 },   // right 496.6
+    { str: 'Credit',              x: 542.4, y: 639, w: 27.7 },   // right 570.1
+  ];
+  assert.equal(jn.moneyColumnsFromHeader(summaryHeadings), null);
+});
+
+test('JN Bank: a dormant statement period reports no activity, not a broken file', () => {
+  // Real Jan-2023 monthly statement: the account was dormant, so JN printed
+  // the opening and closing balance and nothing between them. Reporting this
+  // as "unsupported or a scanned-image PDF" blames a file that parsed fine.
+  const text = 'RSV-002094352472\nJMD\n' +
+    'Savings Transactions Statement for the Period Jan 01, 2023 - Jan 31, 2023';
+  const pages = [[
+    { str: 'Debit',           x: 397.2, y: 507,   w: 23.3 },
+    { str: 'Credit',          x: 468.9, y: 507,   w: 27.8 },
+    { str: 'Balance',         x: 536.1, y: 507,   w: 33.9 },
+    { str: 'Jan 01, 2023',    x: 20.0,  y: 489,   w: 50.8 },
+    { str: 'Opening Balance', x: 99.7,  y: 489,   w: 69.2 },
+    { str: '1,106.26',        x: 461.5, y: 489,   w: 35.0 },
+    { str: '1,106.26',        x: 535.0, y: 489,   w: 35.0 },
+    { str: 'Jan 31, 2023',    x: 20.0,  y: 471,   w: 50.8 },
+    { str: 'Closing Balance', x: 99.7,  y: 471,   w: 65.8 },
+    { str: '1,106.26',        x: 461.5, y: 471,   w: 35.0 },
+    { str: '1,106.26',        x: 535.0, y: 471,   w: 35.0 },
+  ]];
+  const res = jn.parseFromPageItems(pages, text);
+
+  assert.equal(res.transactions.length, 0);
+  assert.equal(res.emptyPeriod, true);
+  assert.equal(res.period.start, '2023-01-01');
+  assert.equal(res.period.end, '2023-01-31');
+  assert.ok(res.warnings.some(w => /no activity/i.test(w)));
+  assert.ok(!res.warnings.some(w => /scanned-image/i.test(w)));
+
+  // ...and the dispatcher must not pile the generic file-blaming warning on top
+  const validated = require('../src/parsers/index').validateResult(res);
+  assert.ok(!validated.warnings.some(w => /unsupported or a scanned-image/i.test(w)));
+});
+
+test('JN Bank: an unrecognized empty result still blames the file', () => {
+  // Guard against the emptyPeriod escape hatch swallowing genuine failures:
+  // with no balance rows there is no evidence the table was ever found.
+  const { validateResult } = require('../src/parsers/index');
+  const res = validateResult({ institution: 'JN Bank', transactions: [] });
+  assert.ok(res.warnings.some(w => /unsupported or a scanned-image/i.test(w)));
+
+  const jnEmpty = jn.parseFromPageItems([[]], 'RSV-002094352472');
+  assert.ok(!jnEmpty.emptyPeriod);
+});
+
+test('JN Bank: a wrapped description is folded into the row, not dropped', () => {
+  // The description column is empty on every JN savings statement seen so far,
+  // so this covers the same wrap the transaction-type column demonstrably does.
+  const pages = [[
+    { str: 'Feb 21, 2023',      x: 20.0,  y: 471,   w: 50.8 },
+    { str: 'Deposit',           x: 99.7,  y: 471,   w: 31.1 },
+    { str: 'STANDING ORDER',    x: 184.8, y: 471,   w: 90.0 },
+    { str: '70,000.00',         x: 456.5, y: 471,   w: 40.0 },
+    { str: '71,106.26',         x: 529.9, y: 471,   w: 40.0 },
+    { str: 'REF 8842',          x: 184.8, y: 459.9, w: 50.0 },   // wrapped description
+  ]];
+  const res = jn.parseFromPageItems(pages, JN_TEXT);
+
+  assert.equal(res.transactions.length, 1);
+  assert.equal(res.transactions[0].amount, 70000);
+  assert.equal(res.transactions[0].notes, 'STANDING ORDER REF 8842');
+});

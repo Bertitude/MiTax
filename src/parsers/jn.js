@@ -51,10 +51,15 @@ const JN_DESC_MAX    = 360;
 // edge and the debit column is ~4pt, so a 7-figure credit (left edge x≈444)
 // sits a hair from being read as a debit — i.e. a deposit booked as a
 // withdrawal.
-const JN_AMT_RIGHT_MIN    = 380;  // right edge < 380  → not a money column
-const JN_DEBIT_RIGHT_MAX  = 458;  // 380 ≤ right < 458 → debit
-const JN_CREDIT_RIGHT_MAX = 533;  // 458 ≤ right < 533 → credit
-                                  //       right ≥ 533 → balance (ignored)
+//
+// These are only the fallback: the column headers are themselves right-aligned
+// with their columns, so moneyColumnsFromHeader() re-derives the boundaries
+// from each page and a layout shift carries the parser with it.
+const JN_MONEY_COLS = {
+  minRight:  380,   // right edge < 380  → not a money column
+  debitMax:  458,   // 380 ≤ right < 458 → debit
+  creditMax: 533,   // 458 ≤ right < 533 → credit
+};                  //       right ≥ 533 → balance (ignored)
 
 // Left-edge fallback, used only for coordinate items that carry no width (e.g.
 // synthetic fixtures built before `w` was captured).
@@ -132,9 +137,12 @@ function parseFromPageItems(allPageItems, fullText) {
   const transactions = [];
   const warnings = [];
   const droppedRows = [];   // dated rows with amounts outside the expected columns
+  let   balanceRows = 0;    // opening/closing balance rows seen
 
   for (const pageItems of allPageItems) {
     if (!pageItems.length) continue;
+
+    const cols = moneyColumnsFromHeader(pageItems) || JN_MONEY_COLS;
 
     // Group items into rows by y-position (3 pt bucket)
     const rowMap = new Map();
@@ -147,17 +155,21 @@ function parseFromPageItems(allPageItems, fullText) {
     // Sort rows top-to-bottom (in PDF coords y increases upward → sort descending)
     const sortedYKeys = Array.from(rowMap.keys()).sort((a, b) => b - a);
 
-    // A long transaction type wraps onto its own line — "Automatic Payment"
-    // then "Withdrawal" ~11pt below it — which lands in a y bucket of its own
-    // holding nothing but type-column text. Fold each such line back into the
-    // row above so the payee reads "Automatic Payment Withdrawal" instead of a
-    // truncated "Automatic Payment".
+    // Text too long for its column wraps onto its own line — "Automatic
+    // Payment" then "Withdrawal" ~11pt below it — which lands in a y bucket of
+    // its own holding nothing but type/description text. Fold each such line
+    // back into the row above, so the payee reads "Automatic Payment
+    // Withdrawal" instead of a truncated "Automatic Payment".
+    //
+    // A continuation carries no date and no amount, and every token sits in the
+    // type or description column; page furniture ("E&OE" at x=20, "Page 1 of 2"
+    // at x=555) and the table header (which spans from x=20) all fail that.
     const rows = [];
     for (const yKey of sortedYKeys) {
       const items = rowMap.get(yKey);
-      const isTypeContinuation = rows.length &&
-        items.every(w => w.x >= JN_TYPE_MIN && w.x < JN_TYPE_MAX && !AMT_PAT.test(w.str));
-      if (isTypeContinuation) rows[rows.length - 1].push(...items);
+      const isContinuation = rows.length && items.every(w =>
+        w.x >= JN_TYPE_MIN && w.x < JN_DESC_MAX && !AMT_PAT.test(w.str));
+      if (isContinuation) rows[rows.length - 1].push(...items);
       else rows.push(items);
     }
 
@@ -179,8 +191,11 @@ function parseFromPageItems(allPageItems, fullText) {
       const typeItems = row.filter(w => w.x >= JN_TYPE_MIN && w.x < JN_TYPE_MAX);
       const typeStr   = typeItems.map(w => w.str).join(' ').trim();
 
-      // Skip opening/closing balance rows — not real transactions
-      if (SKIP_TYPES.test(typeStr)) continue;
+      // Skip opening/closing balance rows — not real transactions. Their
+      // presence is still recorded: it proves the transaction table was found
+      // and read, which is what distinguishes a dormant statement period from
+      // a statement we simply failed to parse.
+      if (SKIP_TYPES.test(typeStr)) { balanceRows++; continue; }
 
       // Description tokens (183–394)
       const descItems = row.filter(w => w.x >= JN_DESC_MIN && w.x < JN_DESC_MAX);
@@ -188,8 +203,8 @@ function parseFromPageItems(allPageItems, fullText) {
 
       // Amount tokens — split into debit / credit / balance zones
       const amountItems = row.filter(w => AMT_PAT.test(w.str));
-      const debitItems  = amountItems.filter(w => amountColumn(w) === 'debit');
-      const creditItems = amountItems.filter(w => amountColumn(w) === 'credit');
+      const debitItems  = amountItems.filter(w => amountColumn(w, cols) === 'debit');
+      const creditItems = amountItems.filter(w => amountColumn(w, cols) === 'credit');
       // Balance column amounts are intentionally ignored
 
       const debitVal  = debitItems.length  ? parseFloat(debitItems[0].str.replace(/,/g, ''))  : 0;
@@ -200,7 +215,7 @@ function parseFromPageItems(allPageItems, fullText) {
         // shifts a money column, its amounts land outside the expected zones
         // and the row would vanish. Surface it instead: does this dated row
         // carry an amount-looking token that fell into no column at all?
-        if (amountItems.some(w => amountColumn(w) === null)) {
+        if (amountItems.some(w => amountColumn(w, cols) === null)) {
           droppedRows.push(`${date} ${typeStr || descStr || '(no description)'}`.trim());
         }
         continue; // no usable amount — skip (with warning above if suspicious)
@@ -240,6 +255,16 @@ function parseFromPageItems(allPageItems, fullText) {
     );
   }
 
+  // A dormant month is a valid statement with nothing in it: JN still prints
+  // the opening and closing balance rows, just no transactions between them.
+  // Saying so beats the generic "unsupported or a scanned-image PDF" warning,
+  // which blames a file that parsed perfectly.
+  const emptyPeriod = transactions.length === 0 && balanceRows > 0 && droppedRows.length === 0;
+  if (emptyPeriod) {
+    const span = period.start && period.end ? ` (${period.start} to ${period.end})` : '';
+    warnings.push(`No transactions in this statement period${span} — the account had no activity. The statement was read successfully.`);
+  }
+
   applySignConvention(transactions);
   return {
     institution:  'JN Bank',
@@ -249,6 +274,7 @@ function parseFromPageItems(allPageItems, fullText) {
     currency,
     period,
     transactions,
+    emptyPeriod,
     warnings,
   };
 }
@@ -256,17 +282,62 @@ function parseFromPageItems(allPageItems, fullText) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
+ * Re-derive the money-column boundaries from a page's own table header.
+ *
+ * The "Debit"/"Credit"/"Balance" headings are right-aligned with the columns
+ * they label — their right edges (420.5 / 496.5 / 570.0) sit within 0.2pt of
+ * the amount right edges beneath them on every statement measured. Reading the
+ * boundaries off the page therefore beats trusting the constants above, and
+ * keeps the parser working if JN reflows the table.
+ *
+ * Returns null when the header isn't found, leaving the caller on JN_MONEY_COLS.
+ */
+function moneyColumnsFromHeader(pageItems) {
+  // All three headings must share one row. The summary page also prints
+  // "Debit" and "Credit" headings, but shifted a column right (496.6 / 570.1)
+  // and with no "Balance" — requiring the full triplet rejects it, which
+  // matters because adopting those offsets would shift every column by one.
+  const byRow = new Map();
+  for (const item of pageItems) {
+    const yKey = Math.round(item.y / 3) * 3;
+    if (!byRow.has(yKey)) byRow.set(yKey, []);
+    byRow.get(yKey).push(item);
+  }
+
+  for (const items of byRow.values()) {
+    const rightOf = (re) => {
+      const hit = items.find(i => i.w > 0 && re.test(i.str));
+      return hit ? hit.x + hit.w : null;
+    };
+    const debit   = rightOf(/^Debit$/i);
+    const credit  = rightOf(/^Credit$/i);
+    const balance = rightOf(/^Balance$/i);
+    if (debit == null || credit == null || balance == null) continue;
+    if (!(debit < credit && credit < balance)) continue;   // not the table header
+
+    return {
+      // Extend the debit column leftward by half its own width, so a debit
+      // wider than any seen here still lands inside it.
+      minRight:  debit - (credit - debit) / 2,
+      debitMax:  (debit + credit) / 2,
+      creditMax: (credit + balance) / 2,
+    };
+  }
+  return null;
+}
+
+/**
  * Which money column an amount token sits in, or null if it sits in none.
  *
  * Prefers the right edge (stable for a right-aligned column); falls back to the
  * left-edge zones for items carrying no width.
  */
-function amountColumn(item) {
+function amountColumn(item, cols) {
   if (item.w > 0) {
     const right = item.x + item.w;
-    if (right < JN_AMT_RIGHT_MIN)    return null;
-    if (right < JN_DEBIT_RIGHT_MAX)  return 'debit';
-    if (right < JN_CREDIT_RIGHT_MAX) return 'credit';
+    if (right < cols.minRight)  return null;
+    if (right < cols.debitMax)  return 'debit';
+    if (right < cols.creditMax) return 'credit';
     return 'balance';
   }
   if (item.x >= JN_BAL_MIN)                                 return 'balance';
@@ -314,4 +385,4 @@ function categorize(payee, amount) {
   return 'Uncategorized';
 }
 
-module.exports = { parse, parseFromPageItems };
+module.exports = { parse, parseFromPageItems, moneyColumnsFromHeader };

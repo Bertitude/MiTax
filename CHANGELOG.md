@@ -28,10 +28,30 @@ All notable changes to MiTax are documented here.
   leaving the payee as "Automatic Payment" and mis-categorizing the
   transaction. Continuation lines are now folded back into the row above.
 
-Verified against two real JN annual savings statements: all 205
-transactions extract, and the debit, credit and per-transaction-type
-totals reconcile to the cent with the summary page printed on each
-statement.
+- **A statement period with no activity no longer looks like a failed
+  import.** JN issues a statement for a dormant month with the opening
+  and closing balance rows and nothing between them. Parsing it correctly
+  yields zero transactions, which then tripped the generic "the file may
+  be unsupported or a scanned-image PDF" warning — blaming a file that
+  had been read perfectly. A parser that positively recognizes a
+  statement layout can now report the period as empty, and the import
+  says so plainly instead.
+
+### Changed
+- **JN Bank money columns are re-derived from each page's own table
+  header.** The Debit/Credit/Balance headings are right-aligned with the
+  columns they label (within 0.2pt on every statement measured), so the
+  boundaries are read off the page rather than trusted from constants,
+  and a future JN layout reflow carries the parser with it. The
+  hardcoded values remain as a fallback. The summary page prints
+  "Debit"/"Credit" headings one column further right with no "Balance";
+  requiring all three labels on one row keeps those from being adopted.
+
+Verified against four real JN savings statements — two annual, two
+monthly. All 207 transactions extract, and the debit, credit and
+per-transaction-type totals reconcile to the cent with the summary page
+printed on each statement; the dormant month reports as empty rather
+than as a broken file.
 
 ---
 

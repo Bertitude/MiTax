@@ -121,7 +121,11 @@ function validateResult(resultOrArray) {
   if (badAmounts) {
     warnings.push(`Dropped ${badAmounts} transaction(s) with invalid amounts.`);
   }
-  if (result.transactions.length === 0) {
+  // `emptyPeriod` means the parser positively recognized the statement layout
+  // and it genuinely contains no transactions (e.g. a dormant month, which JN
+  // still issues with opening/closing balance rows). It has already said so in
+  // its own warning; blaming the file would be wrong and alarming.
+  if (result.transactions.length === 0 && !result.emptyPeriod) {
     warnings.push('No transactions extracted — the file may be unsupported or a scanned-image PDF.');
   }
 
@@ -275,4 +279,4 @@ function guessInstitutionFromCSV(headers) {
   return 'CSV Import';
 }
 
-module.exports = { parseStatement, normalizeDate, derivePeriodFromTransactions };
+module.exports = { parseStatement, validateResult, normalizeDate, derivePeriodFromTransactions };
