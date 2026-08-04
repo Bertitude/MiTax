@@ -18,6 +18,7 @@ const stripeParser = require('./stripe');
 const unfcuParser = require('./unfcu');
 const jnParser = require('./jn');
 const genericParser = require('./generic');
+const txlistParser  = require('./txlist');
 
 const INSTITUTION_PATTERNS = [
   // UNFCU must come before NCB: UNFCU statements contain ATM descriptions
@@ -47,7 +48,7 @@ function detectFileType(filePath) {
  * Parse any supported statement file.
  * Returns { institution, accountType, accountName, currency, period, transactions }
  */
-async function parseStatement(filePath) {
+async function parseStatement(filePath, options = {}) {
   const fileType = detectFileType(filePath);
 
   if (fileType === 'csv') {
@@ -58,19 +59,41 @@ async function parseStatement(filePath) {
   const buffer = fs.readFileSync(filePath);
   const text = await extractText(buffer);
 
+  // A caller-supplied format overrides auto-detection entirely. Statements
+  // exported from an online-banking activity view often carry no institution
+  // name at all (the branding is a logo image), so no regex can route them —
+  // the user names the format, the institution and the account at import.
+  if (options.format) {
+    const fmt = FORMAT_PARSERS[options.format];
+    if (!fmt) throw new Error(`Unknown statement format "${options.format}".`);
+    console.log(`Forced format: ${options.format}`);
+    const result = await Promise.resolve(fmt.parse(text, filePath, options));
+    result.institution = options.institution || result.institution || 'Statement';
+    result.rawText = text;
+    return validateResult(result);
+  }
+
   // Detect institution
   let matched = null;
-  for (const inst of INSTITUTION_PATTERNS) {
-    if (inst.regex.test(text)) {
-      matched = inst;
-      break;
+  // A caller-supplied institution pins the parser, skipping detection — for a
+  // statement whose layout is standard but whose markers didn't survive the
+  // export.
+  if (options.institution) {
+    matched = INSTITUTION_PATTERNS.find(i => i.name === options.institution) || null;
+  }
+  if (!matched) {
+    for (const inst of INSTITUTION_PATTERNS) {
+      if (inst.regex.test(text)) {
+        matched = inst;
+        break;
+      }
     }
   }
 
   if (matched) {
     console.log(`Detected institution: ${matched.name}`);
     // parse() may be async (e.g. Scotiabank uses coordinate-aware extraction)
-    const result = await Promise.resolve(matched.parser.parse(text, filePath));
+    const result = await Promise.resolve(matched.parser.parse(text, filePath, options));
     result.institution = result.institution || matched.name;
     result.rawText = text;
     return validateResult(result);
@@ -78,10 +101,37 @@ async function parseStatement(filePath) {
 
   // Fallback: generic parser
   console.log('No institution detected — using generic parser');
-  const result = await Promise.resolve(genericParser.parse(text, filePath));
-  result.institution = result.institution || 'Unknown';
+  const result = await Promise.resolve(genericParser.parse(text, filePath, options));
+  result.institution = result.institution || options.institution || 'Unknown';
   result.rawText = text;
   return validateResult(result);
+}
+
+/**
+ * Formats the user can pick at import when auto-detection can't route a file.
+ * Keyed by the value the renderer sends; `label` is what it shows.
+ */
+const FORMAT_PARSERS = {
+  txlist:  { label: 'Transaction list (online-banking export)', parse: (t, f, o) => txlistParser.parse(t, f, o) },
+  generic: { label: 'Generic table (date, description, amount)', parse: (t, f, o) => genericParser.parse(t, f, o) },
+};
+
+/** Format choices for the import UI, plus which one suits this file's text. */
+function listFormats() {
+  return Object.entries(FORMAT_PARSERS).map(([value, f]) => ({ value, label: f.label }));
+}
+
+/** Institutions with a dedicated parser, for the import-time override list. */
+function listInstitutions() {
+  return INSTITUTION_PATTERNS.map(i => i.name);
+}
+
+/**
+ * Best-guess format for a file whose institution couldn't be detected, so the
+ * import UI can preselect rather than make the user guess. Null when unsure.
+ */
+function suggestFormat(text) {
+  return txlistParser.looksLikeTxList(text) ? 'txlist' : null;
 }
 
 /** True for a real "YYYY-MM-DD" calendar date. */
@@ -279,4 +329,7 @@ function guessInstitutionFromCSV(headers) {
   return 'CSV Import';
 }
 
-module.exports = { parseStatement, validateResult, normalizeDate, derivePeriodFromTransactions };
+module.exports = {
+  parseStatement, validateResult, normalizeDate, derivePeriodFromTransactions,
+  listFormats, listInstitutions, suggestFormat,
+};

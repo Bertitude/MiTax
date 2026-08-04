@@ -16,6 +16,7 @@ const state = {
   prefs:        JSON.parse(localStorage.getItem('lm_prefs') || '{}'),
   validateRows:  [],    // enriched, editable transaction rows
   taxReport:     null,
+  parseOptions:  null,   // { formats, institutions } for the "Read as…" picker; fetched once
 };
 
 // ─── Timezone Utilities ───────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupSettings();
   setupTaxView();
   setupAccountModal();
+  setupReadAsModal();
   setupValidateModal();
   setupAccountView();
   setupHistoryDetailModal();
@@ -470,10 +472,12 @@ function setupDropZone() {
     if (paths.length) addFilesToQueue(paths.map(p => ({ name: p.split(/[\/\\]/).pop(), path: p })));
   });
 
-  // Delegated remove-from-queue (CSP-safe; replaces inline onclick)
+  // Delegated queue actions (CSP-safe; replaces inline onclick)
   document.getElementById('file-queue').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-remove-id]');
-    if (btn) removeFromQueue(btn.dataset.removeId);
+    const remove = e.target.closest('[data-remove-id]');
+    if (remove) { removeFromQueue(remove.dataset.removeId); return; }
+    const readAs = e.target.closest('[data-readas-id]');
+    if (readAs) openReadAsModal(readAs.dataset.readasId);
   });
 }
 
@@ -521,13 +525,149 @@ function renderQueue() {
           ? `${escHtml(item.parsed.institution)} · ${escHtml(item.parsed.accountName)} · ${escHtml(item.parsed.currency)} · ${escHtml(item.parsed.period?.start || '?')} → ${escHtml(item.parsed.period?.end || '?')}`
           : escHtml(item.path)}</div>
       </div>
+      ${item.readAs ? `<span class="badge badge-yellow" title="Manual override">read as ${escHtml(item.readAs)}</span>` : ''}
       ${item.assetName ? `<span class="badge badge-blue">→ ${escHtml(item.assetName)}</span>` : ''}
       <span class="file-status ${item.status}">${statusLabel}</span>
+      ${canReadAs(item) ? `<button class="btn btn-sm btn-secondary" data-readas-id="${item.id}" title="Tell MiTax which institution and layout this statement uses">Read as…</button>` : ''}
       <span class="file-remove" title="Remove" data-remove-id="${item.id}">✕</span>
       <div class="progress-bar" style="width:${pct}%"></div>
     `;
     container.appendChild(el);
   }
+}
+
+/**
+ * Offer the manual override once a file has been through the parser — either it
+ * failed, or it produced nothing, or auto-detection picked the wrong reader and
+ * the user can see that from the queue row.
+ */
+function canReadAs(item) {
+  return item.status === 'error'
+      || (item.status === 'ready' && !!item.parsed)
+      || item.status === 'pending';
+}
+
+// ─── "Read Statement As…" — manual institution / format override ─────────────
+//
+// Auto-detection keys off institution markers in the PDF text. Statements
+// exported from an online-banking activity view often carry none (the branding
+// is a logo image), so no amount of pattern-matching can route them — the user
+// has to say what the file is. This is that escape hatch.
+
+function setupReadAsModal() {
+  document.getElementById('readas-cancel').addEventListener('click', closeReadAsModal);
+  document.getElementById('readas-apply').addEventListener('click', applyReadAs);
+  document.getElementById('readas-institution').addEventListener('change', (e) => {
+    const other = document.getElementById('readas-institution-other');
+    other.style.display = e.target.value === '__other__' ? 'block' : 'none';
+    if (e.target.value === '__other__') other.focus();
+  });
+}
+
+async function openReadAsModal(itemId) {
+  const item = state.queue.find(q => String(q.id) === String(itemId));
+  if (!item) return;
+
+  // Fetched from the main process so the lists stay in step with the parsers
+  // actually registered, rather than a copy that drifts.
+  if (!state.parseOptions) {
+    const res = await window.electronAPI.getParseOptions();
+    if (!res.success) { toast(`Could not load import options: ${res.error}`, 'error'); return; }
+    state.parseOptions = res.data;
+  }
+
+  document.getElementById('readas-filename').textContent = item.name;
+  document.getElementById('readas-error').style.display = 'none';
+
+  const fmtSel = document.getElementById('readas-format');
+  fmtSel.innerHTML = `<option value="">Auto-detect</option>` +
+    state.parseOptions.formats.map(f => `<option value="${escHtml(f.value)}">${escHtml(f.label)}</option>`).join('');
+  fmtSel.value = item.readAsFormat || '';
+
+  const instSel = document.getElementById('readas-institution');
+  instSel.innerHTML = `<option value="">Auto-detect</option>` +
+    state.parseOptions.institutions.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('') +
+    `<option value="__other__">Other (type a name)…</option>`;
+
+  const known = state.parseOptions.institutions.includes(item.readAsInstitution);
+  instSel.value = known ? item.readAsInstitution : (item.readAsInstitution ? '__other__' : '');
+  const other = document.getElementById('readas-institution-other');
+  other.value = known ? '' : (item.readAsInstitution || '');
+  other.style.display = instSel.value === '__other__' ? 'block' : 'none';
+
+  document.getElementById('readas-modal').classList.add('open');
+  document.getElementById('readas-modal').dataset.itemId = item.id;
+}
+
+function closeReadAsModal() {
+  document.getElementById('readas-modal').classList.remove('open');
+}
+
+async function applyReadAs() {
+  const modal = document.getElementById('readas-modal');
+  const item  = state.queue.find(q => String(q.id) === String(modal.dataset.itemId));
+  if (!item) { closeReadAsModal(); return; }
+
+  const format   = document.getElementById('readas-format').value || undefined;
+  const instVal  = document.getElementById('readas-institution').value;
+  const institution = (instVal === '__other__'
+    ? document.getElementById('readas-institution-other').value.trim()
+    : instVal) || undefined;
+
+  const errEl = document.getElementById('readas-error');
+  if (!format && !institution) {
+    errEl.textContent = 'Choose a layout or an institution — otherwise this is just the auto-detect that already ran.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('readas-apply');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Re-reading…';
+
+  const result = await window.electronAPI.parsePDF({ filePath: item.path, format, institution });
+
+  btn.disabled = false;
+  btn.textContent = 'Re-read Statement';
+
+  if (!result.success) {
+    errEl.textContent = `Error: ${result.error}`;
+    errEl.style.display = 'block';
+    return;
+  }
+
+  // Remember the choice so the badge shows it and reopening the modal keeps it.
+  item.readAsFormat      = format || '';
+  item.readAsInstitution = institution || '';
+  const fmtLabel = (state.parseOptions.formats.find(f => f.value === format) || {}).label;
+  item.readAs = [institution, fmtLabel].filter(Boolean).join(' · ');
+
+  // A single PDF can hold several accounts (UNFCU); expand as the normal
+  // import path does so each is mapped independently.
+  if (Array.isArray(result.data)) {
+    const idx = state.queue.indexOf(item);
+    state.queue.splice(idx, 1, ...result.data.map((parsed, i) => ({
+      ...item,
+      id:     `${item.id}-${i}`,
+      name:   `${item.name} — ${parsed.accountName}`,
+      status: 'ready',
+      parsed,
+      assetId: null, assetName: null,
+    })));
+  } else {
+    item.parsed = result.data;
+    item.status = 'ready';
+  }
+
+  const count = Array.isArray(result.data)
+    ? result.data.reduce((n, r) => n + (r.transactions?.length || 0), 0)
+    : (result.data.transactions?.length || 0);
+  toast(count ? `✓ Re-read ${item.name} — ${count} transaction(s)` : `Re-read ${item.name}, but still no transactions`, count ? 'success' : 'error');
+  surfaceParseWarnings(item.name, result.data);
+
+  renderQueue();
+  updateImportButtons();
+  closeReadAsModal();
 }
 
 function removeFromQueue(id) {

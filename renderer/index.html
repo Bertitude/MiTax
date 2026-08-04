@@ -536,6 +536,50 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════════
+     MODAL: Read Statement As… (manual institution / format override)
+════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="readas-modal">
+  <div class="modal" style="width:560px;max-height:90vh;overflow-y:auto;">
+    <div class="modal-title">🧭 Read Statement As…</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">
+      For statements MiTax can't recognize on its own — an online-banking export, or a
+      layout that doesn't match the institution's usual one. Tell it what to expect and
+      it will re-read the file.
+    </p>
+
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">
+      <strong id="readas-filename" style="color:var(--text);"></strong>
+    </div>
+
+    <div class="form-group">
+      <label>Layout</label>
+      <select id="readas-format"></select>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+        How the transactions are laid out on the page. Leave on “Auto-detect” if the
+        statement is a standard one and only the institution needs correcting.
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Institution</label>
+      <select id="readas-institution"></select>
+      <input type="text" id="readas-institution-other" placeholder="Institution name" maxlength="60" style="display:none;margin-top:6px;" />
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+        Used to label the imported transactions. Picking one that has its own parser
+        also forces that parser to be used.
+      </div>
+    </div>
+
+    <div id="readas-error" style="color:var(--warn);font-size:12px;margin-top:8px;display:none;"></div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="readas-cancel">Cancel</button>
+      <button class="btn btn-primary" id="readas-apply">Re-read Statement</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
      MODAL: Account Selection / Creation
 ════════════════════════════════════════════════════════════════════════ -->
 <div class="modal-backdrop" id="account-modal">

@@ -1,8 +1,12 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // PDF / CSV Parsing
-  parsePDF: (filePath) => ipcRenderer.invoke('parse-pdf', filePath),
+  // PDF / CSV Parsing.
+  // Pass a path to auto-detect, or { filePath, institution, format } to tell
+  // MiTax how to read a statement whose layout it can't recognize.
+  parsePDF: (arg) => ipcRenderer.invoke('parse-pdf', arg),
+  // Institution / format choices for the import-time override picker.
+  getParseOptions: () => ipcRenderer.invoke('parse-options'),
 
   // LunchMoney Assets
   // The active account's API key is resolved in the main process, never passed

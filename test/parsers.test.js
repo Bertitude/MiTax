@@ -500,3 +500,163 @@ test('JN Bank: a wrapped description is folded into the row, not dropped', () =>
   assert.equal(res.transactions[0].amount, 70000);
   assert.equal(res.transactions[0].notes, 'STANDING ORDER REF 8842');
 });
+
+// ── Transaction-list format (online-banking export) ──────────────────────────
+//
+// Coordinates below mirror real exports: each transaction is a PRIMARY row
+// (day | description | right-aligned amount) followed by a CONTINUATION row
+// (year | type). Column x-offsets differ between exports, so the parser derives
+// them from the header — these fixtures use the offsets from one real file.
+
+const txlist = require('../src/parsers/txlist');
+
+const TXL_HEADER = [
+  { str: 'Date',         x: 7,   y: 633, w: 28 },
+  { str: 'Description',  x: 56,  y: 633, w: 43 },
+  { str: 'Amount (JMD)', x: 349, y: 633, w: 55 },
+];
+const TXL_TEXT = 'Date Description Amount (JMD)\nPurchase/Other Charge\nPayment Received';
+
+test('txlist: purchases and payments get opposite signs from the type line', () => {
+  const pages = [[
+    ...TXL_HEADER,
+    { str: 'Jul 02', x: 7,   y: 615, w: 23 },
+    { str: 'The Palace Amusement-, Kingston', x: 57, y: 615, w: 133 },
+    { str: '$2,400.00', x: 364, y: 615, w: 41 },
+    { str: '2021', x: 7, y: 603, w: 19 },
+    { str: 'Purchase/Other Charge', x: 57, y: 603, w: 89 },
+
+    { str: 'Jun 30', x: 7,   y: 534, w: 26 },
+    { str: 'Card Payment Internet-****1222', x: 57, y: 534, w: 123 },
+    { str: '-$50,000.00', x: 354, y: 534, w: 51 },
+    { str: '2021', x: 7, y: 522, w: 19 },
+    { str: 'Payment Received', x: 57, y: 522, w: 71 },
+  ]];
+  const res = txlist.parseFromPageItems(pages, TXL_TEXT, { institution: 'Scotiabank' });
+
+  assert.equal(res.transactions.length, 2);
+  assert.equal(res.institution, 'Scotiabank');
+  assert.equal(res.currency, 'JMD');
+
+  const [purchase, payment] = res.transactions;
+  assert.equal(purchase.date, '2021-07-02');
+  assert.equal(purchase.amount, -2400);          // purchase → expense
+  assert.equal(purchase.type, 'debit');
+  assert.equal(payment.date, '2021-06-30');
+  assert.equal(payment.amount, 50000);           // payment to the card → credit
+  assert.equal(payment.type, 'credit');
+  assert.deepEqual(res.warnings, []);
+});
+
+test('txlist: columns are derived from the header, not hardcoded', () => {
+  // Same statement shifted right ~29pt, as a different export of the same
+  // format really is. Hardcoded boundaries would misread every column.
+  const shift = 29;
+  const move  = (it) => ({ ...it, x: it.x + shift });
+  const pages = [[
+    ...TXL_HEADER.map(move),
+    { str: 'Mar22', x: 7 + shift, y: 615, w: 24 },
+    { str: 'Active Home Centre, Kingston10', x: 57 + shift, y: 615, w: 124 },
+    { str: '$601.43', x: 369 + shift, y: 615, w: 33 },
+    { str: '2022', x: 7 + shift, y: 603, w: 19 },
+    { str: 'Purchase/Other Charge', x: 57 + shift, y: 603, w: 89 },
+  ]];
+  const res = txlist.parseFromPageItems(pages, TXL_TEXT);
+
+  assert.equal(res.transactions.length, 1);
+  assert.equal(res.transactions[0].date, '2022-03-22');   // "Mar22", no space
+  assert.equal(res.transactions[0].amount, -601.43);
+});
+
+test('txlist: OCR damage inside numbers and days is repaired', () => {
+  const pages = [[
+    ...TXL_HEADER,
+    // Space inserted inside the day ("Oct1 8" = Oct 18) and inside the amount.
+    { str: 'Oct1 8', x: 7, y: 615, w: 26 },
+    { str: 'Frame. io, New York', x: 57, y: 615, w: 80 },
+    { str: '$2 ,31 2.69', x: 360, y: 615, w: 45 },
+    { str: '2021', x: 7, y: 603, w: 19 },
+    { str: 'Purchase/Other Charge', x: 57, y: 603, w: 89 },
+    // Spaces around the thousands comma, and after the minus sign.
+    { str: 'Dec31', x: 7, y: 570, w: 24 },
+    { str: 'Card Payment Internet -****1222', x: 57, y: 570, w: 123 },
+    { str: '-$ 20 , 000.00', x: 350, y: 570, w: 55 },
+    { str: '2021', x: 7, y: 558, w: 19 },
+    { str: 'Payment Received', x: 57, y: 558, w: 71 },
+  ]];
+  const res = txlist.parseFromPageItems(pages, TXL_TEXT);
+
+  assert.equal(res.transactions.length, 2);
+  assert.equal(res.transactions[0].date, '2021-10-18');
+  assert.equal(res.transactions[0].amount, -2312.69);
+  assert.equal(res.transactions[1].amount, 20000);
+  assert.deepEqual(res.warnings, []);
+});
+
+test('txlist: a merchant containing a type word is not eaten as a type line', () => {
+  // "Cash Advance Fee At Atm" is a real purchase description. A loose type
+  // match consumed the row, losing the transaction AND inflating the expected
+  // count — so the type line is anchored to the whole cell.
+  const pages = [[
+    ...TXL_HEADER,
+    { str: 'Apr 29', x: 7, y: 615, w: 26 },
+    { str: 'Cash Advance Fee At Atm', x: 57, y: 615, w: 100 },
+    { str: '$429.18', x: 369, y: 615, w: 36 },
+    { str: '2021', x: 7, y: 603, w: 19 },
+    { str: 'Purchase/Other Charge', x: 57, y: 603, w: 89 },
+  ]];
+  const res = txlist.parseFromPageItems(pages, TXL_TEXT);
+
+  assert.equal(res.transactions.length, 1);
+  assert.equal(res.transactions[0].payee, 'Cash Advance Fee At Atm');
+  assert.equal(res.transactions[0].amount, -429.18);
+  assert.deepEqual(res.warnings, []);
+});
+
+test('txlist: an unreadable row is REPORTED with its details, never silently dropped', () => {
+  // Real damage: OCR rendered "May 05" as "Mayos" (o→0, s→5). Guessing the
+  // characters would book the transaction to an invented date, so the row is
+  // dropped — but every transaction prints a type line, so the parser knows
+  // one went missing and says which.
+  const pages = [[
+    ...TXL_HEADER,
+    { str: 'Mayos', x: 7, y: 615, w: 25 },
+    { str: "Wendy's- Waterloo Squa, Kingston 10", x: 57, y: 615, w: 140 },
+    { str: '$1,630.00', x: 364, y: 615, w: 41 },
+    { str: '2021', x: 7, y: 603, w: 19 },
+    { str: 'Purchase/Other Charge', x: 57, y: 603, w: 89 },
+  ]];
+  const res = txlist.parseFromPageItems(pages, TXL_TEXT);
+
+  assert.equal(res.transactions.length, 0);
+  assert.equal(res.warnings.length, 1);
+  assert.match(res.warnings[0], /1 of 1 transaction row\(s\) could NOT be read/);
+  assert.match(res.warnings[0], /Mayos/);
+  assert.match(res.warnings[0], /Wendy's- Waterloo Squa/);   // identifies the row
+  assert.match(res.warnings[0], /1,630\.00/);
+});
+
+test('txlist: repairMoney rejects what it cannot read unambiguously', () => {
+  assert.equal(txlist.repairMoney('$26 , 133.37'), 26133.37);
+  assert.equal(txlist.repairMoney('$7 5 ,095.00'), 75095.00);
+  assert.equal(txlist.repairMoney('-$ 15,000.00'), -15000);
+  assert.equal(txlist.repairMoney('$601.43'), 601.43);
+  assert.equal(txlist.repairMoney('1,200.00 3,400.00'), null);  // two amounts collided
+  assert.equal(txlist.repairMoney('Kingston 10'), null);        // not money
+  assert.equal(txlist.repairMoney(''), null);
+});
+
+test('txlist: repairMonthDay repairs spacing but refuses to guess characters', () => {
+  assert.deepEqual(txlist.repairMonthDay('Jul 02'), { month: 7,  day: 2  });
+  assert.deepEqual(txlist.repairMonthDay('Mar22'),  { month: 3,  day: 22 });
+  assert.deepEqual(txlist.repairMonthDay('Oct1 8'), { month: 10, day: 18 });
+  assert.equal(txlist.repairMonthDay('Mayos'), null);      // o→0/s→5 NOT guessed
+  assert.equal(txlist.repairMonthDay('Jun 45'), null);     // impossible day
+  assert.equal(txlist.repairMonthDay('Description'), null);
+});
+
+test('txlist: looksLikeTxList recognizes the format for the import picker', () => {
+  assert.equal(txlist.looksLikeTxList(TXL_TEXT), true);
+  assert.equal(txlist.looksLikeTxList('JN Bank\nRSV-002094352472\nOpening Balance'), false);
+  assert.equal(txlist.looksLikeTxList(''), false);
+});

@@ -171,14 +171,37 @@ app.on('window-all-closed', () => {
 });
 
 // ─── IPC: Parse PDF / CSV ───────────────────────────────────────────────────
-handle('parse-pdf', async (event, filePath) => {
+handle('parse-pdf', async (event, arg) => {
+  // Accepts a bare path (auto-detect) or { filePath, institution, format } when
+  // the user has told MiTax how to read a statement auto-detection can't route.
+  const filePath = typeof arg === 'string' ? arg : (arg && arg.filePath);
+  const override = typeof arg === 'string' ? {} : (arg || {});
   try {
     if (!isFileAuthorized(filePath)) {
       return { success: false, error: 'File not authorized. Select it via the file picker or drag-and-drop.' };
     }
     const { parseStatement } = require('./src/parsers/index');
-    const result = await parseStatement(filePath);
+    const result = await parseStatement(filePath, {
+      // Only pass through the fields the parsers accept, so a crafted renderer
+      // payload can't reach into parser internals.
+      institution: typeof override.institution === 'string' ? override.institution.slice(0, 60) : undefined,
+      format:      typeof override.format      === 'string' ? override.format.slice(0, 30)      : undefined,
+      accountName: typeof override.accountName === 'string' ? override.accountName.slice(0, 80) : undefined,
+      currency:    typeof override.currency    === 'string' ? override.currency.slice(0, 3).toUpperCase() : undefined,
+    });
     return { success: true, data: result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Choices for the import-time "read this statement as…" picker: the
+// institutions with a dedicated parser, plus the layout-based formats for
+// statements that carry no institution marker at all.
+handle('parse-options', async () => {
+  try {
+    const { listFormats, listInstitutions } = require('./src/parsers/index');
+    return { success: true, data: { formats: listFormats(), institutions: listInstitutions() } };
   } catch (err) {
     return { success: false, error: err.message };
   }

@@ -6,6 +6,31 @@ All notable changes to MiTax are documented here.
 
 ## [Unreleased]
 
+### Added
+- **"Read as…" — import a statement MiTax can't recognize.** Auto-detection
+  keys off institution markers in the PDF text, but a statement printed
+  from an online-banking activity view often carries none (the branding is
+  a logo image), so nothing can route it and the import yielded zero
+  transactions. Every queued file now has a **Read as…** button: choose the
+  layout, the institution, or both, and MiTax re-reads the file. The
+  institution can be picked from those with a dedicated parser or typed
+  freely, and it labels the imported transactions. Choosing an institution
+  that has its own parser also forces that parser, for a statement whose
+  layout is standard but whose markers didn't survive the export.
+- **New "Transaction list" layout, for online-banking exports.** Reads the
+  two-row-per-transaction table (day/description/amount, then year/type)
+  these exports produce. Column positions are derived from the page's own
+  Date/Description/Amount header rather than hardcoded, so exports that
+  place the table at different offsets both work. Because these files are
+  usually scanned or re-rendered, unambiguous OCR damage is repaired —
+  stray spaces inside numbers ("$26 , 133.37", "$7 5 ,095.00") and inside
+  the day ("Oct1 8"). Letter-for-digit damage ("Mayos" for "May 05") is
+  NOT guessed at, since that would book a transaction to an invented date.
+  Every transaction prints a type line, so the parser counts those as an
+  independent check on its own work and reports any row it could not read,
+  quoting the row so it can be added by hand — a short import is never
+  silent.
+
 ### Fixed
 - **An account created from one statement's dropdown now appears in the
   others.** In "Confirm Account Assignment", creating a LunchMoney
