@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.15] — 2026-08-04
 
 ### Fixed
 - **JN Bank statements no longer import as "No transactions extracted".**
@@ -27,7 +27,6 @@ All notable changes to MiTax are documented here.
   "Withdrawal"); the second line landed in its own row and was dropped,
   leaving the payee as "Automatic Payment" and mis-categorizing the
   transaction. Continuation lines are now folded back into the row above.
-
 - **A statement period with no activity no longer looks like a failed
   import.** JN issues a statement for a dormant month with the opening
   and closing balance rows and nothing between them. Parsing it correctly
