@@ -4,7 +4,7 @@ All notable changes to MiTax are documented here.
 
 ---
 
-## [Unreleased]
+## [1.3.16] — 2026-08-04
 
 ### Added
 - **"Read as…" — import a statement MiTax can't recognize.** Auto-detection
