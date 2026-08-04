@@ -4,6 +4,22 @@ All notable changes to MiTax are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **An account created from one statement's dropdown now appears in the
+  others.** In "Confirm Account Assignment", creating a LunchMoney
+  account added it only to the dropdown that opened the create form.
+  Every other row in the same batch kept its original option list, so a
+  second statement could not be assigned to the account just created
+  without closing and reopening the modal. The new account is now added
+  to every row's dropdown; rows that already have a selection keep it,
+  and only the row that requested the account is auto-selected. The
+  option label also now uses the account's display name, matching what
+  the list shows after a refresh.
+
+---
+
 ## [1.3.15] — 2026-08-04
 
 ### Fixed

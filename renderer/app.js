@@ -894,15 +894,25 @@ async function createNewAccount() {
   state.lmAssets.push(newAsset);
   toast(`✓ Created "${name}" in LunchMoney`, 'success');
 
-  const forId = document.getElementById('create-account-form').dataset.forId;
-  const selEl = document.querySelector(`.account-select[data-id="${forId}"]`);
-  if (selEl) {
+  // Add the new account to EVERY row's dropdown, not just the row that opened
+  // the form. `state.lmAssets` is shared, but each <select> is rendered once in
+  // openAccountModal() and never re-reads it — so without this, a second
+  // statement in the same batch cannot be assigned to the account just created.
+  // Appending an <option> does not disturb a select's current selection, so
+  // rows that already have a choice keep it.
+  const optLabel = `${newAsset.display_name || newAsset.name} (${(newAsset.currency || currency || '').toUpperCase()})`;
+  document.querySelectorAll('.account-select').forEach(sel => {
     const opt       = document.createElement('option');
     opt.value       = newAsset.id;
-    opt.textContent = `${name} (${currency.toUpperCase()})`;
-    selEl.insertBefore(opt, selEl.lastElementChild);
-    selEl.value     = String(newAsset.id);
-  }
+    opt.textContent = optLabel;
+    // Keep "➕ Create new account…" pinned last (insertBefore(…, null) appends).
+    sel.insertBefore(opt, sel.querySelector('option[value="__create__"]'));
+  });
+
+  // Only the row that requested the account gets it auto-selected.
+  const forId = document.getElementById('create-account-form').dataset.forId;
+  const selEl = document.querySelector(`.account-select[data-id="${forId}"]`);
+  if (selEl) selEl.value = String(newAsset.id);
 
   hideCreateForm();
   errEl.style.display = 'none';
