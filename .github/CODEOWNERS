@@ -1,0 +1,9 @@
+# Repository-wide ownership. Enable “Require review from Code Owners” in
+# the main-branch ruleset for these entries to become mandatory.
+* @Bertitude
+
+# Release and update paths deserve explicit owner review.
+.github/workflows/* @Bertitude
+src/updater.js @Bertitude
+package.json @Bertitude
+package-lock.json @Bertitude
